@@ -37,6 +37,11 @@ impl Snapshots {
         Ok(names.split('\0').filter(|name| !name.is_empty()).map(String::from).collect())
     }
 
+    /// The unified diff of `path` between two trees, empty when it is the same in both.
+    pub fn diff(&self, from: &str, to: &str, path: &str) -> Result<String, String> {
+        self.git(&["diff", "--no-color", "--no-ext-diff", "--no-renames", from, to, "--", path])
+    }
+
     /// The blob id of `path` in `tree`, None when the tree lacks it.
     pub fn blob(&self, tree: &str, path: &str) -> Option<String> {
         self.git(&["rev-parse", "--verify", "-q", &format!("{tree}:{path}")]).ok()

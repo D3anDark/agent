@@ -817,6 +817,12 @@ impl Agent {
     }
 
 
+    /// Files this session changed, with diffs; None when the work tree is not snapshotted.
+    pub fn changes(&self) -> Result<Option<Vec<FileChange>>, String> {
+        let Some(snapshots) = &self.snapshots else { return Ok(None) };
+        session_changes(snapshots, &self.checkpoints).map(Some)
+    }
+
     /// Drops the message at `index` and everything after it, and puts back the files those prompts changed.
     /// None: the work tree is not snapshotted, so files stay as they are.
     pub fn rewind(&mut self, index: usize) -> Result<Option<RestoredFiles>, String> {
@@ -1212,6 +1218,35 @@ pub fn rewind_points(messages: &[Value]) -> Vec<RewindPoint> {
     points
 }
 
+/// A file this session's tool calls changed, with its diff from before the first of them to now.
+#[derive(Debug)]
+pub struct FileChange {
+    pub path: String,
+    pub diff: String,
+}
+
+/// Files this session's tool calls changed that still differ from how they were before the first change.
+fn session_changes(snapshots: &Snapshots, checkpoints: &[Checkpoint]) -> Result<Vec<FileChange>, String> {
+    let mut first_before: BTreeMap<&str, &str> = BTreeMap::new();
+    for checkpoint in checkpoints {
+        for path in &checkpoint.paths {
+            first_before.entry(path).or_insert(&checkpoint.before);
+        }
+    }
+    if first_before.is_empty() {
+        return Ok(Vec::new());
+    }
+    let now = snapshots.take()?;
+    let mut changes = Vec::new();
+    for (path, before) in first_before {
+        let diff = snapshots.diff(before, &now, path)?;
+        if !diff.is_empty() {
+            changes.push(FileChange { path: path.into(), diff });
+        }
+    }
+    Ok(changes)
+}
+
 /// Files a rewind put back, and files it left alone because they changed after the agent last wrote them.
 #[derive(Debug, Default, PartialEq)]
 pub struct RestoredFiles {
@@ -1315,6 +1350,9 @@ fn text_of(message: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Snapshots keeps one git index per process, so tests that take snapshots run one at a time.
+    static SNAPSHOT_INDEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn assistant(text: &str) -> Value {
         json!({"role": "assistant", "content": [{"type": "text", "text": text}]})
@@ -1425,6 +1463,7 @@ mod tests {
 
     #[test]
     fn rewind_restores_only_what_this_session_changed() {
+        let _index = SNAPSHOT_INDEX.lock().unwrap();
         let root = std::env::temp_dir().join(format!("agent-restore-{}", std::process::id()));
         let work = root.join("work");
         std::fs::create_dir_all(&work).unwrap();
@@ -1454,6 +1493,37 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(files, RestoredFiles { restored: vec!["a.txt".into(), "new.txt".into()], kept: vec!["shared.txt".into()] });
         assert_eq!(state, [Some("v2".into()), None, Some("mine".into()), Some("user".into()), Some("another session".into())]);
+    }
+
+    #[test]
+    fn changes_list_files_this_session_left_different_with_their_diff() {
+        let _index = SNAPSHOT_INDEX.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("agent-changes-{}", std::process::id()));
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        assert!(std::process::Command::new("git").arg("-C").arg(&work).args(["init", "-q"]).output().unwrap().status.success());
+        let write = |name: &str, text: &str| std::fs::write(work.join(name), text).unwrap();
+        let snapshots = Snapshots::open(&root, &work).unwrap();
+        let tool_call = |writes: &[(&str, &str)]| {
+            let before = snapshots.take().unwrap();
+            for (name, text) in writes {
+                write(name, text);
+            }
+            let after = snapshots.take().unwrap();
+            Checkpoint { at: 1, paths: snapshots.changed(&before, &after).unwrap(), before, after }
+        };
+        write("a.txt", "v1\n");
+        write("back.txt", "same\n");
+        write("user.txt", "untouched\n");
+        let first = tool_call(&[("a.txt", "v2\n"), ("back.txt", "changed\n")]);
+        let second = tool_call(&[("back.txt", "same\n")]);
+        write("user.txt", "user edit\n");
+
+        let changes = session_changes(&snapshots, &[first, second]).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        let paths: Vec<&str> = changes.iter().map(|change| change.path.as_str()).collect();
+        assert_eq!(paths, ["a.txt"]);
+        assert!(changes[0].diff.contains("-v1\n+v2"), "{}", changes[0].diff);
     }
 
     #[test]

@@ -27,7 +27,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::agent::{self, Agent, Event, RestoredFiles, RewindPoint, Session, SessionInfo, Spent};
+use crate::agent::{self, Agent, Event, FileChange, RestoredFiles, RewindPoint, Session, SessionInfo, Spent};
 use crate::api::{AccountView, Client, Delta, Usage};
 use crate::agent::FollowUp;
 use crate::agent::modes::{self, CAVEMAN_LEVELS, PONYTAIL_LEVELS};
@@ -83,6 +83,7 @@ enum Msg {
     RewindPoints(Vec<RewindPoint>),
     /// `entry` is where the rewound prompt sits on screen; None redraws from `messages`.
     Rewound { messages: Vec<Value>, files: Option<RestoredFiles>, entry: Option<usize> },
+    Changes(Result<Option<Vec<FileChange>>, String>),
 }
 
 /// The bottom panel that takes over the keys while it is open.
@@ -123,6 +124,8 @@ enum Panel {
     History { prompts: Vec<String>, query: Editor, index: usize },
     /// Double Esc while idle: the prompts from `agent::rewind_points` to go back to.
     Rewind { index: usize, points: Vec<RewindPoint> },
+    /// /changes: files this session changed; Enter prints the diff.
+    Changes { files: Vec<FileChange>, index: usize },
     /// What to do with the plan from plan_mode_complete, opened when its turn ends or by /plan.
     Plan { index: usize },
 }
@@ -158,6 +161,7 @@ enum Command {
     RewindPoints,
     /// Drops the prompt at message `at` and everything after it; `entry` passes through to `Msg::Rewound`.
     Rewind { at: usize, entry: Option<usize> },
+    Changes,
 }
 
 /// Built-in commands: pi's wording for pi's commands, fx's for the ones taken from fx.
@@ -186,6 +190,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("skills", "Enable and disable skills"),
     ("usage", "Show token usage and subscription limits"),
     ("history", "Search previous prompts"),
+    ("changes", "List files changed in this session and show their diffs"),
     ("skill-usage", "Show how often each skill was used, least used first"),
     ("rtk", "Show rtk token savings"),
     ("ps", "Show background terminals"),
@@ -485,6 +490,10 @@ fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Ms
                     }
                     Err(error) => Err(error),
                 },
+                Command::Changes => {
+                    let _ = events.send(Msg::Changes(agent.changes()));
+                    continue;
+                }
                 Command::RewindPoints => {
                     let _ = events.send(Msg::RewindPoints(agent::rewind_points(&agent.messages)));
                     continue;
@@ -952,6 +961,10 @@ impl App {
             }
             Msg::RewindPoints(points) if points.is_empty() => self.hint = Some(("Nothing to rewind yet".into(), Instant::now())),
             Msg::RewindPoints(points) => self.panel = Some(Panel::Rewind { index: points.len() - 1, points }),
+            Msg::Changes(Ok(None)) => self.system("changes", "File snapshots are off outside a git repo."),
+            Msg::Changes(Ok(Some(files))) if files.is_empty() => self.system("changes", "No files changed in this session."),
+            Msg::Changes(Ok(Some(files))) => self.panel = Some(Panel::Changes { files, index: 0 }),
+            Msg::Changes(Err(error)) => self.push(Item::Error(error)),
             Msg::Rewound { messages, files, entry } => {
                 match entry {
                     Some(entry) => self.entries.truncate(entry),
@@ -1367,6 +1380,7 @@ impl App {
             "todos" => self.panel = Some(Panel::Todos { index: 0 }),
             "plugins" => self.panel = Some(Panel::Plugins { index: 0 }),
             "skills" => self.panel = Some(Panel::Skills { index: 0 }),
+            "changes" => _ = self.commands.send(Command::Changes),
             "history" => {
                 let mut prompts = history::load(&self.home.join(".agents"));
                 prompts.reverse();
@@ -1754,6 +1768,16 @@ impl App {
                     self.panel = None;
                     let _ = self.commands.send(Command::Rewind { at: point.at, entry });
                     self.restore_draft(point);
+                }
+                _ => {}
+            },
+            Some(Panel::Changes { files, index }) => match code {
+                KeyCode::Up => *index = index.saturating_sub(1),
+                KeyCode::Down => *index = (*index + 1).min(files.len() - 1),
+                KeyCode::Enter => {
+                    let lines = diff_lines(&files[*index]);
+                    self.panel = None;
+                    self.push(Item::Lines(lines));
                 }
                 _ => {}
             },
@@ -2484,6 +2508,19 @@ impl App {
                 };
                 view.render(width, PANEL_ROWS)
             }
+            Panel::Changes { files, index } => {
+                let rows: Vec<panel::Row> = files.iter().map(|file| panel::Row { left: file.path.clone(), right: diff_stat(&file.diff) }).collect();
+                let view = panel::Panel {
+                    title: "Changes".into(),
+                    tabs: &[],
+                    tab: 0,
+                    rows: &rows,
+                    selected: *index,
+                    empty: "",
+                    hint: "↑↓ navigate     enter show diff     esc close",
+                };
+                view.render(width, PANEL_ROWS)
+            }
             Panel::History { prompts, query, index } => {
                 let rows: Vec<panel::Row> = matching_prompts(prompts, &query.text()).iter().map(|prompt| panel::Row { left: prompt.split_whitespace().collect::<Vec<_>>().join(" "), right: Vec::new() }).collect();
                 let view = panel::Panel {
@@ -2981,6 +3018,36 @@ fn matching_accounts(accounts: Vec<AccountView>, query: &str) -> Vec<AccountView
 fn matching_prompts<'a>(prompts: &'a [String], query: &str) -> Vec<&'a str> {
     let query = query.to_lowercase();
     prompts.iter().filter(|prompt| prompt.to_lowercase().contains(&query)).map(String::as_str).collect()
+}
+
+/// "+3 -1" for the /changes rows.
+fn diff_stat(diff: &str) -> Line {
+    let body = diff.lines().filter(|line| !line.starts_with("+++") && !line.starts_with("---"));
+    let (mut added, mut removed) = (0, 0);
+    for line in body {
+        match line.chars().next() {
+            Some('+') => added += 1,
+            Some('-') => removed += 1,
+            _ => {}
+        }
+    }
+    vec![span(format!("+{added}"), OK), span(" ", PLAIN), span(format!("-{removed}"), ERROR)]
+}
+
+/// A file's /changes diff without git's header lines, added lines green and removed red.
+fn diff_lines(file: &FileChange) -> Vec<Line> {
+    let mut lines = vec![vec![span(file.path.clone(), TOOL_NAME)]];
+    let hunks = file.diff.lines().skip_while(|line| !line.starts_with("@@"));
+    for line in hunks {
+        let style = match line.chars().next() {
+            Some('+') => OK,
+            Some('-') => ERROR,
+            Some('@') => MUTED,
+            _ => PLAIN,
+        };
+        lines.push(vec![span(format!("  {}", line.replace('\t', "    ")), style)]);
+    }
+    lines
 }
 
 const USAGE_TABS: [&str; 5] = ["Session", "24 hours", "7 days", "All", "Limits"];
