@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::mpsc::Sender;
 
 use super::editor::Editor;
+use super::OK;
 use super::render::{Line, PLAIN, Style, span, wrap};
 use crate::tools::ask::{Answer, Question, TYPE_SOMETHING};
 
@@ -135,15 +136,15 @@ impl AskPanel {
                 line.push(span("   ", PLAIN));
             }
             let mark = if self.answers[index].is_some() { "✓ " } else { "" };
-            let style = if index == self.current { BRIGHT.bold() } else { MUTED };
-            line.push(span(format!("{mark}{}", question.header), style));
+            let tab = format!("{mark}{}", question.header);
+            line.push(if index == self.current { span(format!("[{tab}]"), BRIGHT.bold()) } else { span(tab, MUTED) });
         }
         line
     }
 }
 
 fn lead(focused: usize, row: usize) -> Line {
-    vec![span(if row == focused { "  ❯ " } else { "    " }, PLAIN), span(format!("{}. ", row + 1), MUTED)]
+    vec![span("  ", PLAIN), span(if row == focused { "→ " } else { "  " }, OK), span(format!("{}. ", row + 1), MUTED)]
 }
 
 fn style(focused: usize, row: usize) -> Style {
@@ -216,6 +217,6 @@ mod tests {
         let mut panel = AskPanel::new(crate::tools::ask::parse(&input).unwrap(), reply);
         panel.key(KeyCode::Enter.into());
         let text: Vec<String> = panel.render(40).iter().map(|l| l.iter().map(|s| s.text.as_str()).collect()).collect();
-        assert_eq!(text[1], "✓ One   Two", "{text:#?}");
+        assert_eq!(text[1], "✓ One   [Two]", "{text:#?}");
     }
 }

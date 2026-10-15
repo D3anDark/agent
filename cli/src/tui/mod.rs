@@ -2272,7 +2272,7 @@ impl App {
                 let rows: Vec<panel::Row> = worktrees
                     .iter()
                     .map(|w| {
-                        let mark = if w.path == *current { "* " } else { "  " };
+                        let mark = if w.path == *current { "✓ " } else { "  " };
                         let path = w.path.display().to_string().replacen(&home, "~", 1);
                         panel::Row { left: format!("{mark}{}", w.branch), right: vec![span(path, MUTED)] }
                     })
@@ -2774,7 +2774,7 @@ fn account_rows(accounts: &[AccountView], labels: &[(String, HashMap<String, Str
             (true, None) => "?".to_string(),
             (false, _) => String::new(),
         };
-        let mark = if a.current { "* " } else { "  " };
+        let mark = if a.current { "✓ " } else { "  " };
         let mut cells = vec![
             a.provider.clone(),
             percent(a.usage.as_ref().map(|u| u.five_hour)),
@@ -3345,7 +3345,7 @@ fn permission_lines(request: &Request, selected: usize, width: usize) -> Vec<Lin
     lines.push(Vec::new());
     for (index, option) in ["Yes", always, "No"].iter().enumerate() {
         let label = format!("{}. {option}", index + 1);
-        lines.push(if index == selected { vec![span("  ❯ ", PLAIN), span(label, BRIGHT.bold())] } else { vec![span(format!("    {label}"), PLAIN)] });
+        lines.push(if index == selected { vec![span("  ", PLAIN), span("→ ", OK), span(label, BRIGHT.bold())] } else { vec![span(format!("    {label}"), PLAIN)] });
     }
     lines.extend([Vec::new(), rule, vec![span("↑↓ move     enter choose     1-3 pick     esc deny", MUTED)]]);
     lines
@@ -3356,7 +3356,7 @@ fn plan_lines(selected: usize, width: usize) -> Vec<Line> {
     let mut lines = vec![rule.clone(), vec![span("  ", PLAIN), span("Plan ready · Choose one", PLAIN.bold())], Vec::new()];
     for (index, option) in PLAN_OPTIONS.iter().enumerate() {
         let label = format!("{}. {option}", index + 1);
-        lines.push(if index == selected { vec![span("  ❯ ", PLAIN), span(label, BRIGHT.bold())] } else { vec![span(format!("    {label}"), PLAIN)] });
+        lines.push(if index == selected { vec![span("  ", PLAIN), span("→ ", OK), span(label, BRIGHT.bold())] } else { vec![span(format!("    {label}"), PLAIN)] });
     }
     lines.extend([Vec::new(), rule, vec![span("↑↓ move     enter choose     1-4 pick     esc keep planning", MUTED)]]);
     lines
@@ -3395,7 +3395,7 @@ fn switch_label(percent: u64) -> String {
     if percent == 0 { "never".into() } else { format!("{percent}%") }
 }
 
-/// fx's inline setting values: every option, the current one bright. A current value missing from the options is appended.
+/// fx's inline setting values: every option, the current one checked and bright. A current value missing from the options is appended.
 fn choices(options: impl IntoIterator<Item = String>, current: &str) -> Line {
     let mut line = Vec::new();
     let mut listed = false;
@@ -3403,12 +3403,11 @@ fn choices(options: impl IntoIterator<Item = String>, current: &str) -> Line {
         if !line.is_empty() {
             line.push(span("  ", PLAIN));
         }
-        let style = if option == current { BRIGHT.bold() } else { MUTED };
         listed |= option == current;
-        line.push(span(option, style));
+        line.push(if option == current { span(format!("✓ {option}"), BRIGHT.bold()) } else { span(option, MUTED) });
     }
     if !listed {
-        line.push(span(format!("  {current}"), BRIGHT.bold()));
+        line.push(span(format!("  ✓ {current}"), BRIGHT.bold()));
     }
     line
 }
@@ -3718,7 +3717,7 @@ mod tests {
             table,
             [
                 ("  Subscription", "Provider    5h   7d  Default  usagefleet".to_string()),
-                ("* claudescom", "anthropic  21%  73%           uf_tVdC…".to_string()),
+                ("✓ claudescom", "anthropic  21%  73%           uf_tVdC…".to_string()),
                 ("  rokartur", "anthropic    ?    ?  pinned".to_string()),
                 ("", String::new()),
                 ("  API key", "Provider             Default".to_string()),
