@@ -970,11 +970,17 @@ impl App {
         }
     }
 
-    /// The pasted images whose `[Image #n]` is still in `text`; the rest are dropped.
+    /// The pasted images whose `[Image #n]` is still in `text`, shown as `read_image` rows; the rest are dropped.
     fn take_images(&mut self, text: &str) -> Vec<Value> {
         let mut kept = Vec::new();
         for (index, block) in std::mem::take(&mut self.images).into_iter().enumerate() {
             if text.contains(&format!("[Image #{}]", index + 1)) {
+                self.push(Item::Tool {
+                    id: String::new(),
+                    name: "read_image".into(),
+                    input: serde_json::json!({"image": image_note(index + 1, &block)}),
+                    result: Some((String::new(), false)),
+                });
                 kept.push(block);
             }
         }
@@ -2501,6 +2507,7 @@ fn tool_args(name: &str, input: &Value) -> String {
                 _ => command,
             }
         }
+        "read_image" => field("image"),
         "read" => {
             let mut text = field("path");
             if let Some(offset) = input["offset"].as_u64().map(|n| n.to_string()).or(input["offset"].as_str().map(String::from)) {
@@ -2629,6 +2636,14 @@ fn hotkeys_lines() -> Vec<Line> {
 
 fn banner() -> Vec<Line> {
     vec![vec![span("agent", BRIGHT.bold()), span(format!(" v{} · Run /help for commands", env!("CARGO_PKG_VERSION")), MUTED)]]
+}
+
+/// `#1 jpeg 38 KB` for an image block from `image::block`; base64 carries 3 bytes in 4 chars.
+fn image_note(number: usize, block: &Value) -> String {
+    let source = &block["source"];
+    let format = source["media_type"].as_str().unwrap_or_default().trim_start_matches("image/");
+    let bytes = source["data"].as_str().unwrap_or_default().len() * 3 / 4;
+    format!("#{number} {format} {} KB", bytes.div_ceil(1024))
 }
 
 /// Undoes `take_images`: the kept images go back to the numbers their tags in `text` use, gaps hold Null.
@@ -3121,6 +3136,12 @@ mod tests {
         let (two, three) = (json!("png2"), json!("png3"));
         let slots = image_slots("see [Image #2] and [Image #3]", vec![two.clone(), three.clone()]);
         assert_eq!(slots, [Value::Null, two, three]);
+    }
+
+    #[test]
+    fn image_note_names_the_tag_format_and_decoded_size() {
+        let block = json!({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "A".repeat(4096)}});
+        assert_eq!(image_note(2, &block), "#2 jpeg 3 KB");
     }
 
     #[test]
