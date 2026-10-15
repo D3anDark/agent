@@ -65,7 +65,7 @@ pub enum Delta<'a> {
     Notice(&'a str),
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
 pub struct Usage {
     pub input: u64,
     pub output: u64,

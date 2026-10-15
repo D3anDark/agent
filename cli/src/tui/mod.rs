@@ -32,6 +32,7 @@ use crate::agent::FollowUp;
 use crate::agent::modes::{self, CAVEMAN_LEVELS, PONYTAIL_LEVELS};
 use crate::agent::permissions::{Decision, MODES, Mode, Request};
 use crate::agent::skill_usage;
+use crate::agent::usage::{self, ModelTotal};
 use crate::agent::prompt::{Skill, Template};
 use crate::agent::subagent::Runs;
 use crate::api::accounts::Policy;
@@ -99,6 +100,8 @@ enum Panel {
     Plugins { index: usize },
     /// Every skill, including the ones `Settings.disabled_skills` leaves out of the prompt.
     Skills { index: usize },
+    /// Token totals per `usage::SCOPES`, read when /usage opens; the last tab shows subscription limits.
+    Usage { tab: usize, totals: [Vec<ModelTotal>; 4] },
     /// The settings a plugin declares in plugin.json; `edit` holds a string being typed.
     PluginSettings { plugin: String, index: usize, edit: Option<Editor> },
     /// A panel a plugin opened with `ui.showPanel`; `data` is its params.
@@ -178,6 +181,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("todos", "Show and edit the todo list"),
     ("plugins", "Install, enable and disable plugins"),
     ("skills", "Enable and disable skills"),
+    ("usage", "Show token usage and subscription limits"),
     ("skill-usage", "Show how often each skill was used, least used first"),
     ("rtk", "Show rtk token savings"),
     ("ps", "Show background terminals"),
@@ -1354,6 +1358,14 @@ impl App {
             "todos" => self.panel = Some(Panel::Todos { index: 0 }),
             "plugins" => self.panel = Some(Panel::Plugins { index: 0 }),
             "skills" => self.panel = Some(Panel::Skills { index: 0 }),
+            "usage" => {
+                self.panel = Some(Panel::Usage { tab: 0, totals: usage::totals(&self.sessions_dir, &self.session_id, crate::now_ms()) });
+                let (client, events) = (self.client.clone(), self.events.clone());
+                std::thread::spawn(move || {
+                    client.refresh_all_usage();
+                    let _ = events.send(Msg::UsageFetched);
+                });
+            }
             "skill-usage" => self.skill_usage(),
             "rtk" => self.rtk_gain(),
             "ps" if self.terminals.lock().unwrap().list.is_empty() => self.system("ps", "No background terminals yet. The agent starts them with bg_start."),
@@ -1616,6 +1628,10 @@ impl App {
                     _ => {}
                 }
             }
+            Some(Panel::Usage { tab, .. }) if matches!(code, KeyCode::Tab | KeyCode::BackTab) => {
+                let tabs = USAGE_TABS.len();
+                *tab = if code == KeyCode::Tab { (*tab + 1) % tabs } else { (*tab + tabs - 1) % tabs };
+            }
             Some(Panel::Skills { index }) => match code {
                 KeyCode::Up => *index = index.saturating_sub(1),
                 KeyCode::Down => *index = (*index + 1).min(self.skills.len().saturating_sub(1)),
@@ -1757,7 +1773,7 @@ impl App {
                     }
                 }
             }
-            Some(Panel::Permission { .. } | Panel::Ask(_) | Panel::Btw | Panel::Login(_) | Panel::Models { .. } | Panel::ContextWindows { .. } | Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Plan { .. } | Panel::PluginSettings { .. } | Panel::Plugin { .. }) | None => {}
+            Some(Panel::Permission { .. } | Panel::Ask(_) | Panel::Btw | Panel::Login(_) | Panel::Models { .. } | Panel::ContextWindows { .. } | Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Plan { .. } | Panel::PluginSettings { .. } | Panel::Plugin { .. } | Panel::Usage { .. }) | None => {}
         }
     }
 
@@ -2274,6 +2290,30 @@ impl App {
                     selected: *index,
                     empty: "No todos.",
                     hint: "↑↓ navigate     space status     d delete     esc close",
+                };
+                view.render(width, PANEL_ROWS)
+            }
+            Panel::Usage { tab, totals } => {
+                let (rows, selected) = match totals.get(*tab) {
+                    Some(totals) => {
+                        let rows = usage_rows(totals);
+                        let total_row = rows.len().saturating_sub(1);
+                        (rows, total_row)
+                    }
+                    None => {
+                        let subscriptions: Vec<AccountView> = self.client.accounts().into_iter().filter(|a| a.oauth).collect();
+                        let (rows, account_rows) = account_rows(&subscriptions, &[]);
+                        (rows, account_rows.first().copied().unwrap_or(0))
+                    }
+                };
+                let view = panel::Panel {
+                    title: "Usage".to_string(),
+                    tabs: &USAGE_TABS,
+                    tab: *tab,
+                    rows: &rows,
+                    selected,
+                    empty: if *tab < usage::SCOPES.len() { "No usage recorded yet." } else { "No subscription accounts." },
+                    hint: "tab scope     esc close",
                 };
                 view.render(width, PANEL_ROWS)
             }
@@ -2892,6 +2932,29 @@ impl Entry {
 fn matching_accounts(accounts: Vec<AccountView>, query: &str) -> Vec<AccountView> {
     let query = query.to_lowercase();
     accounts.into_iter().filter(|a| format!("{} {}", a.name, a.provider).to_lowercase().contains(&query)).collect()
+}
+
+const USAGE_TABS: [&str; 5] = ["Session", "24 hours", "7 days", "All", "Limits"];
+
+/// A column header row, one row per model, and a total row.
+fn usage_rows(totals: &[ModelTotal]) -> Vec<panel::Row> {
+    if totals.is_empty() {
+        return Vec::new();
+    }
+    let row = |left: &str, cells: [String; 5], style| panel::Row {
+        left: left.to_string(),
+        right: vec![span(format!("{:>8}  {:>8}  {:>8}  {:>10}  {:>11}", cells[0], cells[1], cells[2], cells[3], cells[4]), style)],
+    };
+    let counts = |requests: u64, u: &Usage| [requests.to_string(), tokens(u.input), tokens(u.output), tokens(u.cache_read), tokens(u.cache_write)];
+    let mut rows = vec![row("Model", ["Requests", "Input", "Output", "Cache read", "Cache write"].map(String::from), MUTED)];
+    let (mut requests, mut sum) = (0, Usage::default());
+    for total in totals {
+        rows.push(row(&total.model, counts(total.requests, &total.usage), PLAIN));
+        requests += total.requests;
+        sum.add(total.usage);
+    }
+    rows.push(row("Total", counts(requests, &sum), BRIGHT));
+    rows
 }
 
 /// The `/account` table: subscriptions, then API keys, each under a heading row, with columns shared by both groups.
