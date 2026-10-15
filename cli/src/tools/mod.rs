@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::io::Read;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +21,7 @@ use rtk::Rtk;
 
 pub const MAX_LINES: usize = 2000;
 pub const MAX_BYTES: usize = 50 * 1024;
+const MAX_COLUMNS: usize = 500;
 
 const SCHEMAS: &str = include_str!("tools.json");
 
@@ -55,8 +56,8 @@ pub fn run(name: &str, input: &Value, cwd: &Path, anchors: &mut Anchors, rtk: &R
         "copy" => anchors.copy(input),
         "move" => anchors.move_lines(input),
         "undo_last_change" => anchors.undo(cwd, input),
-        "rg" => rg_args(input).and_then(|args| search("rg", &args, cwd)),
-        "fd" => fd_args(input).and_then(|args| search("fd", &args, cwd)),
+        "rg" => rg(input, cwd, anchors),
+        "fd" => fd(input, cwd),
         _ => Err(format!("Tool {name} not found")),
     };
     match result {
@@ -134,9 +135,9 @@ fn write(input: &Value, cwd: &Path, anchors: &mut Anchors) -> Result<String, Str
     Ok(format!("Successfully wrote to {}\n\n\n--- Auto-read (hashline anchors) ---\n{rows}", path.display()))
 }
 
-/// pi file-search's rg argv: the pattern after `--`, counts clamped, lines cut at 500 columns.
+/// pi file-search's rg argv as JSON events: the pattern after `--`, counts clamped.
 fn rg_args(input: &Value) -> Result<Vec<String>, String> {
-    let mut args: Vec<String> = ["--line-number", "--color=never", "--no-heading", "--with-filename", "--max-columns", "500", "--max-columns-preview"].map(String::from).to_vec();
+    let mut args = vec!["--json".to_string()];
     args.push(match input["case_sensitive"].as_bool() {
         Some(true) => "--case-sensitive".into(),
         Some(false) => "--ignore-case".into(),
@@ -210,19 +211,62 @@ fn search_path(input: &Value) -> Option<String> {
     (!path.is_empty()).then_some(path)
 }
 
+fn rg(input: &Value, cwd: &Path, anchors: &mut Anchors) -> Result<String, String> {
+    let rows = rg_rows(&search("rg", &rg_args(input)?, cwd)?, cwd, anchors)?;
+    Ok(if rows.is_empty() { "No matches found".into() } else { truncate_search(rows, "rg") })
+}
+
+/// rg's JSON events as `path:anchor│line` rows, `path-anchor│line` for context, so an edit can follow without a read.
+/// A file the anchors cannot track (binary, not UTF-8) shows line numbers instead.
+fn rg_rows(json: &str, cwd: &Path, anchors: &mut Anchors) -> Result<String, String> {
+    let mut rows = Vec::new();
+    let mut tracked: Option<PathBuf> = None;
+    for line in json.lines() {
+        let event: Value = serde_json::from_str(line).map_err(|e| format!("Cannot parse rg output: {e}"))?;
+        let data = &event["data"];
+        let path = data["path"]["text"].as_str().unwrap_or_default();
+        let separator = match event["type"].as_str() {
+            Some("begin") => {
+                tracked = cwd.join(path).canonicalize().ok().filter(|file| anchors.track(file).is_ok());
+                continue;
+            }
+            Some("match") => ':',
+            Some("context") => '-',
+            _ => continue,
+        };
+        let number = data["line_number"].as_u64().unwrap_or_default() as usize;
+        let mark = match tracked.as_deref().and_then(|file| anchors.line_anchor(file, number)) {
+            Some(anchor) => format!("{anchor}│"),
+            None => format!("{number}{separator}"),
+        };
+        let text = data["lines"]["text"].as_str().map_or("[line is not UTF-8]", |text| text.trim_end_matches(['\n', '\r']));
+        rows.push(format!("{path}{separator}{mark}{}", cut_columns(text)));
+    }
+    Ok(rows.join("\n"))
+}
+
+/// rg ignores --max-columns in JSON mode, so long lines are cut here, the way its preview cuts them.
+fn cut_columns(text: &str) -> String {
+    match text.char_indices().nth(MAX_COLUMNS) {
+        Some((end, _)) => format!("{} [... omitted end of long line]", &text[..end]),
+        None => text.to_string(),
+    }
+}
+
+fn fd(input: &Value, cwd: &Path) -> Result<String, String> {
+    let files = search("fd", &fd_args(input)?, cwd)?;
+    Ok(if files.is_empty() { "No files found".into() } else { truncate_search(files, "fd") })
+}
+
 fn search(program: &str, args: &[String], cwd: &Path) -> Result<String, String> {
     let output = Command::new(program).args(args).current_dir(cwd).stdin(Stdio::null()).output().map_err(|e| format!("Cannot run {program}: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim_end_matches('\n').to_string();
     let code = output.status.code().unwrap_or(-1);
     // rg exits 1 for "no matches"; fd exits 0 even with no results.
-    if stdout.is_empty() && (code == 0 || (program == "rg" && code == 1)) {
-        return Ok(if program == "rg" { "No matches found" } else { "No files found" }.into());
-    }
-    if code != 0 {
+    if code != 0 && !(program == "rg" && code == 1) {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(format!("{program} failed: {}", if stderr.is_empty() { format!("exit code {code}") } else { stderr }));
     }
-    Ok(truncate_search(stdout, program))
+    Ok(String::from_utf8_lossy(&output.stdout).trim_end_matches('\n').to_string())
 }
 
 /// pi file-search's page: the first MAX_LINES / MAX_BYTES, with the full output in a temp file.
@@ -354,11 +398,30 @@ mod tests {
     }
 
     #[test]
+    fn rg_rows_carry_anchors_that_replace_accepts_without_a_read() {
+        let dir = std::env::temp_dir().join(format!("agent-rg-anchors-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "alpha\nbeta\ngamma\n").unwrap();
+        let mut anchors = Anchors::new("");
+        let abort = Arc::new(AtomicBool::new(false));
+        let (found, is_error) = run("rg", &json!({"pattern": "beta", "context": 1}), &dir, &mut anchors, &Rtk::OFF, &abort);
+        assert!(!is_error, "{found}");
+        let rows: Vec<&str> = found.lines().collect();
+        assert_eq!(rows.len(), 3, "{found}");
+        assert!(rows[0].starts_with("a.txt-") && rows[0].ends_with("│alpha"), "{found}");
+        let anchor = rows[1].strip_prefix("a.txt:").and_then(|row| row.strip_suffix("│beta")).expect(&found);
+        let (replaced, is_error) = run("replace", &json!({"remove_from": anchor, "remove_to": anchor, "text": "BETA"}), &dir, &mut anchors, &Rtk::OFF, &abort);
+        assert!(!is_error, "{replaced}");
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "alpha\nBETA\ngamma\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn search_arguments_match_pi_file_search() {
         let rg = rg_args(&json!({"pattern": "-x", "path": "@src", "context": 50, "limit": 5000, "case_sensitive": false, "glob": "*.rs"})).unwrap();
         assert_eq!(
             rg.join(" "),
-            "--line-number --color=never --no-heading --with-filename --max-columns 500 --max-columns-preview --ignore-case --context 20 --glob *.rs --max-count 1000 -- -x src"
+            "--json --ignore-case --context 20 --glob *.rs --max-count 1000 -- -x src"
         );
         let fd = fd_args(&json!({"type": "file", "extension": ".rs", "max_depth": 0, "limit": 0})).unwrap();
         assert_eq!(fd.join(" "), "--color=never --type f --extension rs --max-depth 1 --max-results 1 -- ");

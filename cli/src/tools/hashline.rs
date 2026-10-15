@@ -115,6 +115,18 @@ impl Anchors {
         Change { start: prefix, removed, added }
     }
 
+    /// Syncs a canonical `path` from disk so search rows can carry its anchors.
+    pub fn track(&mut self, path: &Path) -> Result<(), String> {
+        let text = Text::load(path)?;
+        self.sync(path, text.lines);
+        Ok(())
+    }
+
+    /// The anchor of 1-based line `number` in a tracked file.
+    pub fn line_anchor(&self, path: &Path, number: usize) -> Option<&str> {
+        self.files.get(path)?.anchors.get(number.checked_sub(1)?).map(String::as_str)
+    }
+
     pub fn read(&mut self, cwd: &Path, input: &Value) -> Result<String, String> {
         if let Some(paths) = input["paths"].as_array() {
             return self.read_many(cwd, paths);
@@ -185,8 +197,7 @@ impl Anchors {
     }
 
     pub fn written(&mut self, path: &Path) -> Result<String, String> {
-        let text = Text::load(path)?;
-        self.sync(path, text.lines);
+        self.track(path)?;
         Ok(self.rows(path, 0, None))
     }
 

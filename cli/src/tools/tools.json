@@ -628,7 +628,7 @@
   },
   {
     "name": "rg",
-    "description": "Search file contents with ripgrep. Uses smart-case matching, respects .gitignore by default, and returns at most 100 matches per file unless a different limit is given. Output is limited to 2000 lines or 50KB; complete truncated output is saved to a temporary file.",
+    "description": "Search file contents with ripgrep. Uses smart-case matching, respects .gitignore by default, and returns at most 100 matches per file unless a different limit is given. Rows are `path:anchor│line` for matches and `path-anchor│line` for context; the anchors work in replace, insert and the other edit tools without a read. Output is limited to 2000 lines or 50KB; complete truncated output is saved to a temporary file.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
