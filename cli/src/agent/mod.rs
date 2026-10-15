@@ -615,7 +615,7 @@ impl Agent {
         if !self.condense.enabled {
             return;
         }
-        let calls = condense::select(calls, self.condense.min_batch_chars);
+        let calls = condense::select(calls, self.condense.min_batch_chars, self.last_context_tokens);
         if calls.is_empty() {
             return;
         }

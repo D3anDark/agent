@@ -18,6 +18,8 @@ Begin the first bullet of each tool call with that tool's [[N:toolname]] label, 
 const HEAD_CHARS: usize = 4000;
 const TAIL_CHARS: usize = 4000;
 const PROTECTED_TOOLS: [&str; 4] = ["context_tree_query", "ask_user_question", "todo", "get_goal"];
+// Below this a cached tool output costs 0.1x input, so a summary saves little and costs a context_tree_query turn when the model needs the original back.
+const MIN_CONTEXT_TOKENS: u64 = 60_000;
 
 pub struct Config {
     pub enabled: bool,
@@ -49,8 +51,11 @@ pub struct Condensed {
     pub summary: String,
 }
 
-/// The calls worth summarizing: unprotected ones, and only when their outputs reach `min_chars` together.
-pub fn select(calls: Vec<Call>, min_chars: usize) -> Vec<Call> {
+/// The calls worth summarizing: unprotected ones, once the context reaches MIN_CONTEXT_TOKENS and their outputs reach `min_chars` together.
+pub fn select(calls: Vec<Call>, min_chars: usize, context_tokens: u64) -> Vec<Call> {
+    if context_tokens < MIN_CONTEXT_TOKENS {
+        return Vec::new();
+    }
     let selected: Vec<Call> = calls.into_iter().filter(|call| !is_protected(call)).collect();
     let total: usize = selected.iter().map(|call| call.output.chars().count()).sum();
     if total < min_chars { Vec::new() } else { selected }
@@ -214,13 +219,21 @@ mod tests {
 
     #[test]
     fn selection_skips_small_batches_and_protected_calls() {
-        assert!(select(vec![call("a", "bash", json!({}), &"x".repeat(999))], 1000).is_empty());
+        assert!(select(vec![call("a", "bash", json!({}), &"x".repeat(999))], 1000, MIN_CONTEXT_TOKENS).is_empty());
         let skill = json!({"path": "/u/.pi/agent/skills/tdd/SKILL.md"});
         let picked = select(
             vec![call("a", "read", skill, &"x".repeat(5000)), call("b", "todo", json!({}), &"x".repeat(5000)), call("c", "bash", json!({}), &"x".repeat(1000))],
             1000,
+            MIN_CONTEXT_TOKENS,
         );
         assert_eq!(picked.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["c"]);
+    }
+
+    #[test]
+    fn selection_waits_until_the_context_is_large() {
+        let big = || vec![call("a", "bash", json!({}), &"x".repeat(50_000))];
+        assert!(select(big(), 1000, MIN_CONTEXT_TOKENS - 1).is_empty());
+        assert_eq!(select(big(), 1000, MIN_CONTEXT_TOKENS).len(), 1);
     }
 
     #[test]
