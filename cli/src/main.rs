@@ -202,6 +202,7 @@ fn run(options: Options) -> Result<(), String> {
         condensed: Vec::new(),
         next_ref: 1,
         pending_condense: Vec::new(),
+        pending_title: None,
         usage: Usage::default(),
         turns: 0,
         tool_calls: 0,

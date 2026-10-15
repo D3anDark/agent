@@ -92,6 +92,8 @@ pub enum Event {
     TurnEnd { usage: Usage },
     Compacted { summary: String },
     SessionStarted { id: String, path: Option<String> },
+    /// The session's `project｜topic` name, saved to `session_info`.
+    Titled(String),
     /// Ask mode: the agent waits for one Decision on `reply`.
     Permission { request: Request, reply: Sender<Decision> },
     /// Auto mode: what the reviewer decided.
@@ -140,6 +142,7 @@ pub struct Agent {
     /// Number of the next short ref (`t7`).
     pub next_ref: usize,
     pub pending_condense: Vec<JoinHandle<Result<(Condensed, Usage), String>>>,
+    pub pending_title: Option<JoinHandle<Result<String, String>>>,
     pub usage: Usage,
     pub turns: u64,
     pub tool_calls: u64,
@@ -280,6 +283,12 @@ impl Agent {
         if result.is_err() && self.turns == turns_before {
             // No reply means the API refused this prompt (e.g. a 400 on its image); resending it would fail again.
             self.rewind(self.messages.len() - 1)?;
+        }
+        // A title is cosmetic: on failure /resume falls back to the first prompt line, and one still naming waits for the next prompt.
+        if let Some(naming) = self.pending_title.take_if(|naming| naming.is_finished())
+            && let Ok(Ok(title)) = naming.join()
+        {
+            emit(Event::Titled(title));
         }
         self.plugins.event(json!({"type": "prompt_end", "error": result.as_ref().err(), "context": self.plugin_context()}));
         result
@@ -701,20 +710,23 @@ impl Agent {
         Ok(ask::response(&questions, &answers.recv().unwrap_or_default()))
     }
 
-    /// Names a fresh session from its first prompt on a background thread, as /rename would.
-    fn start_naming(&self, text: &str) {
+    /// Names a fresh session from its first prompt on a background thread; `prompt` emits the title once it is ready.
+    fn start_naming(&mut self, text: &str) {
+        let request = self.naming_request(text);
+        let (client, session, cwd) = (self.client.clone(), self.session.clone(), self.cwd.clone());
+        self.pending_title = Some(std::thread::spawn(move || name_session(&client, &session, &cwd, &request)));
+    }
+
+    /// /rename-title: names the session again from its first prompt.
+    pub fn rename_title(&self) -> Result<String, String> {
+        let first = self.messages.iter().find(|m| m["role"] == "user" && m["content"][0]["type"] == "text");
+        let Some(text) = first.and_then(|m| m["content"][0]["text"].as_str()) else { return Err("Nothing to name yet.".into()) };
+        name_session(&self.client, &self.session, &self.cwd, &self.naming_request(text))
+    }
+
+    fn naming_request(&self, text: &str) -> Value {
         let prompt: String = text.chars().take(2000).collect();
-        let request = api::plain_request(&self.cheap_model, NAMING_SYSTEM, &prompt, 1000);
-        let (client, session) = (self.client.clone(), self.session.clone());
-        std::thread::spawn(move || {
-            // A name is cosmetic: on failure /resume falls back to the first prompt line.
-            let Ok(reply) = client.send(&request, &AtomicBool::new(false), &mut |_| {}) else { return };
-            let text = text_of(&reply.message);
-            let name = text.lines().next().unwrap_or_default().trim().trim_matches('"');
-            if !name.is_empty() {
-                let _ = session.rename(name);
-            }
-        });
+        api::plain_request(&self.cheap_model, NAMING_SYSTEM, &prompt, 1000)
     }
 
     /// Summarizes the turn's tool results on a background thread; the next request picks the summary up.
@@ -1360,6 +1372,24 @@ fn text_of(message: &Value) -> String {
     blocks.filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n")
 }
 
+/// Asks `request`'s model for a topic and saves `project｜topic` as the session name.
+fn name_session(client: &Client, session: &Session, cwd: &Path, request: &Value) -> Result<String, String> {
+    let reply = client.send(request, &AtomicBool::new(false), &mut |_| {})?;
+    let text = text_of(&reply.message);
+    let topic = text.lines().next().unwrap_or_default().trim().trim_matches('"');
+    if topic.is_empty() {
+        return Err("The model gave no title.".into());
+    }
+    let title = session_title(cwd, topic);
+    session.rename(&title)?;
+    Ok(title)
+}
+
+fn session_title(cwd: &Path, topic: &str) -> String {
+    let project = cwd.file_name().unwrap_or_default().to_string_lossy();
+    format!("{project}｜{topic}").chars().take(80).collect()
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1507,6 +1537,13 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(files, RestoredFiles { restored: vec!["a.txt".into(), "new.txt".into()], kept: vec!["shared.txt".into()] });
         assert_eq!(state, [Some("v2".into()), None, Some("mine".into()), Some("user".into()), Some("another session".into())]);
+    }
+
+    #[test]
+    fn session_title_prefixes_the_project_and_cuts_at_80_code_points() {
+        assert_eq!(session_title(Path::new("/src/agent"), "Fix /changes diff view"), "agent｜Fix /changes diff view");
+        let title = session_title(Path::new("/src/zażółć"), &"ę".repeat(100));
+        assert_eq!(title, format!("zażółć｜{}", "ę".repeat(73)));
     }
 
     #[test]

@@ -21,7 +21,7 @@ pub fn sequence(title: &str, body: &str, env: impl Fn(&str) -> Option<String>) -
 }
 
 /// Control characters would end the sequence early and let the rest of the text drive the terminal.
-fn printable(text: &str) -> String {
+pub fn printable(text: &str) -> String {
     let line = text.lines().find(|line| !line.trim().is_empty()).unwrap_or_default();
     line.chars().filter(|c| !c.is_control()).take(120).collect::<String>().replace(';', ",")
 }

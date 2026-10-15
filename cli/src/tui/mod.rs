@@ -145,6 +145,7 @@ enum Command {
     /// Starts a fresh conversation with this prompt.
     Fresh(String),
     Rename(String),
+    RenameTitle,
     Resume(String),
     Worktree(PathBuf),
     Clone,
@@ -174,6 +175,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("clear", "start a fresh conversation"),
     ("resume", "resume a saved session"),
     ("rename", "rename the current session"),
+    ("rename-title", "Name the session again from its first prompt"),
     ("clone", "Duplicate the current session at the current position"),
     ("import", "<file.jsonl> — Import and resume a session from a JSONL file"),
     ("export", "[path] — Export session: .jsonl (default) or .md for plain text"),
@@ -487,6 +489,16 @@ fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Ms
                 Command::Rename(name) => {
                     if let Err(error) = agent.session.rename(&name) {
                         let _ = events.send(Msg::Agent(Event::Notice(error)));
+                    }
+                    continue;
+                }
+                Command::RenameTitle => {
+                    match agent.rename_title() {
+                        Ok(title) => {
+                            let _ = events.send(Msg::Agent(Event::Notice(format!("Renamed to {title}"))));
+                            let _ = events.send(Msg::Agent(Event::Titled(title)));
+                        }
+                        Err(error) => _ = events.send(Msg::Agent(Event::Notice(error))),
                     }
                     continue;
                 }
@@ -1354,8 +1366,10 @@ impl App {
             "rename" if args.is_empty() => self.push(Item::Error("Usage: /rename <name>".into())),
             "rename" => {
                 let _ = self.commands.send(Command::Rename(args.to_string()));
+                set_terminal_title(args);
                 self.system("session", format!("Renamed to {args}"));
             }
+            "rename-title" => _ = self.commands.send(Command::RenameTitle),
             "clone" => self.start(Command::Clone),
             "import" if args.is_empty() => self.push(Item::Error("Usage: /import <file.jsonl>".into())),
             "import" => self.start(Command::Import(self.cwd.join(args))),
@@ -2689,6 +2703,7 @@ impl App {
                 self.last_usage = usage;
                 self.prompt_usage.add(usage);
             }
+            Event::Titled(title) => set_terminal_title(&title),
             Event::SessionStarted { id, path } => {
                 self.session_id = id;
                 self.session_path = path;
@@ -3217,6 +3232,12 @@ fn command_args<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 fn report_cwd(cwd: &Path) {
     let url = cwd.display().to_string().replace('%', "%25").replace(' ', "%20");
     print!("\x1b]7;file://{url}\x1b\\");
+    let _ = std::io::stdout().flush();
+}
+
+/// OSC 0 sets the terminal's window and tab title.
+fn set_terminal_title(title: &str) {
+    print!("\x1b]0;{}\x07", notify::printable(title));
     let _ = std::io::stdout().flush();
 }
 
