@@ -8,6 +8,7 @@ mod render;
 mod login;
 mod selection;
 mod notify;
+mod history;
 mod voice;
 
 use crossterm::event::{
@@ -118,6 +119,8 @@ enum Panel {
     Login(login::Login),
     /// /account pins the chosen account, /logout removes it. Typing filters by name or provider.
     Accounts { logout: bool, query: Editor, index: usize },
+    /// /history: saved prompts, newest first. Typing filters, Enter puts the prompt in the editor.
+    History { prompts: Vec<String>, query: Editor, index: usize },
     /// Double Esc while idle: the prompts from `agent::rewind_points` to go back to.
     Rewind { index: usize, points: Vec<RewindPoint> },
     /// What to do with the plan from plan_mode_complete, opened when its turn ends or by /plan.
@@ -182,6 +185,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("plugins", "Install, enable and disable plugins"),
     ("skills", "Enable and disable skills"),
     ("usage", "Show token usage and subscription limits"),
+    ("history", "Search previous prompts"),
     ("skill-usage", "Show how often each skill was used, least used first"),
     ("rtk", "Show rtk token savings"),
     ("ps", "Show background terminals"),
@@ -644,13 +648,15 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
 impl App {
     fn new(agent: &Agent, setup: Setup, commands: Sender<Command>, events: Sender<Msg>) -> App {
         let Setup { home, settings, catalog, skills, templates, modes_error, .. } = setup;
+        let mut recent_prompts = history::load(&home.join(".agents"));
+        recent_prompts.drain(..recent_prompts.len().saturating_sub(100));
         let mut slash_commands: Vec<(String, String)> = BUILTIN_COMMANDS.iter().map(|(name, description)| (name.to_string(), description.to_string())).collect();
         for template in &templates {
             slash_commands.push((template.name.clone(), template.description.clone()));
         }
         let mut app = App {
             entries: Vec::new(),
-            editor: Editor::new(),
+            editor: Editor::with_history(recent_prompts),
             commands,
             working: None,
             recording: None,
@@ -968,7 +974,7 @@ impl App {
         match self.panel.as_mut() {
             Some(Panel::Login(login)) => login.paste(text),
             Some(Panel::Ask(ask)) => ask.paste(&line),
-            Some(Panel::Models { query, index, .. } | Panel::ContextWindows { query, index, .. } | Panel::Accounts { query, index, .. }) => {
+            Some(Panel::Models { query, index, .. } | Panel::ContextWindows { query, index, .. } | Panel::Accounts { query, index, .. } | Panel::History { query, index, .. }) => {
                 query.insert(&line);
                 *index = 0;
             }
@@ -1041,6 +1047,9 @@ impl App {
                     return;
                 }
                 let text = self.editor.take();
+                if let Err(error) = history::append(&self.home.join(".agents"), &text) {
+                    self.push(Item::Error(error));
+                }
                 self.submit(text);
             }
             KeyCode::Esc if self.working.is_some() => self.abort.store(true, Ordering::Relaxed),
@@ -1358,6 +1367,11 @@ impl App {
             "todos" => self.panel = Some(Panel::Todos { index: 0 }),
             "plugins" => self.panel = Some(Panel::Plugins { index: 0 }),
             "skills" => self.panel = Some(Panel::Skills { index: 0 }),
+            "history" => {
+                let mut prompts = history::load(&self.home.join(".agents"));
+                prompts.reverse();
+                self.panel = Some(Panel::History { prompts, query: Editor::new(), index: 0 });
+            }
             "usage" => {
                 self.panel = Some(Panel::Usage { tab: 0, totals: usage::totals(&self.sessions_dir, &self.session_id, crate::now_ms()) });
                 let (client, events) = (self.client.clone(), self.events.clone());
@@ -1743,6 +1757,23 @@ impl App {
                 }
                 _ => {}
             },
+            Some(Panel::History { prompts, query, index }) => {
+                let matches = matching_prompts(prompts, &query.text());
+                match code {
+                    KeyCode::Up => *index = index.saturating_sub(1),
+                    KeyCode::Down => *index = (*index + 1).min(matches.len().saturating_sub(1)),
+                    KeyCode::Enter => {
+                        let Some(prompt) = matches.get(*index).map(|prompt| prompt.to_string()) else { return };
+                        self.panel = None;
+                        self.editor.set(&prompt);
+                    }
+                    _ => {
+                        if query.edit_key(key) {
+                            *index = 0;
+                        }
+                    }
+                }
+            }
             Some(Panel::Accounts { logout, query, index }) => {
                 let accounts = matching_accounts(self.client.accounts(), &query.text());
                 let logout = *logout;
@@ -2453,6 +2484,19 @@ impl App {
                 };
                 view.render(width, PANEL_ROWS)
             }
+            Panel::History { prompts, query, index } => {
+                let rows: Vec<panel::Row> = matching_prompts(prompts, &query.text()).iter().map(|prompt| panel::Row { left: prompt.split_whitespace().collect::<Vec<_>>().join(" "), right: Vec::new() }).collect();
+                let view = panel::Panel {
+                    title: format!("History {}", query.field(None)),
+                    tabs: &[],
+                    tab: 0,
+                    rows: &rows,
+                    selected: *index,
+                    empty: "No matching prompts.",
+                    hint: "↑↓ navigate     enter insert     esc close",
+                };
+                view.render(width, PANEL_ROWS)
+            }
             Panel::Accounts { logout, query, index } => {
                 let accounts = matching_accounts(self.client.accounts(), &query.text());
                 let (rows, account_rows) = account_rows(&accounts, &self.plugins.account_labels());
@@ -2932,6 +2976,11 @@ impl Entry {
 fn matching_accounts(accounts: Vec<AccountView>, query: &str) -> Vec<AccountView> {
     let query = query.to_lowercase();
     accounts.into_iter().filter(|a| format!("{} {}", a.name, a.provider).to_lowercase().contains(&query)).collect()
+}
+
+fn matching_prompts<'a>(prompts: &'a [String], query: &str) -> Vec<&'a str> {
+    let query = query.to_lowercase();
+    prompts.iter().filter(|prompt| prompt.to_lowercase().contains(&query)).map(String::as_str).collect()
 }
 
 const USAGE_TABS: [&str; 5] = ["Session", "24 hours", "7 days", "All", "Limits"];

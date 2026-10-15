@@ -31,6 +31,11 @@ impl Editor {
         Editor { lines: vec![String::new()], ..Default::default() }
     }
 
+    /// An empty editor whose Up arrow starts from `history`, oldest first.
+    pub fn with_history(history: Vec<String>) -> Editor {
+        Editor { history, ..Editor::new() }
+    }
+
     pub fn from_text(text: &str) -> Editor {
         let mut editor = Editor::new();
         editor.set(text);
