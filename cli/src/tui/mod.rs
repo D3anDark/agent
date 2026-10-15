@@ -2273,6 +2273,7 @@ impl App {
                     title: format!("Sessions {}", rows.len()),
                     tabs: &["Current workspace", "All workspaces"],
                     tab: usize::from(*all),
+                    search: None,
                     rows: &rows,
                     selected: *index,
                     empty: "No saved sessions.",
@@ -2285,9 +2286,10 @@ impl App {
                 let values = self.setting_values();
                 let rows: Vec<panel::Row> = matches.iter().map(|&r| panel::Row { left: SETTING_NAMES[r].to_string(), right: values[r].clone() }).collect();
                 let view = panel::Panel {
-                    title: format!("Settings {}", query.field(None)),
+                    title: "Settings".into(),
                     tabs: &[],
                     tab: 0,
+                    search: Some(query.field(None)),
                     rows: &rows,
                     selected: matches.iter().position(|r| r == row).unwrap_or(0),
                     empty: "No matching settings.",
@@ -2305,11 +2307,11 @@ impl App {
                         panel::Row { left: model.id.clone(), right }
                     })
                     .collect();
-                let search = if *tab == 1 { query.field(None) } else { String::new() };
                 let view = panel::Panel {
-                    title: format!("Context window {search}"),
+                    title: "Context window".into(),
                     tabs: &["Providers", "Models"],
                     tab: *tab,
+                    search: (*tab == 1).then(|| query.field(None)),
                     rows: &rows,
                     selected: *index,
                     empty: "No matching models.",
@@ -2326,9 +2328,10 @@ impl App {
                     })
                     .collect();
                 let view = panel::Panel {
-                    title: format!("{} {}", SETTING_NAMES[*row], query.field(None)),
+                    title: SETTING_NAMES[*row].into(),
                     tabs: &[],
                     tab: 0,
+                    search: Some(query.field(None)),
                     rows: &rows,
                     selected: *index,
                     empty: "No matching models.",
@@ -2350,6 +2353,7 @@ impl App {
                     title: format!("Subagents {}", rows.len()),
                     tabs: &[],
                     tab: 0,
+                    search: None,
                     rows: &rows,
                     selected: *index,
                     empty: "",
@@ -2368,6 +2372,7 @@ impl App {
                     title: format!("Background terminals {}", rows.len()),
                     tabs: &[],
                     tab: 0,
+                    search: None,
                     rows: &rows,
                     selected: *index,
                     empty: "",
@@ -2385,6 +2390,7 @@ impl App {
                     title: format!("Todos {}", rows.len()),
                     tabs: &[],
                     tab: 0,
+                    search: None,
                     rows: &rows,
                     selected: *index,
                     empty: "No todos.",
@@ -2409,6 +2415,7 @@ impl App {
                     title: "Usage".to_string(),
                     tabs: &USAGE_TABS,
                     tab: *tab,
+                    search: None,
                     rows: &rows,
                     selected,
                     empty: if *tab < usage::SCOPES.len() { "No usage recorded yet." } else { "No subscription accounts." },
@@ -2432,6 +2439,7 @@ impl App {
                     title: "Skills".into(),
                     tabs: &[],
                     tab: 0,
+                    search: None,
                     rows: &rows,
                     selected: *index,
                     empty: "No skills. Add one under ~/.agents/skills/<name>/SKILL.md.",
@@ -2459,6 +2467,7 @@ impl App {
                     title: "Plugins".into(),
                     tabs: &[],
                     tab: 0,
+                    search: None,
                     rows: &rows,
                     selected: *index,
                     empty: "No plugins. Install one with `agent plugin install <path>`.",
@@ -2486,6 +2495,7 @@ impl App {
                     title: format!("{plugin} settings"),
                     tabs: &[],
                     tab: 0,
+                    search: None,
                     rows: &rows,
                     selected: *index,
                     empty: "This plugin has no settings.",
@@ -2505,6 +2515,7 @@ impl App {
                     title: data["title"].as_str().unwrap_or(plugin).to_string(),
                     tabs: &[],
                     tab: 0,
+                    search: None,
                     rows: &rows,
                     selected: *index,
                     empty: "Nothing here.",
@@ -2528,6 +2539,7 @@ impl App {
                     title: if *remove { "Remove worktree".into() } else { "Move session to worktree".into() },
                     tabs: &[],
                     tab: 0,
+                    search: None,
                     rows: &rows,
                     selected: *index,
                     empty: "",
@@ -2545,6 +2557,7 @@ impl App {
                     title: "Rewind".into(),
                     tabs: &[],
                     tab: 0,
+                    search: None,
                     rows: &rows,
                     selected: *index,
                     empty: "",
@@ -2558,6 +2571,7 @@ impl App {
                     title: "Changes".into(),
                     tabs: &[],
                     tab: 0,
+                    search: None,
                     rows: &rows,
                     selected: *index,
                     empty: "",
@@ -2571,9 +2585,10 @@ impl App {
                     .map(|prompt| panel::Row { left: prompt.split_whitespace().collect::<Vec<_>>().join(" "), right: Vec::new() })
                     .collect();
                 let view = panel::Panel {
-                    title: format!("History {}", query.field(None)),
+                    title: "History".into(),
                     tabs: &history::SCOPES,
                     tab: *tab,
+                    search: Some(query.field(None)),
                     rows: &rows,
                     selected: *index,
                     empty: "No matching prompts.",
@@ -2585,9 +2600,10 @@ impl App {
                 let accounts = matching_accounts(self.client.accounts(), &query.text());
                 let (rows, account_rows) = account_rows(&accounts, &self.plugins.account_labels());
                 let view = panel::Panel {
-                    title: format!("{} {}", if *logout { "Remove account" } else { "Accounts" }, query.field(None)),
+                    title: if *logout { "Remove account" } else { "Accounts" }.into(),
                     tabs: &[],
                     tab: 0,
+                    search: Some(query.field(None)),
                     rows: &rows,
                     selected: account_rows.get(*index).copied().unwrap_or(0),
                     empty: "No matching accounts.",

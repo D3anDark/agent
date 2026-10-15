@@ -153,7 +153,7 @@ impl Login {
             }
             Login::Choose { api, query, .. } => {
                 let rows = methods(*api, query).iter().map(|c| panel::Row { left: c.to_string(), right: Vec::new() }).collect();
-                (format!("{} {}", KINDS[*api as usize], query.field(None)).into(), rows, "type to search     ↑↓ navigate     enter choose     esc back")
+                (KINDS[*api as usize].into(), rows, "type to search     ↑↓ navigate     enter choose     esc back")
             }
             Login::ClaudeCode { input, .. } => ("Claude login".into(), vec![field("Code", input.field(Some('•')))], "paste the code#state shown after sign-in     enter continue     ctrl+y copy link     esc cancel"),
             Login::ApiKey { input } => ("Anthropic API key".into(), vec![field("Key", input.field(Some('•')))], "paste the key     enter continue     esc cancel"),
@@ -161,7 +161,8 @@ impl Login {
             Login::Name { input, .. } => ("Account name".into(), vec![field("Name", input.field(None))], "enter save     esc cancel"),
         };
         let selected = if let Login::Kind { index } | Login::Choose { index, .. } = self { *index } else { 0 };
-        let view = panel::Panel { title: title.into(), tabs: &[], tab: 0, rows: &rows, selected, empty: "No matching login methods.", hint };
+        let search = if let Login::Choose { query, .. } = self { Some(query.field(None)) } else { None };
+        let view = panel::Panel { title: title.into(), tabs: &[], tab: 0, search, rows: &rows, selected, empty: "No matching login methods.", hint };
         let mut lines = view.render(width, max_rows);
         if let Some(url) = self.url() {
             // The whole link, wrapped, so it can be read or copied even when the browser did not open.
