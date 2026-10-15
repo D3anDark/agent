@@ -14,8 +14,8 @@ Plan mode is on. Investigate and design, change nothing. Edits, subagents and st
 
 pub const IMPLEMENT: &str = "Implement the plan.";
 
-const ALLOWED_TOOLS: [&str; 15] = [
-    "read", "rg", "fd", "bash", "context_tree_query", "ask_user_question", "todo", "get_goal", "load_tools", "bg_status", "bg_list",
+const ALLOWED_TOOLS: [&str; 16] = [
+    "read", "rg", "fd", "search_external_files", "bash", "context_tree_query", "ask_user_question", "todo", "get_goal", "load_tools", "bg_status", "bg_list",
     "web_search", "fetch_content", "get_search_content", "plan_mode_complete",
 ];
 

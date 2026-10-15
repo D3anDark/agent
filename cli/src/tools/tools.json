@@ -627,6 +627,40 @@
     }
   },
   {
+    "name": "add_directory",
+    "description": "Add a directory outside the working directory for this session, so search_external_files can find files in it. Returns the directory's AGENTS.md and the skills in its .agents/skills. Read and edit its files with the usual tools by absolute path.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Directory to add, absolute, relative to the working directory, or starting with ~/.",
+          "type": "string"
+        }
+      },
+      "required": ["path"]
+    }
+  },
+  {
+    "name": "search_external_files",
+    "description": "Find files by glob in the directories add_directory added, searched in the order they were added. Results are absolute paths grouped per directory, and stop at maxResults files in total.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "description": "Glob on the file name, e.g. '*.md'. A pattern with / matches the path below each directory, e.g. 'docs/**/*.md'.",
+          "type": "string"
+        },
+        "maxResults": {
+          "description": "Maximum files across all directories (1-1000). Defaults to 50.",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": ["pattern"]
+    }
+  },
+  {
     "name": "rg",
     "description": "Search file contents with ripgrep. Uses smart-case matching, respects .gitignore by default, and returns at most 100 matches per file unless a different limit is given. Rows are `path:anchor│line` for matches and `path-anchor│line` for context; the anchors work in replace, insert and the other edit tools without a read. Output is limited to 2000 lines or 50KB; complete truncated output is saved to a temporary file.",
     "eager_input_streaming": true,

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 pub mod ask;
 pub mod bg;
+pub mod external;
 pub mod goal;
 pub mod hashline;
 pub mod plan;

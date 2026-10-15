@@ -161,6 +161,8 @@ pub struct Agent {
     pub subagent_effort: String,
     /// Tool groups load_tools added; the base set is always on.
     pub loaded_groups: Vec<String>,
+    /// Directories add_directory opened to search_external_files.
+    pub extra_dirs: Vec<PathBuf>,
     pub spent: Spent,
     /// False in print mode: tools that need the user fail instead of waiting.
     pub interactive: bool,
@@ -208,6 +210,7 @@ pub struct History {
     pub todos: Todos,
     pub goal: Option<Goal>,
     pub loaded_groups: Vec<String>,
+    pub extra_dirs: Vec<PathBuf>,
     pub spent: Spent,
     pub checkpoints: Vec<Checkpoint>,
 }
@@ -442,6 +445,8 @@ impl Agent {
             "plan_mode_complete" => self.complete_plan(input),
             "create_goal" | "get_goal" | "update_goal" => self.goal_tool(name, input),
             "load_tools" => self.load_tools(input),
+            "add_directory" => self.add_directory(input),
+            "search_external_files" => tools::external::search(&self.extra_dirs, input),
             "bg_start" | "bg_status" | "bg_list" => self.terminals.lock().unwrap().run(name, input, &self.cwd, &self.follow_ups),
             "bg_kill" => {
                 let targets = self.terminals.lock().unwrap().for_kill(input);
@@ -500,6 +505,16 @@ impl Agent {
         self.session.append(&json!({"type": "tools_loaded", "groups": self.loaded_groups}))?;
         let added: Vec<String> = tool_names(&self.tools).into_iter().filter(|name| !before.contains(name)).collect();
         Ok(if added.is_empty() { "All requested tools were already active.".into() } else { format!("Enabled: {}", added.join(", ")) })
+    }
+
+    fn add_directory(&mut self, input: &Value) -> Result<String, String> {
+        let dir = tools::external::directory(&self.cwd, input)?;
+        if !self.extra_dirs.contains(&dir) {
+            self.session.append(&json!({"type": "directory_added", "path": dir}))?;
+            self.extra_dirs.push(dir.clone());
+        }
+        let context = prompt::directory_context(&dir);
+        Ok(format!("Added {}. Search it with search_external_files.\n\n{context}", dir.display()).trim_end().to_string())
     }
 
     /// Steering and finished background work, taken after each tool batch and at turn end.
@@ -932,6 +947,7 @@ impl Agent {
         *self.goal.lock().unwrap() = history.goal;
         self.tools = self.tool_schemas(&history.loaded_groups);
         self.loaded_groups = history.loaded_groups;
+        self.extra_dirs = history.extra_dirs;
         self.spent = history.spent;
         self.pending_condense.clear();
         self.last_context_tokens = 0;
@@ -1022,6 +1038,7 @@ impl Session {
                 Some("condense") => history.condensed.push(condense::from_entry(&entry)),
                 Some("goal") => history.goal = Goal::from_entry(&entry),
                 Some("tools_loaded") => history.loaded_groups = entry["groups"].as_array().into_iter().flatten().filter_map(|g| g.as_str().map(String::from)).collect(),
+                Some("directory_added") => history.extra_dirs.extend(entry["path"].as_str().map(PathBuf::from)),
                 Some("todo") => history.todos = Todos::from_entry(&entry),
                 Some("spent") => history.spent.add(Spent::from_entry(&entry)),
                 _ => {}
@@ -1320,6 +1337,17 @@ mod tests {
         let (_, history) = Session::resume(&dir, &session.id).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(history.spent, Spent { input: 150, output: 25, time: Duration::from_millis(62_500) });
+    }
+
+    #[test]
+    fn resumed_session_keeps_added_directories() {
+        let dir = std::env::temp_dir().join(format!("agent-dirs-{}", std::process::id()));
+        let session = Session::start(&dir, true, Path::new("/w"), "m").unwrap();
+        session.append(&json!({"type": "directory_added", "path": "/a"})).unwrap();
+        session.append(&json!({"type": "directory_added", "path": "/b"})).unwrap();
+        let (_, history) = Session::resume(&dir, &session.id).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(history.extra_dirs, [PathBuf::from("/a"), PathBuf::from("/b")]);
     }
 
     #[test]

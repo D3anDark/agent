@@ -218,6 +218,7 @@ fn run(options: Options) -> Result<(), String> {
         subagent_concurrency: settings.subagent_concurrency,
         subagent_effort: settings.subagent_effort.clone(),
         loaded_groups: Vec::new(),
+        extra_dirs: Vec::new(),
         spent: Spent::default(),
         interactive: false,
         agent_dir: agent_dir.clone(),

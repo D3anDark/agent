@@ -103,6 +103,21 @@ fn project_context(agent_dir: &Path, cwd: &Path) -> String {
     parts.join("\n\n")
 }
 
+/// What `add_directory` tells the model about `dir`: its AGENTS.md and the skills in its `.agents/skills`.
+pub fn directory_context(dir: &Path) -> String {
+    let mut parts = Vec::new();
+    if let Some((path, content)) = context_file(dir) {
+        parts.push(instructions_block(&path, &content));
+    }
+    let mut files = Vec::new();
+    collect_skill_files(&dir.join(".agents/skills"), true, &mut files);
+    let skills: Vec<Skill> = files.iter().filter_map(|file| parse_skill(file)).collect();
+    if !skills.is_empty() {
+        parts.push(format_skills(skills));
+    }
+    parts.join("\n\n")
+}
+
 pub struct Skill {
     pub name: String,
     pub description: String,
