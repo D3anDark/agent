@@ -2434,6 +2434,8 @@ impl App {
                 }
             }
             Event::Steered(text) => self.push(Item::User(text)),
+            // The output tail went to the model; /ps shows it in full.
+            Event::FollowUp { source, text } => self.system(&source, text.split_once('\n').map_or(text.as_str(), |(head, _)| head)),
             Event::TurnEnd { usage } => {
                 self.context_tokens = usage.context_tokens();
                 self.prompt_usage.add(usage);

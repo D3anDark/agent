@@ -82,6 +82,8 @@ pub enum Event {
     ToolStart { id: String, name: String, input: Value },
     ToolEnd { id: String, output: String, is_error: bool },
     Steered(String),
+    /// Finished background work handed to the model.
+    FollowUp { source: String, text: String },
     TurnEnd { usage: Usage },
     Compacted { summary: String },
     SessionStarted { id: String, path: Option<String> },
@@ -93,7 +95,7 @@ pub enum Event {
     Ask { questions: Vec<Question>, reply: Sender<Vec<Option<Answer>>> },
 }
 
-/// Work that finished in the background; it reaches the model when its turn has no more tool calls, or starts a turn when idle.
+/// Work that finished in the background; it reaches the model after the current tool batch or turn, or starts a turn when idle.
 pub struct FollowUp {
     /// What produced it, e.g. a terminal id; bg_status on that id withdraws it.
     pub source: String,
@@ -364,10 +366,7 @@ impl Agent {
                 results.push(json!({"type": "tool_result", "tool_use_id": id, "content": output, "is_error": is_error}));
                 finished.push(condense::Call { id, name, input, output, is_error });
             }
-            for text in std::mem::take(&mut *self.steering.lock().unwrap()) {
-                results.push(json!({"type": "text", "text": text}));
-                emit(Event::Steered(text));
-            }
+            results.extend(self.take_queued(emit));
             self.push(json!({"role": "user", "content": results}))?;
             if self.abort.load(Ordering::Relaxed) {
                 emit(Event::Notice("Operation aborted".into()));
@@ -456,14 +455,18 @@ impl Agent {
         Ok(if added.is_empty() { "All requested tools were already active.".into() } else { format!("Enabled: {}", added.join(", ")) })
     }
 
-    /// Steering typed while the model wrote its final reply has no tool batch to ride on, so the turn end takes it too.
+    /// Steering and finished background work, taken after each tool batch and at turn end.
     fn take_queued(&mut self, emit: &mut dyn FnMut(Event)) -> Vec<Value> {
         let steering = std::mem::take(&mut *self.steering.lock().unwrap());
         let follow_ups = std::mem::take(&mut *self.follow_ups.lock().unwrap());
         let mut blocks = Vec::new();
-        for text in steering.into_iter().chain(follow_ups.into_iter().map(|follow_up| follow_up.text)) {
+        for text in steering {
             emit(Event::Steered(text.clone()));
             blocks.push(json!({"type": "text", "text": text}));
+        }
+        for FollowUp { source, text } in follow_ups {
+            blocks.push(json!({"type": "text", "text": text}));
+            emit(Event::FollowUp { source, text });
         }
         blocks
     }
