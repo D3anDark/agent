@@ -304,11 +304,11 @@ impl Agent {
                     emit(Event::Notice(format!("Stopped: {}", reply.stop_reason)));
                     return Ok(answer);
                 }
-                let follow_ups = self.take_follow_ups(emit);
-                if follow_ups.is_empty() {
+                let queued = self.take_queued(emit);
+                if queued.is_empty() {
                     return Ok(answer);
                 }
-                self.push(json!({"role": "user", "content": follow_ups}))?;
+                self.push(json!({"role": "user", "content": queued}))?;
                 continue;
             }
             let mut results = Vec::new();
@@ -407,20 +407,21 @@ impl Agent {
         Ok(if added.is_empty() { "All requested tools were already active.".into() } else { format!("Enabled: {}", added.join(", ")) })
     }
 
-    /// Drains the follow-up queue into text blocks, showing each in the transcript.
-    fn take_follow_ups(&mut self, emit: &mut dyn FnMut(Event)) -> Vec<Value> {
+    /// Steering typed while the model wrote its final reply has no tool batch to ride on, so the turn end takes it too.
+    fn take_queued(&mut self, emit: &mut dyn FnMut(Event)) -> Vec<Value> {
+        let steering = std::mem::take(&mut *self.steering.lock().unwrap());
         let follow_ups = std::mem::take(&mut *self.follow_ups.lock().unwrap());
         let mut blocks = Vec::new();
-        for follow_up in follow_ups {
-            emit(Event::Steered(follow_up.text.clone()));
-            blocks.push(json!({"type": "text", "text": follow_up.text}));
+        for text in steering.into_iter().chain(follow_ups.into_iter().map(|follow_up| follow_up.text)) {
+            emit(Event::Steered(text.clone()));
+            blocks.push(json!({"type": "text", "text": text}));
         }
         blocks
     }
 
     /// Starts a turn from queued follow-ups while idle; Ok("") when another turn already took them.
     pub fn run_follow_ups(&mut self, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
-        let blocks = self.take_follow_ups(emit);
+        let blocks = self.take_queued(emit);
         let texts: Vec<&str> = blocks.iter().filter_map(|b| b["text"].as_str()).collect();
         if texts.is_empty() {
             return Ok(String::new());
