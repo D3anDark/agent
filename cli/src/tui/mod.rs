@@ -179,6 +179,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("plugins", "Install, enable and disable plugins"),
     ("skills", "Enable and disable skills"),
     ("skill-usage", "Show how often each skill was used, least used first"),
+    ("rtk", "Show rtk token savings"),
     ("ps", "Show background terminals"),
     ("subagents", "Show subagent runs"),
     ("goal", "[objective | pause | resume | stop | done] — Set a goal the agent keeps working toward, or manage it"),
@@ -1233,6 +1234,14 @@ impl App {
         self.system("skill-usage", format!("uses per skill, least used first\n{}", lines.join("\n")));
     }
 
+    fn rtk_gain(&mut self) {
+        match std::process::Command::new("rtk").arg("gain").stdin(std::process::Stdio::null()).output() {
+            Ok(output) if output.status.success() => self.system("rtk", String::from_utf8_lossy(&output.stdout).trim_end()),
+            Ok(output) => self.push(Item::Error(format!("rtk gain failed: {}", String::from_utf8_lossy(&output.stderr).trim_end()))),
+            Err(error) => self.push(Item::Error(format!("Cannot run rtk: {error}"))),
+        }
+    }
+
     fn submit(&mut self, text: String) {
         self.scroll = 0;
         // A side question and /goal pause work mid-turn, so they skip the steering queue.
@@ -1254,7 +1263,7 @@ impl App {
         // Settings changes reach the agent through Command::Apply, which the worker takes after the turn.
         let local = [
             "/subagents", "/ps", "/todos", "/help", "/hotkeys", "/session", "/copy", "/voice", "/settings", "/model", "/thinking", "/ponytail",
-            "/caveman", "/permissions", "/context-window", "/plugins", "/skills", "/skill-usage", "/login", "/logout", "/account", "/rename", "/export", "/quit", "/exit",
+            "/caveman", "/permissions", "/context-window", "/plugins", "/skills", "/skill-usage", "/rtk", "/login", "/logout", "/account", "/rename", "/export", "/quit", "/exit",
         ]
         .iter()
         .any(|name| command_args(&text, name).is_some());
@@ -1346,6 +1355,7 @@ impl App {
             "plugins" => self.panel = Some(Panel::Plugins { index: 0 }),
             "skills" => self.panel = Some(Panel::Skills { index: 0 }),
             "skill-usage" => self.skill_usage(),
+            "rtk" => self.rtk_gain(),
             "ps" if self.terminals.lock().unwrap().list.is_empty() => self.system("ps", "No background terminals yet. The agent starts them with bg_start."),
             "ps" => self.panel = Some(Panel::Terminals { index: 0 }),
             "subagents" if self.subagents.lock().unwrap().list.is_empty() => self.system("subagents", "No subagent runs yet."),
