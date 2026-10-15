@@ -328,15 +328,16 @@ impl Screen {
     pub fn draw(&mut self, out: &mut impl Write, rows: Vec<Line>, cursor: Option<(u16, u16)>) -> std::io::Result<()> {
         let rows: Vec<String> = rows.iter().map(to_ansi).collect();
         let mut buffer = String::from("\x1b[?2026h\x1b[?25l");
+        // Full redraw (first frame, resize, Ctrl+L): rows below the frame may hold stale or reflowed text.
+        if self.previous.is_empty() || rows.len() < self.previous.len() {
+            buffer.push_str(&format!("\x1b[{};1H\x1b[J", rows.len() + 1));
+        }
         for (y, row) in rows.iter().enumerate() {
             if self.previous.get(y) == Some(row) {
                 continue;
             }
             // Erase before writing: EL after a full-width row hits the pending-wrap cell and erases the last glyph.
             buffer.push_str(&format!("\x1b[{};1H\x1b[2K{row}", y + 1));
-        }
-        if rows.len() < self.previous.len() {
-            buffer.push_str(&format!("\x1b[{};1H\x1b[J", rows.len() + 1));
         }
         if let Some((x, y)) = cursor {
             buffer.push_str(&format!("\x1b[{};{}H\x1b[?25h", y + 1, x + 1));
@@ -352,6 +353,19 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redraw_after_invalidate_clears_below_the_frame() {
+        let mut screen = Screen::new();
+        screen.draw(&mut Vec::new(), vec![vec![span("a", PLAIN)]], None).unwrap();
+        screen.invalidate();
+        let mut out = Vec::new();
+        screen.draw(&mut out, vec![vec![span("a", PLAIN)]], None).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        let clear = out.find("\x1b[2;1H\x1b[J").unwrap();
+        // CUP clamps on a full-height frame, so a clear after the rows would erase the last one.
+        assert!(clear < out.find('a').unwrap());
+    }
 
     #[test]
     fn cursor_marker_becomes_a_column_and_is_removed() {
