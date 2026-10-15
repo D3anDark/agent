@@ -18,7 +18,7 @@ const INPUT_TIMEOUT: Duration = Duration::from_secs(5);
 /// The repo's `plugins/` directories, built in so `agent plugin install <name>` works offline.
 const BUNDLED: &[(&str, &[(&str, &str)])] = &[(
     "usagefleet",
-    &[("plugin.json", include_str!("../plugins/usagefleet/plugin.json")), ("index.ts", include_str!("../plugins/usagefleet/index.ts"))],
+    &[("plugin.json", include_str!("../../plugins/usagefleet/plugin.json")), ("index.ts", include_str!("../../plugins/usagefleet/index.ts"))],
 )];
 
 /// The running plugins. Clones share them.
