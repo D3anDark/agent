@@ -50,6 +50,8 @@ pub struct Settings {
     pub scroll_lines: usize,
     /// Copy a mouse selection on release; when off, Ctrl+C copies it.
     pub copy_on_select: bool,
+    /// One of `update::CHANNELS`.
+    pub update_channel: String,
     /// Shell commands the TUI runs in the background at start, e.g. a global tool update.
     pub on_start: Vec<String>,
 }
@@ -109,6 +111,7 @@ pub fn load(home: &Path) -> Settings {
         notifications: own["notifications"].as_bool().unwrap_or(true),
         scroll_lines: own["scroll_lines"].as_u64().unwrap_or(3) as usize,
         copy_on_select: own["copy_on_select"].as_bool().unwrap_or(true),
+        update_channel: own["update_channel"].as_str().unwrap_or("latest").to_string(),
         on_start: own["on_start"].as_array().into_iter().flatten().filter_map(|command| Some(command.as_str()?.to_string())).collect(),
     }
 }
@@ -134,6 +137,7 @@ pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
         "notifications": settings.notifications,
         "scroll_lines": settings.scroll_lines,
         "copy_on_select": settings.copy_on_select,
+        "update_channel": settings.update_channel,
         "on_start": settings.on_start,
         "condense": {"enabled": settings.condense, "model": settings.condense_model, "min_batch_chars": settings.condense_min_batch_chars},
         "subagents": {"concurrency": settings.subagent_concurrency, "implementation_effort": settings.subagent_effort},
@@ -170,6 +174,7 @@ mod tests {
         settings.notifications = false;
         settings.scroll_lines = 10;
         settings.copy_on_select = false;
+        settings.update_channel = "pre-release".into();
         settings.on_start = vec!["echo started".into()];
         save(&home, &settings).unwrap();
         assert_eq!(load(&home), settings);

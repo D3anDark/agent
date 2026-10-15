@@ -51,4 +51,7 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" agent-* --repo "$GITHUB_REPOSITORY" --generate-notes
+        # A semver pre-release tag (v0.3.0-beta.1) must stay off the latest channel.
+        run: |
+          case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; *) prerelease= ;; esac
+          gh release create "$GITHUB_REF_NAME" agent-* --repo "$GITHUB_REPOSITORY" --generate-notes $prerelease

@@ -190,7 +190,7 @@ const MENU_ROWS: usize = 5;
 const PANEL_ROWS: usize = 8;
 const PLAN_OPTIONS: [&str; 4] = ["Implement here", "Start fresh and implement", "Export to PLAN.md", "Keep planning"];
 const SCROLL_LINES: [usize; 5] = [1, 2, 3, 5, 10];
-const SETTING_NAMES: [&str; 22] = [
+const SETTING_NAMES: [&str; 23] = [
     "Model",
     "Thinking level",
     "Permission mode",
@@ -213,9 +213,10 @@ const SETTING_NAMES: [&str; 22] = [
     "Notifications",
     "Scroll lines",
     "Copy on select",
+    "Update channel",
 ];
 /// Rows of `SETTING_NAMES` in the order the settings panel lists them.
-const SETTING_ORDER: [usize; 22] = [0, 1, 18, 13, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21];
+const SETTING_ORDER: [usize; 23] = [0, 1, 18, 13, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22];
 const MODEL_ROWS: [usize; 3] = [0, 8, 12];
 const CONTEXT_WINDOW_ROW: usize = 13;
 const CONTEXT_WINDOWS: [Option<u64>; 5] = [
@@ -368,7 +369,7 @@ pub fn run(agent: Agent, setup: Setup) -> Result<(), String> {
     });
     spawn_worker(agent, command_inbox, events.clone());
     if crate::update::enabled() {
-        spawn_update(events.clone());
+        spawn_update(app.settings.update_channel.clone(), events.clone());
     }
     spawn_on_start(app.settings.on_start.clone(), events.clone());
     spawn_input(events);
@@ -553,9 +554,9 @@ fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Ms
     });
 }
 
-fn spawn_update(events: Sender<Msg>) {
+fn spawn_update(channel: String, events: Sender<Msg>) {
     std::thread::spawn(move || {
-        let notice = match crate::update::install_latest() {
+        let notice = match crate::update::install_latest(&channel) {
             Ok(Some(version)) => format!("Updated to v{version}. Restart agent to use it."),
             Ok(None) => return,
             Err(error) => format!("Update failed: {error}"),
@@ -2032,6 +2033,7 @@ impl App {
         let thinking: Vec<String> = THINKING_LEVELS.iter().map(|l| l.to_string()).collect();
         let ponytail: Vec<String> = PONYTAIL_LEVELS.iter().map(|l| l.to_string()).collect();
         let caveman: Vec<String> = CAVEMAN_LEVELS.iter().map(|l| l.to_string()).collect();
+        let channels: Vec<String> = crate::update::CHANNELS.iter().map(|c| c.to_string()).collect();
         self.update_settings(|s| match row {
             1 => s.thinking = step(&thinking, &s.thinking, forward),
             2 => s.permission_mode = step(&MODES, &s.permission_mode, forward),
@@ -2051,11 +2053,12 @@ impl App {
             19 => s.notifications = !s.notifications,
             20 => s.scroll_lines = step(&SCROLL_LINES, &s.scroll_lines, forward),
             21 => s.copy_on_select = !s.copy_on_select,
+            22 => s.update_channel = step(&channels, &s.update_channel, forward),
             _ => unreachable!("rows 0, 8, 12 and 13 open their own panels"),
         });
     }
 
-    fn setting_values(&self) -> [Line; 22] {
+    fn setting_values(&self) -> [Line; 23] {
         let s = &self.settings;
         let on_off = |value: bool| if value { "on" } else { "off" };
         let condense_model = if s.condense_model.is_empty() { "auto" } else { &s.condense_model };
@@ -2084,6 +2087,7 @@ impl App {
             choices(["off", "on"].map(String::from), on_off(s.notifications)),
             choices(SCROLL_LINES.map(|n| n.to_string()), &s.scroll_lines.to_string()),
             choices(["off", "on"].map(String::from), on_off(s.copy_on_select)),
+            choices(crate::update::CHANNELS.map(String::from), &s.update_channel),
         ]
     }
 
