@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::permissions::Mode;
-use super::{FollowUp, prompt};
+use super::{FollowUp, prompt, usage};
+use crate::api::Usage;
 
 const DEFAULT_SWARM_PROMPT: &str = include_str!("swarm-prompt.md");
 const MAX_PER_SESSION: usize = 64;
@@ -46,6 +47,8 @@ pub struct RunState {
     pub result: Option<Result<String, String>>,
     pub session: Option<String>,
     pub elapsed: Option<Duration>,
+    /// The child's tokens, known once it reports them at the end.
+    pub usage: Usage,
 }
 
 impl Run {
@@ -67,12 +70,13 @@ impl Run {
         }
     }
 
-    /// The row /subagents and the transcript show: label, last tool, call count, time.
+    /// The row /subagents and the transcript show: label, last tool, call count, time, tokens.
     pub fn summary(&self) -> String {
         let (status, elapsed) = (self.status(), self.elapsed().as_secs());
         let state = self.state.lock().unwrap();
         let tool = if state.last_tool.is_empty() { String::new() } else { format!(", last {}", state.last_tool) };
-        format!("{} {} {status}: {} tool calls{tool}, {elapsed}s", self.id, self.label, state.tool_calls)
+        let tokens = if state.usage == Usage::default() { String::new() } else { format!(", {}", usage::brief(state.usage)) };
+        format!("{} {} {status}: {} tool calls{tool}, {elapsed}s{tokens}", self.id, self.label, state.tool_calls)
     }
 
     pub fn result_text(&self) -> String {
@@ -139,21 +143,7 @@ impl Runs {
         self.list.push(run.clone());
         let (watched, follow_ups) = (run.clone(), follow_ups.clone());
         std::thread::spawn(move || {
-            let mut result = Err("The subagent exited without an answer.".to_string());
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
-                let mut state = watched.state.lock().unwrap();
-                match event["type"].as_str() {
-                    Some("tool") => {
-                        state.tool_calls += 1;
-                        state.last_tool = event["name"].as_str().unwrap_or_default().to_string();
-                    }
-                    Some("session") => state.session = event["path"].as_str().map(String::from),
-                    Some("done") => result = Ok(event["answer"].as_str().unwrap_or_default().to_string()),
-                    Some("error") => result = Err(event["message"].as_str().unwrap_or_default().to_string()),
-                    _ => {}
-                }
-            }
+            let result = read_events(BufReader::new(stdout), &watched);
             if let Some(mut child) = watched.child.lock().unwrap().take() {
                 let _ = child.wait();
             }
@@ -170,6 +160,27 @@ impl Runs {
     pub fn running(&self) -> usize {
         self.list.iter().filter(|run| run.status() == "running").count()
     }
+}
+
+/// Follows the child's JSONL into `run` until stdout closes; returns its answer or error.
+fn read_events(stdout: impl BufRead, run: &Run) -> Result<String, String> {
+    let mut result = Err("The subagent exited without an answer.".to_string());
+    for line in stdout.lines().map_while(Result::ok) {
+        let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
+        let mut state = run.state.lock().unwrap();
+        match event["type"].as_str() {
+            Some("tool") => {
+                state.tool_calls += 1;
+                state.last_tool = event["name"].as_str().unwrap_or_default().to_string();
+            }
+            Some("session") => state.session = event["path"].as_str().map(String::from),
+            Some("usage") => state.usage = usage::from_entry(&event),
+            Some("done") => result = Ok(event["answer"].as_str().unwrap_or_default().to_string()),
+            Some("error") => result = Err(event["message"].as_str().unwrap_or_default().to_string()),
+            _ => {}
+        }
+    }
+    result
 }
 
 /// Waits for foreground runs; setting `abort` (Esc) kills them.
@@ -265,15 +276,7 @@ mod tests {
 
     #[test]
     fn a_run_finishing_during_bg_wait_is_returned_once_not_as_a_follow_up() {
-        let run = Arc::new(Run {
-            id: "sa-1".into(),
-            label: "scan".into(),
-            task: "scan".into(),
-            background: true,
-            started: Instant::now(),
-            child: Mutex::new(None),
-            state: Mutex::default(),
-        });
+        let run = Arc::new(scan_run());
         let follow_ups = Arc::new(Mutex::new(vec![FollowUp { source: "bt-1".into(), text: "terminal".into() }]));
         let finisher = {
             let (run, follow_ups) = (run.clone(), follow_ups.clone());
@@ -287,5 +290,29 @@ mod tests {
         assert_eq!(answer, "## scan (sa-1) done\n\nfound 3");
         let sources: Vec<String> = follow_ups.lock().unwrap().iter().map(|f| f.source.clone()).collect();
         assert_eq!(sources, ["bt-1"]);
+    }
+
+    #[test]
+    fn the_childs_usage_record_shows_in_the_run_summary() {
+        let run = scan_run();
+        let usage = Usage { input: 1200, output: 300, cache_read: 40_000, cache_write: 0 };
+        let stdout: String = [json!({"type": "tool", "name": "read"}), usage::entry("opus", usage, 0), json!({"type": "done", "answer": "ok"})]
+            .iter()
+            .map(|event| format!("{event}\n"))
+            .collect();
+        assert_eq!(read_events(stdout.as_bytes(), &run), Ok("ok".into()));
+        assert_eq!(run.summary(), "sa-1 scan running: 1 tool calls, last read, 0s, ↑1k ↓300 cache 40k");
+    }
+
+    fn scan_run() -> Run {
+        Run {
+            id: "sa-1".into(),
+            label: "scan".into(),
+            task: "scan".into(),
+            background: true,
+            started: Instant::now(),
+            child: Mutex::new(None),
+            state: Mutex::default(),
+        }
     }
 }

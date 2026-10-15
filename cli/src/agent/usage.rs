@@ -13,6 +13,25 @@ pub fn entry(model: &str, usage: Usage, timestamp: u64) -> Value {
     json!({"type": "usage", "model": model, "timestamp": timestamp, "input": usage.input, "output": usage.output, "cache_read": usage.cache_read, "cache_write": usage.cache_write})
 }
 
+pub fn from_entry(entry: &Value) -> Usage {
+    let number = |key: &str| entry[key].as_u64().unwrap_or(0);
+    Usage { input: number("input"), output: number("output"), cache_read: number("cache_read"), cache_write: number("cache_write") }
+}
+
+/// The token line /subagents shows: "↑1k ↓300 cache 40k".
+pub fn brief(usage: Usage) -> String {
+    format!("↑{} ↓{} cache {}", tokens(usage.input), tokens(usage.output), tokens(usage.cache_read))
+}
+
+/// pi's token counts: 950, 14k, 1.2M.
+pub fn tokens(count: u64) -> String {
+    match count {
+        n if n < 1000 => n.to_string(),
+        n if n < 1_000_000 => format!("{}k", (n + 500) / 1000),
+        n => format!("{:.1}M", n as f64 / 1_000_000.0),
+    }
+}
+
 #[derive(Default, Clone, PartialEq, Debug)]
 pub struct ModelTotal {
     pub model: String,
@@ -34,7 +53,7 @@ pub fn totals(dir: &Path, session_id: &str, now_ms: u64) -> [Vec<ModelTotal>; 4]
                 continue;
             }
             let number = |key: &str| entry[key].as_u64().unwrap_or(0);
-            let usage = Usage { input: number("input"), output: number("output"), cache_read: number("cache_read"), cache_write: number("cache_write") };
+            let usage = from_entry(&entry);
             let age = now_ms.saturating_sub(number("timestamp"));
             let model = entry["model"].as_str().unwrap_or("unknown");
             for (scope, inside) in totals.iter_mut().zip([current, age < DAY_MS, age < 7 * DAY_MS, true]) {

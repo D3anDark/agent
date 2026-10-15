@@ -33,7 +33,7 @@ use crate::agent::FollowUp;
 use crate::agent::modes::{self, CAVEMAN_LEVELS, PONYTAIL_LEVELS};
 use crate::agent::permissions::{Decision, MODES, Mode, Request};
 use crate::agent::skill_usage;
-use crate::agent::usage::{self, ModelTotal};
+use crate::agent::usage::{self, ModelTotal, tokens};
 use crate::agent::prompt::{Skill, Template};
 use crate::agent::subagent::Runs;
 use crate::api::accounts::Policy;
@@ -2344,13 +2344,17 @@ impl App {
             Panel::Ask(ask) => ask.render(width),
             Panel::Subagents { index } => {
                 let runs = self.subagents.lock().unwrap();
-                let rows: Vec<panel::Row> = runs
-                    .list
-                    .iter()
-                    .map(|r| panel::Row { left: format!("{} {}", r.id, r.label), right: vec![span(format!("{} {}s", r.status(), r.elapsed().as_secs()), MUTED)] })
-                    .collect();
+                let mut total = Usage::default();
+                let mut rows = Vec::new();
+                for run in &runs.list {
+                    let spent = run.state.lock().unwrap().usage;
+                    total.add(spent);
+                    let tokens = if spent == Usage::default() { String::new() } else { format!("  {}", usage::brief(spent)) };
+                    let right = format!("{} {}s{tokens}", run.status(), run.elapsed().as_secs());
+                    rows.push(panel::Row { left: format!("{} {}", run.id, run.label), right: vec![span(right, MUTED)] });
+                }
                 let view = panel::Panel {
-                    title: format!("Subagents {}", rows.len()),
+                    title: if total == Usage::default() { format!("Subagents {}", rows.len()) } else { format!("Subagents {}  {}", rows.len(), usage::brief(total)) },
                     tabs: &[],
                     tab: 0,
                     search: None,
@@ -3706,15 +3710,6 @@ fn git_info(cwd: &Path) -> Git {
     let branch = run(&["branch", "--show-current"]).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|b| !b.is_empty());
     let changed = run(&["status", "--porcelain", "--untracked-files=all"]).map_or(0, |o| o.stdout.split(|b| *b == b'\n').filter(|l| !l.is_empty()).count());
     Git { branch, changed }
-}
-
-/// pi's token counts: 950, 14k, 1.2M.
-fn tokens(count: u64) -> String {
-    match count {
-        n if n < 1000 => n.to_string(),
-        n if n < 1_000_000 => format!("{}k", (n + 500) / 1000),
-        n => format!("{:.1}M", n as f64 / 1_000_000.0),
-    }
 }
 
 fn context_window_label(window: Option<u64>) -> String {

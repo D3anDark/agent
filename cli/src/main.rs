@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use agent::permissions::{Decision, Grants, Mode};
-use agent::{Agent, Event, History, Session, Spent, condense, modes, prompt, snapshots};
+use agent::{Agent, Event, History, Session, Spent, condense, modes, prompt, snapshots, usage};
 use api::{Client, Usage, models};
 use tools::hashline::Anchors;
 use tools::rtk;
@@ -311,6 +311,7 @@ fn headless_mode(agent: &mut Agent, prompt: &str) -> Result<(), String> {
         Event::Permission { reply, .. } => _ = reply.send(Decision::Deny),
         _ => {}
     });
+    line(usage::entry(&agent.model, agent.usage, now_ms()));
     match result {
         Ok(answer) => line(serde_json::json!({"type": "done", "answer": answer})),
         Err(message) => line(serde_json::json!({"type": "error", "message": message})),
