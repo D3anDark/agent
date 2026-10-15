@@ -48,7 +48,7 @@ fn rewritten(original: &str, exit_code: Option<i32>, stdout: &str) -> Option<Str
 }
 
 /// Removes CSI (`ESC [ ... letter`) and OSC (`ESC ] ... BEL` or `ESC ] ... ESC \`) sequences.
-fn strip_ansi(text: &str) -> String {
+pub fn strip_ansi(text: &str) -> String {
     if !text.contains('\x1b') {
         return text.to_string();
     }

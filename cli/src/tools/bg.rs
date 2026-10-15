@@ -16,6 +16,8 @@ const STATUS_TAIL: (u64, usize) = (16 * 1024, 400);
 const STATUS_STDERR_TAIL: (u64, usize) = (8 * 1024, 200);
 const RESULT_TAIL: (u64, usize) = (8 * 1024, 40);
 const RESULT_STDERR_TAIL: (u64, usize) = (4 * 1024, 20);
+// shortcut: the viewer rewraps the whole tail each time the log grows; past 1 MiB it points to the full log file.
+const VIEW_TAIL: (u64, usize) = (1024 * 1024, 20_000);
 const FORCE_KILL_AFTER: Duration = Duration::from_secs(2);
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -260,6 +262,20 @@ impl Terminal {
         let end = self.state.lock().unwrap().settled.unwrap_or_else(Instant::now);
         let seconds = end.duration_since(self.started).as_secs_f64().round() as u64;
         if seconds >= 60 { format!("{}m{:02}s", seconds / 60, seconds % 60) } else { format!("{seconds}s") }
+    }
+
+    /// Combined size of both logs; the /ps viewer rereads `log` when it changes.
+    pub fn log_size(&self) -> u64 {
+        [&self.stdout, &self.stderr].iter().map(|path| std::fs::metadata(path).map_or(0, |m| m.len())).sum()
+    }
+
+    /// Both streams for the /ps viewer, stderr only when it has something.
+    pub fn log(&self) -> String {
+        let mut text = section("stdout", &self.stdout, VIEW_TAIL);
+        if std::fs::metadata(&self.stderr).is_ok_and(|m| m.len() > 0) {
+            text.push_str(&format!("\n\n{}", section("stderr", &self.stderr, VIEW_TAIL)));
+        }
+        text
     }
 
     fn status_text(&self) -> String {

@@ -40,6 +40,7 @@ use crate::settings::{self, Settings, model_key};
 use crate::tools::bg::Terminals;
 use crate::tools::goal::{Goal, Status as GoalStatus};
 use crate::tools::plan::{self, Plan};
+use crate::tools::rtk::strip_ansi;
 use crate::tools::todo::{Status, Todos};
 use crate::worktree::{self, Worktree};
 use editor::Editor;
@@ -100,6 +101,8 @@ enum Panel {
     /// A panel a plugin opened with `ui.showPanel`; `data` is its params.
     Plugin { plugin: String, data: Value, index: usize },
     Terminals { index: usize },
+    /// One terminal from /ps, full screen and read-only. `loaded` is the (log size, width) `lines` were built for.
+    Terminal { index: usize, scroll: usize, loaded: Option<(u64, usize)>, lines: Vec<Line> },
     Subagents { index: usize },
     /// One run from /subagents, full screen and read-only. `loaded` is the (file size, width) `lines` were built for.
     Subagent { index: usize, scroll: usize, loaded: Option<(u64, usize)>, lines: Vec<Line> },
@@ -1477,6 +1480,10 @@ impl App {
             self.subagent_key(code);
             return;
         }
+        if matches!(self.panel, Some(Panel::Terminal { .. })) {
+            self.terminal_key(code);
+            return;
+        }
         if matches!(self.panel, Some(Panel::PluginSettings { .. })) {
             self.plugin_settings_key(key);
             return;
@@ -1625,11 +1632,19 @@ impl App {
             }
             Some(Panel::Terminals { index }) => {
                 let terminals = self.terminals.lock().unwrap();
-                let last = terminals.list.len().saturating_sub(1);
+                if terminals.list.is_empty() {
+                    return;
+                }
+                let last = terminals.list.len() - 1;
                 match code {
                     KeyCode::Up => *index = index.saturating_sub(1),
                     KeyCode::Down => *index = (*index + 1).min(last),
                     KeyCode::Char('k') => _ = terminals.list[*index].stop(),
+                    KeyCode::Enter => {
+                        let index = *index;
+                        drop(terminals);
+                        self.panel = Some(Panel::Terminal { index, scroll: 0, loaded: None, lines: Vec::new() });
+                    }
                     _ => {}
                 }
             }
@@ -1675,7 +1690,7 @@ impl App {
                     }
                 }
             }
-            Some(Panel::Permission { .. } | Panel::Ask(_) | Panel::Btw | Panel::Login(_) | Panel::Models { .. } | Panel::ContextWindows { .. } | Panel::Subagent { .. } | Panel::Plan { .. } | Panel::PluginSettings { .. } | Panel::Plugin { .. }) | None => {}
+            Some(Panel::Permission { .. } | Panel::Ask(_) | Panel::Btw | Panel::Login(_) | Panel::Models { .. } | Panel::ContextWindows { .. } | Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Plan { .. } | Panel::PluginSettings { .. } | Panel::Plugin { .. }) | None => {}
         }
     }
 
@@ -2171,7 +2186,7 @@ impl App {
                     rows: &rows,
                     selected: *index,
                     empty: "",
-                    hint: "↑↓ navigate     k kill     esc close",
+                    hint: "↑↓ navigate     enter view     k kill     esc close",
                 };
                 view.render(width, PANEL_ROWS)
             }
@@ -2266,7 +2281,7 @@ impl App {
                 view.render(width, PANEL_ROWS)
             }
             Panel::Btw => self.btw.as_ref().expect("the btw panel opens with a thread").render(width),
-            Panel::Subagent { .. } => unreachable!("frame draws the subagent view instead of a panel"),
+            Panel::Subagent { .. } | Panel::Terminal { .. } => unreachable!("frame draws the full-screen view instead of a panel"),
             Panel::Worktrees { remove, index, worktrees, current } => {
                 let home = std::env::var("HOME").unwrap_or_default();
                 let rows: Vec<panel::Row> = worktrees
@@ -2501,6 +2516,9 @@ impl App {
         if matches!(self.panel, Some(Panel::Subagent { .. })) {
             return (self.subagent_view(width, height), (0, height.saturating_sub(1) as u16));
         }
+        if matches!(self.panel, Some(Panel::Terminal { .. })) {
+            return (self.terminal_view(width, height), (0, height.saturating_sub(1) as u16));
+        }
         let mut bottom: Vec<Line> = Vec::new();
         if let Some(started) = self.working {
             let tick = (started.elapsed().as_millis() / 80) as usize;
@@ -2622,16 +2640,8 @@ impl App {
                 Some(path) => subagent_lines(Path::new(&path), width).unwrap_or_else(|error| system_lines("✗", "error", &error, ERROR, width)),
             };
         }
-        let room = height.saturating_sub(3);
-        *scroll = (*scroll).min(lines.len().saturating_sub(room));
-        let end = lines.len() - *scroll;
-        let start = end.saturating_sub(room);
-        let mut rows = vec![vec![span(format!(" {}", run.summary()), SYSTEM), span("  read-only", DIM)]];
-        rows.extend(std::iter::repeat_n(Vec::new(), room - (end - start)));
-        rows.extend_from_slice(&lines[start..end]);
-        rows.push(vec![span("─".repeat(width), Style::fg(240))]);
-        rows.push(vec![span(" ↑↓ scroll     ←→ previous/next run     esc back", DIM)]);
-        rows
+        let header = vec![span(format!(" {}", run.summary()), SYSTEM), span("  read-only", DIM)];
+        full_screen(header, lines, scroll, width, height, " ↑↓ scroll     ←→ previous/next run     esc back")
     }
 
     fn subagent_key(&mut self, code: KeyCode) {
@@ -2651,6 +2661,44 @@ impl App {
             KeyCode::Esc => {
                 let index = *index;
                 self.panel = Some(Panel::Subagents { index });
+            }
+            _ => {}
+        }
+    }
+
+    /// The open terminal's output filling the screen, reread when its logs grow.
+    fn terminal_view(&mut self, width: usize, height: usize) -> Vec<Line> {
+        let Some(Panel::Terminal { index, scroll, loaded, lines }) = self.panel.as_mut() else { unreachable!("frame checks the panel") };
+        let terminal = self.terminals.lock().unwrap().list[*index].clone();
+        let size = terminal.log_size();
+        if *loaded != Some((size, width)) {
+            *loaded = Some((size, width));
+            *lines = log_lines(&terminal.log(), width);
+        }
+        let header = vec![span(format!(" {} {}", terminal.id, terminal.title), SYSTEM), span(format!("  {} {}", terminal.status().as_str(), terminal.elapsed()), DIM)];
+        full_screen(header, lines, scroll, width, height, " ↑↓ scroll     ←→ previous/next terminal     k kill     esc back")
+    }
+
+    fn terminal_key(&mut self, code: KeyCode) {
+        let terminals = self.terminals.lock().unwrap();
+        let last = terminals.list.len() - 1;
+        let Some(Panel::Terminal { index, scroll, loaded, .. }) = self.panel.as_mut() else { unreachable!("panel_key checks the panel") };
+        match code {
+            KeyCode::Up => *scroll += 1,
+            KeyCode::Down => *scroll = scroll.saturating_sub(1),
+            KeyCode::PageUp => *scroll += 10,
+            KeyCode::PageDown => *scroll = scroll.saturating_sub(10),
+            KeyCode::Char('k') => _ = terminals.list[*index].stop(),
+            KeyCode::Left | KeyCode::Right => {
+                let next = if code == KeyCode::Left { index.saturating_sub(1) } else { (*index + 1).min(last) };
+                if next != *index {
+                    (*index, *scroll, *loaded) = (next, 0, None);
+                }
+            }
+            KeyCode::Esc => {
+                let index = *index;
+                drop(terminals);
+                self.panel = Some(Panel::Terminals { index });
             }
             _ => {}
         }
@@ -2987,6 +3035,9 @@ fn tool_args(name: &str, input: &Value) -> String {
         }
         "read_image" => field("image"),
         "read" => {
+            if let Some(paths) = input["paths"].as_array() {
+                return paths.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ");
+            }
             let mut text = field("path");
             if let Some(offset) = input["offset"].as_u64().map(|n| n.to_string()).or(input["offset"].as_str().map(String::from)) {
                 text.push_str(&format!(" from {offset}"));
@@ -3181,6 +3232,31 @@ fn rewind_note(files: Option<RestoredFiles>) -> String {
         note += &format!(" Kept {}: changed after the agent wrote them.", files.kept.join(", "));
     }
     note
+}
+
+/// A full-screen read-only view: `header`, `lines` bottom-anchored like the transcript and scrolled up by `scroll`, a rule and `hint`.
+fn full_screen(header: Line, lines: &[Line], scroll: &mut usize, width: usize, height: usize, hint: &str) -> Vec<Line> {
+    let room = height.saturating_sub(3);
+    *scroll = (*scroll).min(lines.len().saturating_sub(room));
+    let end = lines.len() - *scroll;
+    let start = end.saturating_sub(room);
+    let mut rows = vec![header];
+    rows.extend(std::iter::repeat_n(Vec::new(), room - (end - start)));
+    rows.extend_from_slice(&lines[start..end]);
+    rows.push(vec![span("─".repeat(width), Style::fg(240))]);
+    rows.push(vec![span(hint, DIM)]);
+    rows
+}
+
+/// A terminal log as plain wrapped rows: colors dropped, a line redrawn with `\r` (a progress bar) keeps its last state.
+fn log_lines(text: &str, width: usize) -> Vec<Line> {
+    let indent = vec![span(" ", PLAIN)];
+    let mut lines = Vec::new();
+    for line in strip_ansi(text).lines() {
+        let last = line.rfind('\r').map_or(line, |at| &line[at + 1..]);
+        lines.extend(wrap(&[span(last.replace('\t', "    "), PLAIN)], width, &indent));
+    }
+    lines
 }
 
 /// A subagent's session rendered like the main transcript, one blank line between items.
@@ -3692,6 +3768,12 @@ mod tests {
         let lines: Vec<String> = lines.unwrap().iter().map(text).collect();
         assert!(lines.iter().any(|line| line.contains("review auth")));
         assert!(lines.iter().any(|line| line.contains("Token stays cached.")));
+    }
+
+    #[test]
+    fn log_lines_drop_colors_and_keep_the_last_progress_redraw() {
+        let lines: Vec<String> = log_lines("\x1b[32mok\x1b[0m\n10%\r55%\r100%\nabcdefghij", 6).iter().map(text).collect();
+        assert_eq!(lines, [" ok", " 100%", " abcde", " fghij"]);
     }
 
     #[test]
