@@ -19,6 +19,7 @@ mod subagent;
 mod todo;
 mod tools;
 mod tui;
+mod update;
 mod worktree;
 
 use serde_json::Value;
@@ -46,7 +47,8 @@ Options:
   --full-access, --yolo Run every tool call without asking
   --ask                 Ask before commands and file edits
   --headless            Run the message, print JSONL events (tool, session, done, error)
-  --parent <id>         Run as a subagent of that session: linked to it, no load_tools or ask_user_question";
+  --parent <id>         Run as a subagent of that session: linked to it, no load_tools or ask_user_question
+  --version             Print the version";
 
 struct Options {
     model: Option<String>,
@@ -67,6 +69,10 @@ enum Resume {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("agent {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let options = match parse_args(std::env::args().skip(1).collect()) {
         Ok(options) => options,
         Err(message) => {

@@ -1,0 +1,31 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches Cargo.toml
+        run: test "${GITHUB_REF_NAME#v}" = "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+      - run: rustup update stable && rustup default stable && rustup target add x86_64-apple-darwin
+      - run: cargo test --locked
+      - name: Build
+        env:
+          AGENT_RELEASE: "1"
+        run: |
+          for arch in aarch64 x86_64; do
+            cargo build --release --locked --target "$arch-apple-darwin"
+            cp "target/$arch-apple-darwin/release/agent" "agent-macos-$arch"
+          done
+          ./agent-macos-aarch64 --version
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" agent-macos-aarch64 agent-macos-x86_64 --generate-notes

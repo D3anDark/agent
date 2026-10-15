@@ -318,6 +318,9 @@ pub fn run(agent: Agent, setup: Setup) -> Result<(), String> {
     let (commands, command_inbox) = mpsc::channel();
     let mut app = App::new(&agent, setup, commands, events.clone());
     spawn_worker(agent, command_inbox, events.clone());
+    if crate::update::enabled() {
+        spawn_update(events.clone());
+    }
     spawn_input(events);
     let mut out = std::io::stdout();
     enter(&mut out).map_err(|e| format!("Cannot set up the terminal: {e}"))?;
@@ -470,6 +473,17 @@ fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Ms
                 return;
             }
         }
+    });
+}
+
+fn spawn_update(events: Sender<Msg>) {
+    std::thread::spawn(move || {
+        let notice = match crate::update::install_latest() {
+            Ok(Some(version)) => format!("Updated to v{version}. Restart agent to use it."),
+            Ok(None) => return,
+            Err(error) => format!("Update failed: {error}"),
+        };
+        let _ = events.send(Msg::Agent(Event::Notice(notice)));
     });
 }
 
