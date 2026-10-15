@@ -120,8 +120,8 @@ enum Panel {
     Login(login::Login),
     /// /account pins the chosen account, /logout removes it. Typing filters by name or provider.
     Accounts { logout: bool, query: Editor, index: usize },
-    /// /history: saved prompts, newest first. Typing filters, Enter puts the prompt in the editor.
-    History { prompts: Vec<String>, query: Editor, index: usize },
+    /// /history: saved prompts, newest first, in the `history::SCOPES` tab `tab`. Typing filters, Enter puts the prompt in the editor.
+    History { entries: Vec<history::Entry>, tab: usize, query: Editor, index: usize },
     /// Double Esc while idle: the prompts from `agent::rewind_points` to go back to.
     Rewind { index: usize, points: Vec<RewindPoint> },
     /// /changes: files this session changed; Enter prints the diff.
@@ -259,6 +259,7 @@ const HOTKEYS: [(&str, &[(&str, &str)]); 4] = [
         ("Shift+Enter", "new line (also Alt+Enter, Ctrl+J)"),
         ("Tab", "complete a slash command or an @path"),
         ("Up, Down", "history, menu selection"),
+        ("Ctrl+R", "search previous prompts"),
         (if cfg!(target_os = "macos") { "Option+Up" } else { "Alt+Up" }, "edit queued messages"),
     ]),
     ("Edit", &[
@@ -657,7 +658,7 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
 impl App {
     fn new(agent: &Agent, setup: Setup, commands: Sender<Command>, events: Sender<Msg>) -> App {
         let Setup { home, settings, catalog, skills, templates, modes_error, .. } = setup;
-        let mut recent_prompts = history::load(&home.join(".agents"));
+        let mut recent_prompts: Vec<String> = history::load(&home.join(".agents")).into_iter().map(|entry| entry.prompt).collect();
         recent_prompts.drain(..recent_prompts.len().saturating_sub(100));
         let mut slash_commands: Vec<(String, String)> = BUILTIN_COMMANDS.iter().map(|(name, description)| (name.to_string(), description.to_string())).collect();
         for template in &templates {
@@ -1060,7 +1061,7 @@ impl App {
                     return;
                 }
                 let text = self.editor.take();
-                if let Err(error) = history::append(&self.home.join(".agents"), &text) {
+                if let Err(error) = history::append(&self.home.join(".agents"), history::Entry { prompt: text.clone(), cwd: self.cwd.clone(), session: self.session_id.clone() }) {
                     self.push(Item::Error(error));
                 }
                 self.submit(text);
@@ -1077,6 +1078,7 @@ impl App {
                 self.expanded = !self.expanded;
             }
             KeyCode::Char('l') if ctrl => screen.invalidate(),
+            KeyCode::Char('r') if ctrl => self.open_history(),
             KeyCode::BackTab => self.cycle_thinking(),
             KeyCode::Up if alt => {
                 let queued = std::mem::take(&mut *self.steering.lock().unwrap());
@@ -1381,11 +1383,7 @@ impl App {
             "plugins" => self.panel = Some(Panel::Plugins { index: 0 }),
             "skills" => self.panel = Some(Panel::Skills { index: 0 }),
             "changes" => _ = self.commands.send(Command::Changes),
-            "history" => {
-                let mut prompts = history::load(&self.home.join(".agents"));
-                prompts.reverse();
-                self.panel = Some(Panel::History { prompts, query: Editor::new(), index: 0 });
-            }
+            "history" => self.open_history(),
             "usage" => {
                 self.panel = Some(Panel::Usage { tab: 0, totals: usage::totals(&self.sessions_dir, &self.session_id, crate::now_ms()) });
                 let (client, events) = (self.client.clone(), self.events.clone());
@@ -1781,8 +1779,9 @@ impl App {
                 }
                 _ => {}
             },
-            Some(Panel::History { prompts, query, index }) => {
-                let matches = matching_prompts(prompts, &query.text());
+            Some(Panel::History { entries, tab, query, index }) => {
+                let scope = *tab;
+                let matches = matching_prompts(entries, &query.text(), |entry| entry.in_scope(scope, &self.cwd, &self.session_id));
                 match code {
                     KeyCode::Up => *index = index.saturating_sub(1),
                     KeyCode::Down => *index = (*index + 1).min(matches.len().saturating_sub(1)),
@@ -1790,6 +1789,11 @@ impl App {
                         let Some(prompt) = matches.get(*index).map(|prompt| prompt.to_string()) else { return };
                         self.panel = None;
                         self.editor.set(&prompt);
+                    }
+                    KeyCode::Tab | KeyCode::BackTab => {
+                        let tabs = history::SCOPES.len();
+                        *tab = if code == KeyCode::Tab { (*tab + 1) % tabs } else { (*tab + tabs - 1) % tabs };
+                        *index = 0;
                     }
                     _ => {
                         if query.edit_key(key) {
@@ -2129,6 +2133,12 @@ impl App {
             }
         }
         btw::context(&sections)
+    }
+
+    fn open_history(&mut self) {
+        let mut entries = history::load(&self.home.join(".agents"));
+        entries.reverse();
+        self.panel = Some(Panel::History { entries, tab: 0, query: Editor::new(), index: 0 });
     }
 
     /// The model picker for settings `row`, on the current model when it matches `query`.
@@ -2521,16 +2531,19 @@ impl App {
                 };
                 view.render(width, PANEL_ROWS)
             }
-            Panel::History { prompts, query, index } => {
-                let rows: Vec<panel::Row> = matching_prompts(prompts, &query.text()).iter().map(|prompt| panel::Row { left: prompt.split_whitespace().collect::<Vec<_>>().join(" "), right: Vec::new() }).collect();
+            Panel::History { entries, tab, query, index } => {
+                let rows: Vec<panel::Row> = matching_prompts(entries, &query.text(), |entry| entry.in_scope(*tab, &self.cwd, &self.session_id))
+                    .iter()
+                    .map(|prompt| panel::Row { left: prompt.split_whitespace().collect::<Vec<_>>().join(" "), right: Vec::new() })
+                    .collect();
                 let view = panel::Panel {
                     title: format!("History {}", query.field(None)),
-                    tabs: &[],
-                    tab: 0,
+                    tabs: &history::SCOPES,
+                    tab: *tab,
                     rows: &rows,
                     selected: *index,
                     empty: "No matching prompts.",
-                    hint: "↑↓ navigate     enter insert     esc close",
+                    hint: "↑↓ navigate     enter insert     tab scope     esc close",
                 };
                 view.render(width, PANEL_ROWS)
             }
@@ -3015,9 +3028,9 @@ fn matching_accounts(accounts: Vec<AccountView>, query: &str) -> Vec<AccountView
     accounts.into_iter().filter(|a| format!("{} {}", a.name, a.provider).to_lowercase().contains(&query)).collect()
 }
 
-fn matching_prompts<'a>(prompts: &'a [String], query: &str) -> Vec<&'a str> {
+fn matching_prompts<'a>(entries: &'a [history::Entry], query: &str, in_scope: impl Fn(&history::Entry) -> bool) -> Vec<&'a str> {
     let query = query.to_lowercase();
-    prompts.iter().filter(|prompt| prompt.to_lowercase().contains(&query)).map(String::as_str).collect()
+    entries.iter().filter(|entry| in_scope(entry) && entry.prompt.to_lowercase().contains(&query)).map(|entry| entry.prompt.as_str()).collect()
 }
 
 /// "+3 -1" for the /changes rows.
