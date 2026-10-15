@@ -167,6 +167,9 @@ impl Client {
         state.threshold = settings.switch_at_percent as f64;
         state.policy = Some(settings.when_all_over_limit);
         state.fallback_model = settings.fallback_model.clone();
+        let state = &mut *state;
+        // A new pin from /account wins over the account the last request used.
+        state.current.retain(|provider, _| state.pinned.get(provider) == settings.default_accounts.get(provider));
         state.pinned = settings.default_accounts.clone();
         state.headroom = settings.headroom && crate::installed("headroom");
     }
@@ -593,6 +596,22 @@ fn read_usage(raw: &Value, usage: &mut Usage) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picking_an_account_reports_it_before_the_next_request() {
+        let home = std::env::temp_dir().join(format!("agent-pick-{}", std::process::id()));
+        let client = Client::new(&home).unwrap();
+        let account = |name: &str| Account { provider: "anthropic".into(), name: name.into(), secret: Secret::ApiKey("sk".into()) };
+        client.reload(vec![account("home"), account("work")]);
+        client.state.lock().unwrap().current.insert("anthropic".into(), "home".into());
+
+        let mut settings = crate::settings::load(&home);
+        settings.default_accounts.insert("anthropic".into(), "work".into());
+        client.configure(&settings);
+
+        assert_eq!(client.account("anthropic"), Some(("work".into(), None)));
+        std::fs::remove_dir_all(&home).ok();
+    }
 
     #[test]
     fn stream_builds_text_thinking_and_tool_blocks() {

@@ -136,6 +136,8 @@ enum Command {
     Plugin(String, String),
     /// A row picked in a plugin's panel: plugin name and the `panel_select` event, context added by the worker.
     PluginEvent(String, Value),
+    /// Tells plugins the account picked in /account, so footer usage follows it.
+    AccountPicked,
     /// Writes the goal the UI changed to the session.
     SaveGoal,
     SaveSpent(Spent),
@@ -505,6 +507,10 @@ fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Ms
                         Err(error) => error,
                     };
                     let _ = events.send(Msg::Agent(Event::Notice(notice)));
+                    continue;
+                }
+                Command::AccountPicked => {
+                    agent.plugins.event(json!({"type": "account_change", "context": agent.plugin_context()}));
                     continue;
                 }
                 Command::PluginEvent(name, mut params) => {
@@ -1653,6 +1659,7 @@ impl App {
                             self.update_settings(|s| {
                                 s.default_accounts.insert(provider, name);
                             });
+                            let _ = self.commands.send(Command::AccountPicked);
                             self.system("account", format!("Default {} account: {}{}.", account.provider, account.name, if self.settings.switch_at_percent == 0 { String::new() } else { format!(", until it reaches {}%", self.settings.switch_at_percent) }));
                             return;
                         }

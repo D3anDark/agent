@@ -205,8 +205,9 @@ type Message = { id?: number; method?: string; params?: { type?: string; args?: 
 async function handle(message: Message): Promise<void> {
 	const context = message.params?.context;
 	if (!context) return;
-	if (message.method === "event" && (message.params?.type === "session_start" || message.params?.type === "prompt_end")) {
-		if (message.params.type === "session_start") await refreshAccountLabels();
+	const type = message.params?.type;
+	if (message.method === "event" && (type === "session_start" || type === "prompt_end" || type === "account_change")) {
+		if (type === "session_start") await refreshAccountLabels();
 		send({ method: "ui.setStatus", params: { text: await status(context).catch(() => null) } });
 	} else if (message.method === "input") {
 		const reason = await blockedReason(context).catch(() => null);
