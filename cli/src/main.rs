@@ -1,24 +1,7 @@
-mod accounts;
 mod agent;
 mod api;
-mod ask;
-mod bg;
-mod codex;
-mod condense;
-mod goal;
-mod hashline;
-mod models;
-mod modes;
-mod oauth;
-mod permissions;
-mod plan;
 mod plugins;
-mod prompt;
-mod rtk;
 mod settings;
-mod snapshots;
-mod subagent;
-mod todo;
 mod tools;
 mod tui;
 mod update;
@@ -30,10 +13,11 @@ use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use agent::{Agent, Event, History, Session, Spent};
-use api::{Client, Usage};
-use hashline::Anchors;
-use permissions::{Decision, Grants, Mode};
+use agent::permissions::{Decision, Grants, Mode};
+use agent::{Agent, Event, History, Session, Spent, condense, modes, prompt, snapshots};
+use api::{Client, Usage, models};
+use tools::hashline::Anchors;
+use tools::rtk;
 
 const USAGE: &str = "Usage: agent [options] [message...]
        agent plugin install|update <name|path>   Copy a bundled plugin or a plugin directory into ~/.agents/plugins

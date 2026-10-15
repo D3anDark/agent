@@ -3,7 +3,7 @@ use std::sync::mpsc::Sender;
 
 use super::editor::Editor;
 use super::render::{Line, PLAIN, Style, span, wrap};
-use crate::ask::{Answer, Question, TYPE_SOMETHING};
+use crate::tools::ask::{Answer, Question, TYPE_SOMETHING};
 
 const RULE: Style = Style::fg(240);
 const BRIGHT: Style = Style::fg(255);
@@ -160,7 +160,7 @@ mod tests {
     fn a_long_typed_answer_wraps_inside_the_panel() {
         let input = json!({"questions": [{"question": "Q?", "header": "H", "options": [{"label": "a", "description": ""}, {"label": "b", "description": ""}]}]});
         let (reply, _answers) = mpsc::channel();
-        let mut panel = AskPanel::new(crate::ask::parse(&input).unwrap(), reply);
+        let mut panel = AskPanel::new(crate::tools::ask::parse(&input).unwrap(), reply);
         panel.paste("one two three four five six seven eight nine ten");
         let text: Vec<String> = panel.render(24).iter().map(|l| l.iter().map(|s| s.text.as_str()).collect()).collect();
         let answer: Vec<&String> = text.iter().filter(|row| ["one", "five", "ten"].iter().any(|word| row.contains(word))).collect();
@@ -171,7 +171,7 @@ mod tests {
     fn a_long_description_wraps_below_its_label() {
         let input = json!({"questions": [{"question": "Q?", "header": "H", "options": [{"label": "a", "description": "one two three four five six seven eight nine ten"}, {"label": "b", "description": ""}]}]});
         let (reply, _answers) = mpsc::channel();
-        let panel = AskPanel::new(crate::ask::parse(&input).unwrap(), reply);
+        let panel = AskPanel::new(crate::tools::ask::parse(&input).unwrap(), reply);
         let text: Vec<String> = panel.render(24).iter().map(|l| l.iter().map(|s| s.text.as_str()).collect()).collect();
         let label = text.iter().position(|row| row.ends_with("1. a")).expect("label on its own row");
         assert!(text[label + 1].trim_start().starts_with("one"), "{text:#?}");
@@ -185,7 +185,7 @@ mod tests {
             {"question": "Q2?", "header": "Two", "multiSelect": true, "options": [{"label": "c", "description": ""}, {"label": "d", "description": ""}]},
         ]});
         let (reply, answers) = mpsc::channel();
-        let mut panel = AskPanel::new(crate::ask::parse(&input).unwrap(), reply);
+        let mut panel = AskPanel::new(crate::tools::ask::parse(&input).unwrap(), reply);
         let keys = [KeyCode::Down, KeyCode::Down, KeyCode::Char('x'), KeyCode::Enter, KeyCode::Down, KeyCode::Char(' '), KeyCode::Up, KeyCode::Char(' ')];
         assert!(keys.into_iter().all(|code| !panel.key(code.into())));
         assert!(panel.key(KeyCode::Enter.into()));
@@ -199,7 +199,7 @@ mod tests {
             {"question": "Q2?", "header": "Two", "multiSelect": true, "options": [{"label": "c", "description": ""}, {"label": "d", "description": ""}]},
         ]});
         let (reply, answers) = mpsc::channel();
-        let mut panel = AskPanel::new(crate::ask::parse(&input).unwrap(), reply);
+        let mut panel = AskPanel::new(crate::tools::ask::parse(&input).unwrap(), reply);
         let keys = [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Left, KeyCode::Down, KeyCode::Enter];
         assert!(keys.into_iter().all(|code| !panel.key(code.into())));
         assert!(panel.key(KeyCode::Enter.into()));
@@ -213,7 +213,7 @@ mod tests {
             {"question": "Q2?", "header": "Two", "options": [{"label": "c", "description": ""}, {"label": "d", "description": ""}]},
         ]});
         let (reply, _answers) = mpsc::channel();
-        let mut panel = AskPanel::new(crate::ask::parse(&input).unwrap(), reply);
+        let mut panel = AskPanel::new(crate::tools::ask::parse(&input).unwrap(), reply);
         panel.key(KeyCode::Enter.into());
         let text: Vec<String> = panel.render(40).iter().map(|l| l.iter().map(|s| s.text.as_str()).collect()).collect();
         assert_eq!(text[1], "✓ One   Two", "{text:#?}");

@@ -2,9 +2,9 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::accounts::Policy;
-use crate::models::Model;
-use crate::permissions::Mode;
+use crate::agent::permissions::Mode;
+use crate::api::accounts::Policy;
+use crate::api::models::Model;
 
 /// Everything /settings edits, saved to ~/.agents/settings.json.
 #[derive(Clone, PartialEq, Debug)]
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn model_window_beats_provider_window_beats_catalog() {
-        let catalog = crate::models::built_in();
+        let catalog = crate::api::models::built_in();
         let opus = catalog.iter().find(|m| m.provider == "anthropic" && m.id == "claude-opus-4-6").unwrap();
         let sonnet = catalog.iter().find(|m| m.provider == "anthropic" && m.id == "claude-sonnet-4-6").unwrap();
         let mut settings = load(Path::new("/nonexistent"));

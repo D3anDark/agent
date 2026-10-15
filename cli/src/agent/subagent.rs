@@ -6,9 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::agent::FollowUp;
-use crate::permissions::Mode;
-use crate::prompt;
+use super::permissions::Mode;
+use super::{FollowUp, prompt};
 
 const DEFAULT_SWARM_PROMPT: &str = include_str!("swarm-prompt.md");
 const MAX_PER_SESSION: usize = 64;

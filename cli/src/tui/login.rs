@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::editor::Editor;
 use super::panel;
 use super::render::{Line, Style, span, wrap};
-use crate::accounts::{Account, Secret};
-use crate::oauth::{self, Pending, Tokens};
+use crate::api::accounts::{Account, Secret};
+use crate::api::oauth::{self, Pending, Tokens};
 
 const BRIGHT: Style = Style::fg(255).bold();
 const MUTED: Style = Style::fg(245);

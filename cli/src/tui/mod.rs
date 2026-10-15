@@ -28,19 +28,19 @@ use std::time::{Duration, Instant};
 
 use crate::agent::{self, Agent, Event, RestoredFiles, RewindPoint, Session, SessionInfo, Spent};
 use crate::api::{AccountView, Client, Delta, Usage};
-use crate::accounts::Policy;
-use crate::models::{self, Model};
-use crate::modes::{self, CAVEMAN_LEVELS, PONYTAIL_LEVELS};
-use crate::oauth::Tokens;
-use crate::permissions::{Decision, MODES, Mode, Request};
-use crate::prompt::{Skill, Template};
-use crate::settings::{self, Settings, model_key};
-use crate::goal::{Goal, Status as GoalStatus};
-use crate::plan::{self, Plan};
-use crate::todo::{Status, Todos};
 use crate::agent::FollowUp;
-use crate::bg::Terminals;
-use crate::subagent::Runs;
+use crate::agent::modes::{self, CAVEMAN_LEVELS, PONYTAIL_LEVELS};
+use crate::agent::permissions::{Decision, MODES, Mode, Request};
+use crate::agent::prompt::{Skill, Template};
+use crate::agent::subagent::Runs;
+use crate::api::accounts::Policy;
+use crate::api::models::{self, Model};
+use crate::api::oauth::Tokens;
+use crate::settings::{self, Settings, model_key};
+use crate::tools::bg::Terminals;
+use crate::tools::goal::{Goal, Status as GoalStatus};
+use crate::tools::plan::{self, Plan};
+use crate::tools::todo::{Status, Todos};
 use crate::worktree::{self, Worktree};
 use editor::Editor;
 use render::{Line, PLAIN, Screen, Style, line_width, link_at, overlay_center, overlay_right, select, span, take_cursor, text_in, truncate, width, wrap};
@@ -1368,7 +1368,7 @@ impl App {
                 let sessions: Vec<SessionInfo> = Session::list(&self.sessions_dir).into_iter().filter(|s| s.id != self.session_id).collect();
                 self.panel = Some(Panel::Resume { all: false, index: 0, sessions });
             }
-            skill if skill.starts_with("skill:") => match crate::prompt::expand_skill(trimmed, &self.skills) {
+            skill if skill.starts_with("skill:") => match crate::agent::prompt::expand_skill(trimmed, &self.skills) {
                 Ok(expanded) => {
                     self.push(Item::User(text.clone()));
                     let images = self.take_images(&text);
@@ -1380,7 +1380,7 @@ impl App {
                 let _ = self.commands.send(Command::Plugin(name.to_string(), args.to_string()));
             }
             name if let Some(template) = self.templates.iter().find(|t| t.name == name) => {
-                match crate::prompt::expand_template(template, args) {
+                match crate::agent::prompt::expand_template(template, args) {
                     Ok(expanded) => {
                         self.push(Item::User(expanded.clone()));
                         let images = self.take_images(&text);
@@ -3695,7 +3695,7 @@ mod tests {
             name: name.into(),
             oauth,
             account_id: id.map(String::from),
-            usage: usage.map(|(five_hour, seven_day)| crate::accounts::Usage { five_hour, seven_day, resets_at: None }),
+            usage: usage.map(|(five_hour, seven_day)| crate::api::accounts::Usage { five_hour, seven_day, resets_at: None }),
             current: name == "claudescom",
             pinned: name == "rokartur",
         };

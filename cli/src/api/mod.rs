@@ -6,10 +6,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::accounts::{self, Account, Candidate, Pick, Policy, Secret, Usage as Windows};
-use crate::models::{self, Model};
+pub mod accounts;
+pub mod codex;
+pub mod models;
+pub mod oauth;
+
 use crate::settings::Settings;
-use crate::{codex, oauth};
+use accounts::{Account, Candidate, Pick, Policy, Secret, Usage as Windows};
+use models::Model;
 
 const RETRY_DELAYS_SECS: [u64; 4] = [2, 5, 15, 30];
 const THINKING_BETA: &str = "thinking-binding-controls-2026-08-01";

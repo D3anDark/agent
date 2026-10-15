@@ -9,22 +9,28 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+pub mod condense;
+pub mod modes;
+pub mod permissions;
+pub mod prompt;
+pub mod snapshots;
+pub mod subagent;
+
+use crate::api::models::Model;
 use crate::api::{self, Client, Delta, Usage};
-use crate::ask::{self, Answer, Question};
-use crate::bg::{self, Terminals};
-use crate::condense::{self, Condensed};
-use crate::goal::{AfterTurn, Goal, Status as GoalStatus};
-use crate::plan::{self, Plan};
-use crate::hashline::Anchors;
-use crate::models::Model;
-use crate::modes;
-use crate::permissions::{self, Decision, Grants, Mode, Request};
-use crate::rtk::Rtk;
 use crate::settings::Settings;
-use crate::snapshots::Snapshots;
-use crate::subagent::{self, Launch, Runs};
-use crate::todo::Todos;
-use crate::{now_ms, prompt, tools};
+use crate::tools::ask::{self, Answer, Question};
+use crate::tools::bg::{self, Terminals};
+use crate::tools::goal::{AfterTurn, Goal, Status as GoalStatus};
+use crate::tools::hashline::Anchors;
+use crate::tools::plan::{self, Plan};
+use crate::tools::rtk::Rtk;
+use crate::tools::todo::Todos;
+use crate::{now_ms, tools};
+use condense::Condensed;
+use permissions::{Decision, Grants, Mode, Request};
+use snapshots::Snapshots;
+use subagent::{Launch, Runs};
 
 
 const SUMMARY_SYSTEM: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.

@@ -8,8 +8,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::hashline::{Anchors, resolve, str_arg};
-use crate::rtk::Rtk;
+pub mod ask;
+pub mod bg;
+pub mod goal;
+pub mod hashline;
+pub mod plan;
+pub mod rtk;
+pub mod todo;
+
+use hashline::{Anchors, resolve, str_arg};
+use rtk::Rtk;
 
 pub const MAX_LINES: usize = 2000;
 pub const MAX_BYTES: usize = 50 * 1024;

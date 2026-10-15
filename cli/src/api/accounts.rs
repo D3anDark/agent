@@ -4,7 +4,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::oauth::Tokens;
+use super::oauth::Tokens;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Account {
