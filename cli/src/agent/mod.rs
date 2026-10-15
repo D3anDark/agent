@@ -417,10 +417,15 @@ impl Agent {
     fn run_file_tool(&mut self, name: &str, input: &Value) -> (String, bool) {
         let (mut output, is_error) = tools::run(name, input, &self.cwd, &mut self.anchors, &self.rtk, &self.abort);
         if name == "read" && !is_error {
-            let file = self.cwd.join(input["path"].as_str().unwrap_or_default());
-            let nested = prompt::nested_context(&self.cwd, &file, &mut self.nested_instructions);
-            if !nested.is_empty() {
-                output = format!("{output}\n\n{nested}");
+            let paths = match input["paths"].as_array() {
+                Some(paths) => paths.iter().filter_map(Value::as_str).collect(),
+                None => vec![input["path"].as_str().unwrap_or_default()],
+            };
+            for path in paths {
+                let nested = prompt::nested_context(&self.cwd, &self.cwd.join(path), &mut self.nested_instructions);
+                if !nested.is_empty() {
+                    output = format!("{output}\n\n{nested}");
+                }
             }
         }
         (output, is_error)

@@ -1,7 +1,7 @@
 [
   {
     "name": "read",
-    "description": "Read a text file as `anchor│content` rows: a 4-character anchor (letters only, case-sensitive), `│`, then the line. Target edits by anchor, never by content or line number. `offset` takes a 1-indexed line number or a served anchor; with an anchor, `limit` counts lines after it — no line-number math. Page long files with `offset` and `limit`; when output says truncated, continue from the hinted `offset`. A stale anchor is refused with the current rows and fresh anchors. Images attach visually; binary, directory, and UTF-16/UTF-32 text are rejected; an empty file returns one empty row you can replace to seed content.",
+    "description": "Read a text file, or several whole files at once with `paths`, as `anchor│content` rows: a 4-character anchor (letters only, case-sensitive), `│`, then the line. Target edits by anchor, never by content or line number. `offset` takes a 1-indexed line number or a served anchor; with an anchor, `limit` counts lines after it — no line-number math. Page long files with `offset` and `limit`; when output says truncated, continue from the hinted `offset`. A stale anchor is refused with the current rows and fresh anchors. Images attach visually; binary, directory, and UTF-16/UTF-32 text are rejected; an empty file returns one empty row you can replace to seed content.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
@@ -9,6 +9,13 @@
         "path": {
           "type": "string",
           "description": "Path to the file to read (relative or absolute)"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Several files to read whole in one call, each under a `== path` header. Use instead of `path` and of `cat` in bash; edit them by the anchors served here"
         },
         "offset": {
           "anyOf": [
@@ -27,10 +34,7 @@
           "minimum": 1,
           "description": "Maximum number of lines to read from offset"
         }
-      },
-      "required": [
-        "path"
-      ]
+      }
     }
   },
   {

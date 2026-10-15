@@ -1,4 +1,4 @@
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -116,6 +116,9 @@ impl Anchors {
     }
 
     pub fn read(&mut self, cwd: &Path, input: &Value) -> Result<String, String> {
+        if let Some(paths) = input["paths"].as_array() {
+            return self.read_many(cwd, paths);
+        }
         let path = existing_file(cwd, str_arg(input, &["path"])?)?;
         let text = Text::load(&path)?;
         let empty = text.is_empty();
@@ -140,6 +143,17 @@ impl Anchors {
             return Ok(format!("Offset {} is beyond end of file ({total} lines total). Use offset=1 to read from the start, or offset={total} to read the last line.", start + 1));
         }
         Ok(self.rows(&path, start, limit))
+    }
+
+    // A failed file reports its error under its header so the other files still arrive.
+    fn read_many(&mut self, cwd: &Path, paths: &[Value]) -> Result<String, String> {
+        let mut out = Vec::new();
+        for path in paths {
+            let path = path.as_str().ok_or("[E_BAD_SHAPE] Every entry in \"paths\" must be a string.")?;
+            let body = self.read(cwd, &json!({"path": path})).unwrap_or_else(|e| e);
+            out.push(format!("== {path}\n{body}"));
+        }
+        Ok(out.join("\n\n"))
     }
 
     /// Serves `path` from `start`, cut at `limit`, MAX_LINES or MAX_BYTES, with a hint to continue.
@@ -483,6 +497,20 @@ mod tests {
         assert!(first.ends_with(&format!("[Showing lines 1-2 of 3. Use offset={} to continue.]", served[1])));
         let rest = anchors.read(Path::new("/"), &json!({"path": path, "offset": served[1]})).unwrap();
         assert_eq!(rest.split_once('│').unwrap().1, "c");
+    }
+
+    #[test]
+    fn read_serves_several_files_in_one_call_with_editable_anchors() {
+        let first = temp_file("read_many_a", "one\ntwo\n");
+        let second = temp_file("read_many_b", "three\n");
+        let mut anchors = Anchors::new("s");
+        let out = anchors.read(Path::new("/"), &json!({"paths": [first, second]})).unwrap();
+        assert!(out.starts_with(&format!("== {}\n", first.display())));
+        assert!(out.contains(&format!("\n== {}\n", second.display())));
+        let served = anchors_of(&out);
+        assert_eq!(served.len(), 3);
+        anchors.replace(&json!({"remove_from": served[2], "remove_to": served[2], "text": "THREE\n"})).unwrap();
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "THREE\n");
     }
 
     #[test]
