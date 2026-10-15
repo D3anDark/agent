@@ -138,7 +138,8 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
             Event::Start(Tag::TableHead | Tag::TableRow) => table.push(Vec::new()),
             Event::End(TagEnd::TableCell) => table.last_mut().expect("a cell sits in a row").push(std::mem::take(&mut spans)),
             Event::End(TagEnd::Table) => {
-                for row in aligned(std::mem::take(&mut table)) {
+                let room = width.saturating_sub(line_width(&base(lists.len(), quote_depth)));
+                for row in aligned(std::mem::take(&mut table), room) {
                     spans = row;
                     flush(&mut out, &mut spans, &mut item_prefix, base(lists.len(), quote_depth));
                 }
@@ -153,36 +154,55 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
     out
 }
 
-/// Pads every cell to its column's widest cell, splits columns with `│` and rules off the header row.
-fn aligned(rows: Vec<Vec<Line>>) -> Vec<Line> {
-    let mut widths: Vec<usize> = Vec::new();
+/// Fits the columns into `room`, wraps each cell inside its column, splits columns with `│` and rules off the header row.
+fn aligned(rows: Vec<Vec<Line>>, room: usize) -> Vec<Line> {
+    let mut natural: Vec<usize> = Vec::new();
     for row in &rows {
         for (column, cell) in row.iter().enumerate() {
-            if column == widths.len() {
-                widths.push(0);
+            if column == natural.len() {
+                natural.push(0);
             }
-            widths[column] = widths[column].max(line_width(cell));
+            natural[column] = natural[column].max(line_width(cell));
         }
     }
+    let widths = fit(&natural, room.saturating_sub(3 * natural.len().saturating_sub(1)));
     let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
     let mut lines = Vec::new();
     for (index, row) in rows.into_iter().enumerate() {
         let last = row.len().saturating_sub(1);
-        let mut line = Vec::new();
-        for (column, cell) in row.into_iter().enumerate() {
-            let pad = widths[column] - line_width(&cell);
-            line.extend(cell);
-            if column != last {
-                line.push(span(" ".repeat(pad), PLAIN));
-                line.push(span(" │ ", CODE_BORDER));
+        let cells: Vec<Vec<Line>> = row.iter().enumerate().map(|(column, cell)| wrap(cell, widths[column], &Vec::new())).collect();
+        let height = cells.iter().map(Vec::len).max().unwrap_or(0);
+        for row_line in 0..height {
+            let mut line = Vec::new();
+            for (column, cell) in cells.iter().enumerate() {
+                let part = cell.get(row_line).cloned().unwrap_or_default();
+                let pad = widths[column].saturating_sub(line_width(&part));
+                line.extend(part);
+                if column != last {
+                    line.push(span(" ".repeat(pad), PLAIN));
+                    line.push(span(" │ ", CODE_BORDER));
+                }
             }
+            lines.push(line);
         }
-        lines.push(line);
         if index == 0 {
             lines.push(vec![span(rule.join("─┼─"), CODE_BORDER)]);
         }
     }
     lines
+}
+
+/// Column widths that fit `available`: narrow columns keep their natural width, wide ones split what is left evenly.
+fn fit(natural: &[usize], mut available: usize) -> Vec<usize> {
+    let mut by_width: Vec<usize> = (0..natural.len()).collect();
+    by_width.sort_by_key(|&column| natural[column]);
+    let mut widths = vec![0; natural.len()];
+    for (sized, &column) in by_width.iter().enumerate() {
+        let share = available / (natural.len() - sized);
+        widths[column] = natural[column].min(share).max(1);
+        available = available.saturating_sub(widths[column]);
+    }
+    widths
 }
 
 #[cfg(test)]
@@ -209,5 +229,11 @@ mod tests {
     fn table_columns_line_up() {
         let lines = render("text\n\n| a | bb |\n|---|---|\n| ccc | d |", 40);
         assert_eq!(text(&lines), [" text", "", " a   │ bb", " ────┼───", " ccc │ d"]);
+    }
+
+    #[test]
+    fn table_too_wide_wraps_inside_its_columns() {
+        let lines = render("| a | b |\n|---|---|\n| one two three | x |", 12);
+        assert_eq!(text(&lines), [" a       │ b", " ────────┼──", " one two │ x", " three   │"]);
     }
 }
