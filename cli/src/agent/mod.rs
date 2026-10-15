@@ -10,6 +10,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 pub mod condense;
+pub mod context;
 pub mod edit_hooks;
 pub mod modes;
 pub mod permissions;
@@ -310,13 +311,7 @@ impl Agent {
             }
             self.collect_condensed(emit)?;
             let messages = condense::view(&self.messages, &self.condensed);
-            let mut system = if self.modes.is_empty() { self.system.clone() } else { format!("{}\n\n{}", self.system, self.modes) };
-            let mut tools = self.tools.clone();
-            tools.as_array_mut().expect("tool schemas are an array").extend(self.plugins.tools());
-            if *self.plan.lock().unwrap() != Plan::Off {
-                system = format!("{system}\n\n{}", plan::PROMPT);
-                tools.as_array_mut().expect("tool schemas are an array").push(plan::tool());
-            }
+            let (system, tools) = self.system_and_tools();
             let request = api::request(&self.model, self.max_tokens, &self.effort, &system, &prompt::cwd_section(&self.cwd), &tools, &messages);
             let mut reply = self.client.send(&request, &self.abort, &mut |delta| match delta {
                 Delta::Text(text) => emit(Event::Text(text.to_string())),
@@ -981,6 +976,25 @@ impl Agent {
             std::fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?
         };
         std::fs::write(out, text).map_err(|e| format!("Cannot write {}: {e}", out.display()))
+    }
+
+    /// The system prompt and tool schemas the next request sends, with modes, plugin tools and plan mode applied.
+    fn system_and_tools(&self) -> (String, Value) {
+        let mut system = if self.modes.is_empty() { self.system.clone() } else { format!("{}\n\n{}", self.system, self.modes) };
+        let mut tools = self.tools.clone();
+        tools.as_array_mut().expect("tool schemas are an array").extend(self.plugins.tools());
+        if *self.plan.lock().unwrap() != Plan::Off {
+            system = format!("{system}\n\n{}", plan::PROMPT);
+            tools.as_array_mut().expect("tool schemas are an array").push(plan::tool());
+        }
+        (system, tools)
+    }
+
+    /// The last request's context tokens split across `context::PARTS`.
+    pub fn context_split(&self) -> [u64; 5] {
+        let (system, tools) = self.system_and_tools();
+        let system = format!("{system}{}", prompt::cwd_section(&self.cwd));
+        context::split(&system, &tools, &condense::view(&self.messages, &self.condensed), self.last_context_tokens)
     }
 
     fn tool_schemas(&self, loaded: &[String]) -> Value {

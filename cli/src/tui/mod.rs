@@ -84,6 +84,7 @@ enum Msg {
     /// `entry` is where the rewound prompt sits on screen; None redraws from `messages`.
     Rewound { messages: Vec<Value>, files: Option<RestoredFiles>, entry: Option<usize> },
     Changes(Result<Option<Vec<FileChange>>, String>),
+    Context { split: [u64; 5], session: Usage },
 }
 
 /// The bottom panel that takes over the keys while it is open.
@@ -164,6 +165,7 @@ enum Command {
     /// Drops the prompt at message `at` and everything after it; `entry` passes through to `Msg::Rewound`.
     Rewind { at: usize, entry: Option<usize> },
     Changes,
+    Context,
 }
 
 /// Built-in commands: pi's wording for pi's commands, fx's for the ones taken from fx.
@@ -182,6 +184,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("ponytail", "<off | lite | full | ultra> — Set the ponytail level"),
     ("caveman", "<off | full | ultra | wenyan> — Set the caveman level"),
     ("voice", "Dictate in any language with whisper.cpp, Enter to stop"),
+    ("context", "Show what fills the context window and how well it caches"),
     ("context-window", "<100k to 1M | auto> — Set this model's context window"),
     ("copy", "Copy last agent message to clipboard"),
     ("session", "Show session info and stats"),
@@ -323,6 +326,8 @@ struct App {
     settings: Settings,
     catalog: Vec<Model>,
     context_tokens: u64,
+    /// The last request's usage, for /context's cache line.
+    last_usage: Usage,
     cwd: std::path::PathBuf,
     git: Git,
     plugins: crate::plugins::Plugins,
@@ -493,6 +498,10 @@ fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Ms
                     }
                     Err(error) => Err(error),
                 },
+                Command::Context => {
+                    let _ = events.send(Msg::Context { split: agent.context_split(), session: agent.usage });
+                    continue;
+                }
                 Command::Changes => {
                     let _ = events.send(Msg::Changes(agent.changes()));
                     continue;
@@ -682,6 +691,7 @@ impl App {
             settings,
             catalog,
             context_tokens: 0,
+            last_usage: Usage::default(),
             git: git_info(&agent.cwd),
             plugins: agent.plugins.clone(),
             cwd: agent.cwd.clone(),
@@ -968,6 +978,10 @@ impl App {
             Msg::Changes(Ok(Some(files))) if files.is_empty() => self.system("changes", "No files changed in this session."),
             Msg::Changes(Ok(Some(files))) => self.panel = Some(Panel::Changes { files, index: 0 }),
             Msg::Changes(Err(error)) => self.push(Item::Error(error)),
+            Msg::Context { split, session } => {
+                let window = self.settings.context_window(self.model());
+                self.push(Item::Lines(context_lines(split, window, session, self.last_usage)));
+            }
             Msg::Rewound { messages, files, entry } => {
                 match entry {
                     Some(entry) => self.entries.truncate(entry),
@@ -1385,6 +1399,7 @@ impl App {
             "plugins" => self.panel = Some(Panel::Plugins { index: 0 }),
             "skills" => self.panel = Some(Panel::Skills { index: 0 }),
             "changes" => _ = self.commands.send(Command::Changes),
+            "context" => _ = self.commands.send(Command::Context),
             "history" => self.open_history(),
             "usage" => {
                 self.panel = Some(Panel::Usage { tab: 0, totals: usage::totals(&self.sessions_dir, &self.session_id, crate::now_ms()) });
@@ -2671,6 +2686,7 @@ impl App {
             Event::FollowUp { source, text } => self.system(&source, text.split_once('\n').map_or(text.as_str(), |(head, _)| head)),
             Event::TurnEnd { usage } => {
                 self.context_tokens = usage.context_tokens();
+                self.last_usage = usage;
                 self.prompt_usage.add(usage);
             }
             Event::SessionStarted { id, path } => {
@@ -3492,6 +3508,21 @@ fn scrollbar(total: usize, visible: usize, scroll: usize) -> Vec<&'static str> {
 fn spread(left: Line, right: Line, width: usize) -> Line {
     let gap = width.saturating_sub(line_width(&left) + line_width(&right)).max(1);
     [left, vec![span(" ".repeat(gap), PLAIN)], right].concat()
+}
+
+fn context_lines(split: [u64; 5], window: u64, session: Usage, last: Usage) -> Vec<Line> {
+    let used: u64 = split.iter().sum();
+    let percent = |part: u64, of: u64| format!("{}%", (part * 100).checked_div(of).unwrap_or(0));
+    let mut lines = vec![vec![span("Context ", TOOL_NAME), span(format!("{} of {} ({})", tokens(used), tokens(window), percent(used, window)), PLAIN)]];
+    for (name, part) in agent::context::PARTS.iter().zip(split) {
+        lines.push(vec![span(format!("  {name:<16}"), MUTED), span(format!("{:>7} {:>5}", tokens(part), percent(part, used)), PLAIN)]);
+    }
+    lines.push(vec![span(format!("  {:<16}{:>7} {:>7} {:>5}", "Cache", "read", "write", "hit"), MUTED)]);
+    for (name, usage) in [("Session", session), ("Last request", last)] {
+        let hit = percent(usage.cache_read, usage.input + usage.cache_read + usage.cache_write);
+        lines.push(vec![span(format!("  {name:<16}"), MUTED), span(format!("{:>7} {:>7} {:>5}", tokens(usage.cache_read), tokens(usage.cache_write), hit), PLAIN)]);
+    }
+    lines
 }
 
 fn hotkeys_lines() -> Vec<Line> {
