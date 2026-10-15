@@ -460,6 +460,7 @@ impl Agent {
                 targets.map(|targets| bg::kill(&targets, &self.follow_ups))
             }
             "subagent" => self.subagent(input, emit),
+            "bg_wait" => self.bg_wait(input),
             "ask_user_question" => self.ask_user(input, emit),
             _ => match self.plugins.tool(name, input, &self.plugin_context(), &self.abort) {
                 Some(answer) => return answer,
@@ -561,6 +562,27 @@ impl Agent {
         self.pursue(&texts.join("\n\n"), emit)
     }
 
+    fn bg_wait(&self, input: &Value) -> Result<String, String> {
+        let runs: Vec<_> = {
+            let subagents = self.subagents.lock().unwrap();
+            match input["ids"].as_array() {
+                Some(ids) => ids
+                    .iter()
+                    .map(|id| {
+                        let id = id.as_str().unwrap_or_default();
+                        subagents.list.iter().find(|r| r.id == id && r.background).cloned().ok_or(format!("No background subagent {id}."))
+                    })
+                    .collect::<Result<_, _>>()?,
+                None => subagents.list.iter().filter(|r| r.background && r.status() == "running").cloned().collect(),
+            }
+        };
+        if runs.is_empty() {
+            return Err("No background subagents are running.".into());
+        }
+        let timeout = Duration::from_secs(input["timeout"].as_u64().unwrap_or(600).min(86_400));
+        subagent::wait_background(&runs, timeout, &self.abort, &self.follow_ups)
+    }
+
     /// Runs child agents: in the foreground `subagent_concurrency` at a time, or all in the background.
     fn subagent(&mut self, input: &Value, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
         let tasks = subagent::tasks(input)?;
@@ -597,7 +619,7 @@ impl Agent {
         }
         if background {
             let names: Vec<String> = runs.iter().map(|r| format!("{} ({})", r.id, r.label)).collect();
-            return Ok(format!("Started {} in the background. Each answer arrives as a message when it finishes; /subagents shows progress.", names.join(", ")));
+            return Ok(format!("Started {} in the background. Each answer arrives as a message when it finishes, or bg_wait waits for them; /subagents shows progress.", names.join(", ")));
         }
         if let [run] = runs.as_slice() {
             return Ok(run.result_text());

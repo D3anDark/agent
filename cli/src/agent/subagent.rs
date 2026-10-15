@@ -157,14 +157,7 @@ impl Runs {
             if let Some(mut child) = watched.child.lock().unwrap().take() {
                 let _ = child.wait();
             }
-            let mut state = watched.state.lock().unwrap();
-            state.elapsed = Some(watched.started.elapsed());
-            state.result = Some(result);
-            drop(state);
-            if watched.background {
-                let text = format!("Subagent {} ({}) finished.\n\n{}", watched.id, watched.label, watched.result_text());
-                follow_ups.lock().unwrap().push(FollowUp { source: watched.id.clone(), text });
-            }
+            finish(&watched, result, &follow_ups);
         });
         Ok(run)
     }
@@ -187,6 +180,35 @@ pub fn wait(runs: &[Arc<Run>], abort: &AtomicBool) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Records a run's answer; a background run also queues it as a follow-up for the next turn.
+/// Holding `follow_ups` while the status flips lets bg_wait, which sees the run done, find its follow-up to withdraw.
+fn finish(run: &Run, result: Result<String, String>, follow_ups: &Mutex<Vec<FollowUp>>) {
+    let mut queued = follow_ups.lock().unwrap();
+    let mut state = run.state.lock().unwrap();
+    state.elapsed = Some(run.started.elapsed());
+    state.result = Some(result);
+    drop(state);
+    if run.background {
+        let text = format!("Subagent {} ({}) finished.\n\n{}", run.id, run.label, run.result_text());
+        queued.push(FollowUp { source: run.id.clone(), text });
+    }
+}
+
+/// bg_wait: the answers of `runs` once they finish or `timeout` passes, withdrawing the follow-ups they queued.
+/// Esc ends the wait but leaves the runs going, so their answers still arrive as follow-ups.
+pub fn wait_background(runs: &[Arc<Run>], timeout: Duration, abort: &AtomicBool, follow_ups: &Mutex<Vec<FollowUp>>) -> Result<String, String> {
+    let deadline = Instant::now() + timeout;
+    while runs.iter().any(|r| r.status() == "running") && Instant::now() < deadline {
+        if abort.load(Ordering::Relaxed) {
+            return Err("Operation aborted".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    follow_ups.lock().unwrap().retain(|f| !runs.iter().any(|r| r.id == f.source));
+    let answers: Vec<String> = runs.iter().map(|r| format!("## {} ({}) {}\n\n{}", r.label, r.id, r.status(), r.result_text())).collect();
+    Ok(answers.join("\n\n"))
 }
 
 /// One child to spawn; `model` and `effort` are None when the parent's apply.
@@ -239,5 +261,31 @@ mod tests {
         assert_eq!(one, [Task { label: "scout".into(), prompt: "look".into(), model: None, effort: Some("low".into()) }]);
         assert_eq!(tasks(&json!({"tasks": [{"label": "a", "prompt": "x"}, {"label": "b", "prompt": "y"}]})).unwrap().len(), 2);
         assert_eq!(tasks(&json!({"tasks": [{"label": " ", "prompt": "x"}]})).unwrap_err(), "Each task needs a label.");
+    }
+
+    #[test]
+    fn a_run_finishing_during_bg_wait_is_returned_once_not_as_a_follow_up() {
+        let run = Arc::new(Run {
+            id: "sa-1".into(),
+            label: "scan".into(),
+            task: "scan".into(),
+            background: true,
+            started: Instant::now(),
+            child: Mutex::new(None),
+            state: Mutex::default(),
+        });
+        let follow_ups = Arc::new(Mutex::new(vec![FollowUp { source: "bt-1".into(), text: "terminal".into() }]));
+        let finisher = {
+            let (run, follow_ups) = (run.clone(), follow_ups.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                finish(&run, Ok("found 3".into()), &follow_ups);
+            })
+        };
+        let answer = wait_background(&[run], Duration::from_secs(5), &AtomicBool::new(false), &follow_ups).unwrap();
+        finisher.join().unwrap();
+        assert_eq!(answer, "## scan (sa-1) done\n\nfound 3");
+        let sources: Vec<String> = follow_ups.lock().unwrap().iter().map(|f| f.source.clone()).collect();
+        assert_eq!(sources, ["bt-1"]);
     }
 }

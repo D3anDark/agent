@@ -468,6 +468,17 @@
     }
   },
   {
+    "name": "bg_wait",
+    "description": "Wait for background subagents (default: every running one) and return their final answers. Answers returned here do not arrive again as messages. Esc stops the wait but not the subagents.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "ids": { "type": "array", "items": { "type": "string" }, "description": "Run ids to wait for, e.g. ['sa-1', 'sa-2']" },
+        "timeout": { "type": "integer", "description": "Seconds to wait at most (default: 600). Runs still going are reported as running." }
+      }
+    }
+  },
+  {
     "name": "bg_start",
     "description": "Start a long-running shell command as a background terminal (executed via sh -c). Fire-and-forget: this returns immediately with an id, and you get a message with the final output when the process exits. The process receives NO stdin (immediate EOF) and there is no way to send input later — interactive commands will not work; use bg_kill to stop a stuck one. Terminals are session-scoped: they are killed when the agent exits. Output shown to you is tail-truncated (stdout 16.0KB, stderr 8.0KB); the full logs are captured to files and in the /ps viewer. Max 8 background terminals can run at once.",
     "input_schema": {

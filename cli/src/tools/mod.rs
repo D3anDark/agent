@@ -29,7 +29,7 @@ const SCHEMAS: &str = include_str!("tools.json");
 
 /// pi's tool-loader groups: their tools stay out of requests until load_tools asks for the group.
 pub const GROUPS: [(&str, &[&str]); 3] = [
-    ("agents", &["subagent"]),
+    ("agents", &["subagent", "bg_wait"]),
     ("terminals", &["bg_start", "bg_status", "bg_list", "bg_kill"]),
     ("web", &["web_search", "source_check", "fetch_content", "get_search_content"]),
 ];
