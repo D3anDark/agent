@@ -15,6 +15,7 @@ pub mod modes;
 pub mod permissions;
 pub mod prompt;
 pub mod snapshots;
+pub mod skill_usage;
 pub mod subagent;
 
 use crate::api::models::Model;
@@ -473,6 +474,7 @@ impl Agent {
                 None => vec![input["path"].as_str().unwrap_or_default()],
             };
             for path in paths {
+                self.record_skill_read(&self.cwd.join(path));
                 let nested = prompt::nested_context(&self.cwd, &self.cwd.join(path), &mut self.nested_instructions);
                 if !nested.is_empty() {
                     output = format!("{output}\n\n{nested}");
@@ -480,6 +482,16 @@ impl Agent {
             }
         }
         (output, is_error)
+    }
+
+    /// A read SKILL.md counts as the agent using that skill.
+    fn record_skill_read(&self, path: &Path) {
+        if path.file_name().is_none_or(|name| name != "SKILL.md") {
+            return;
+        }
+        let Some(skill) = prompt::parse_skill(path) else { return };
+        // Usage stats must not fail the read that triggered them.
+        let _ = skill_usage::record(&self.agent_dir, &skill.name, "agent", &self.cwd);
     }
 
     fn todo(&mut self, input: &Value) -> Result<String, String> {
@@ -858,6 +870,7 @@ impl Agent {
         *self.permission_mode.lock().unwrap() = settings.permission_mode;
         self.rtk = if settings.rtk { Rtk::ON } else { Rtk::OFF };
         self.modes = modes::prompt(&self.home, &settings.ponytail, &settings.caveman);
+        self.system = prompt::system_prompt(&self.agent_dir, &self.cwd, &settings.disabled_skills);
     }
 
     /// Starts an empty session (unsaved if the current one is unsaved).

@@ -261,7 +261,8 @@ fn run(options: Options) -> Result<(), String> {
         agent.subagents.lock().unwrap().stop_all();
         return result;
     }
-    let skills = prompt::load_skills(&agent_dir, &agent.cwd, &settings.disabled_skills);
+    // All skills: /skills lists the disabled ones too, the TUI filters by settings.disabled_skills.
+    let skills = prompt::load_skills(&agent_dir, &agent.cwd, &[]);
     let templates = prompt::load_templates(&agent_dir, &agent.cwd);
     agent.interactive = true;
     agent.snapshots = snapshots::Snapshots::open(&home, &agent.cwd);

@@ -31,6 +31,7 @@ use crate::api::{AccountView, Client, Delta, Usage};
 use crate::agent::FollowUp;
 use crate::agent::modes::{self, CAVEMAN_LEVELS, PONYTAIL_LEVELS};
 use crate::agent::permissions::{Decision, MODES, Mode, Request};
+use crate::agent::skill_usage;
 use crate::agent::prompt::{Skill, Template};
 use crate::agent::subagent::Runs;
 use crate::api::accounts::Policy;
@@ -96,6 +97,8 @@ enum Panel {
     Ask(ask::AskPanel),
     Todos { index: usize },
     Plugins { index: usize },
+    /// Every skill, including the ones `Settings.disabled_skills` leaves out of the prompt.
+    Skills { index: usize },
     /// The settings a plugin declares in plugin.json; `edit` holds a string being typed.
     PluginSettings { plugin: String, index: usize, edit: Option<Editor> },
     /// A panel a plugin opened with `ui.showPanel`; `data` is its params.
@@ -174,6 +177,8 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("compact", "Manually compact the session context"),
     ("todos", "Show and edit the todo list"),
     ("plugins", "Install, enable and disable plugins"),
+    ("skills", "Enable and disable skills"),
+    ("skill-usage", "Show how often each skill was used, least used first"),
     ("ps", "Show background terminals"),
     ("subagents", "Show subagent runs"),
     ("goal", "[objective | pause | resume | stop | done] — Set a goal the agent keeps working toward, or manage it"),
@@ -638,10 +643,6 @@ impl App {
         for template in &templates {
             slash_commands.push((template.name.clone(), template.description.clone()));
         }
-        for skill in &skills {
-            let description = skill.description.split_whitespace().collect::<Vec<_>>().join(" ");
-            slash_commands.push((format!("skill:{}", skill.name), description));
-        }
         let mut app = App {
             entries: Vec::new(),
             editor: Editor::new(),
@@ -694,7 +695,7 @@ impl App {
             btw: None,
         };
         app.push(Item::Lines(banner()));
-        app.system("skills", format!("{} loaded", app.skills.len()));
+        app.system("skills", format!("{} loaded", app.enabled_skills().count()));
         for (name, banner) in [("ponytail", modes::PONYTAIL_BANNER), ("caveman", modes::CAVEMAN_BANNER)] {
             if let Some(level) = agent.modes.split(banner).nth(1).and_then(|rest| rest.lines().next()) {
                 app.system(name, format!("loaded, level {level}"));
@@ -1221,6 +1222,17 @@ impl App {
         self.catalog.iter().find(|m| m.id == self.settings.model).expect("settings.model comes from the catalog")
     }
 
+    fn enabled_skills(&self) -> impl Iterator<Item = &Skill> {
+        self.skills.iter().filter(|skill| !self.settings.disabled_skills.contains(&skill.name))
+    }
+
+    fn skill_usage(&mut self) {
+        let log = std::fs::read_to_string(self.home.join(".agents/skill-usage.jsonl")).unwrap_or_default();
+        let names: Vec<&str> = self.skills.iter().map(|skill| skill.name.as_str()).collect();
+        let lines: Vec<String> = skill_usage::counts(&log, &names).iter().map(|(name, count)| format!("{count:>5}  {name}")).collect();
+        self.system("skill-usage", format!("uses per skill, least used first\n{}", lines.join("\n")));
+    }
+
     fn submit(&mut self, text: String) {
         self.scroll = 0;
         // A side question and /goal pause work mid-turn, so they skip the steering queue.
@@ -1242,7 +1254,7 @@ impl App {
         // Settings changes reach the agent through Command::Apply, which the worker takes after the turn.
         let local = [
             "/subagents", "/ps", "/todos", "/help", "/hotkeys", "/session", "/copy", "/voice", "/settings", "/model", "/thinking", "/ponytail",
-            "/caveman", "/permissions", "/context-window", "/plugins", "/login", "/logout", "/account", "/rename", "/export", "/quit", "/exit",
+            "/caveman", "/permissions", "/context-window", "/plugins", "/skills", "/skill-usage", "/login", "/logout", "/account", "/rename", "/export", "/quit", "/exit",
         ]
         .iter()
         .any(|name| command_args(&text, name).is_some());
@@ -1332,6 +1344,8 @@ impl App {
             "settings" => self.panel = Some(Panel::Settings { row: 0, query: Editor::new() }),
             "todos" => self.panel = Some(Panel::Todos { index: 0 }),
             "plugins" => self.panel = Some(Panel::Plugins { index: 0 }),
+            "skills" => self.panel = Some(Panel::Skills { index: 0 }),
+            "skill-usage" => self.skill_usage(),
             "ps" if self.terminals.lock().unwrap().list.is_empty() => self.system("ps", "No background terminals yet. The agent starts them with bg_start."),
             "ps" => self.panel = Some(Panel::Terminals { index: 0 }),
             "subagents" if self.subagents.lock().unwrap().list.is_empty() => self.system("subagents", "No subagent runs yet."),
@@ -1389,22 +1403,29 @@ impl App {
             }
             "hotkeys" => self.push(Item::Lines(hotkeys_lines())),
             "help" => {
-                let mut lines: Vec<String> = self.slash_commands.iter().filter(|(name, _)| !name.starts_with("skill:")).map(|(name, description)| format!("/{name:<14} {description}")).collect();
-                lines.push(format!("/{:<14} run a skill ({} loaded)", "skill:<name>", self.skills.len()));
+                let mut lines: Vec<String> = self.slash_commands.iter().map(|(name, description)| format!("/{name:<14} {description}")).collect();
+                lines.push(format!("/{:<14} run a skill ({} loaded)", "skill:<name>", self.enabled_skills().count()));
                 self.system("help", format!("{} commands\n{}", lines.len(), lines.join("\n")));
             }
             "resume" => {
                 let sessions: Vec<SessionInfo> = Session::list(&self.sessions_dir).into_iter().filter(|s| s.id != self.session_id).collect();
                 self.panel = Some(Panel::Resume { all: false, index: 0, sessions });
             }
-            skill if skill.starts_with("skill:") => match crate::agent::prompt::expand_skill(trimmed, &self.skills) {
-                Ok(expanded) => {
-                    self.push(Item::User(text.clone()));
-                    let images = self.take_images(&text);
-                    self.start(Command::Prompt(expanded, images));
+            skill if let Some(skill) = skill.strip_prefix("skill:")
+                && self.enabled_skills().any(|s| s.name == skill) =>
+            {
+                match crate::agent::prompt::expand_skill(trimmed, &self.skills) {
+                    Ok(expanded) => {
+                        if let Err(error) = skill_usage::record(&self.home.join(".agents"), skill, "user", &self.cwd) {
+                            self.push(Item::Error(error));
+                        }
+                        self.push(Item::User(text.clone()));
+                        let images = self.take_images(&text);
+                        self.start(Command::Prompt(expanded, images));
+                    }
+                    Err(error) => self.push(Item::Error(error)),
                 }
-                Err(error) => self.push(Item::Error(error)),
-            },
+            }
             name if self.plugins.commands().iter().any(|(command, _)| command == name) => {
                 let _ = self.commands.send(Command::Plugin(name.to_string(), args.to_string()));
             }
@@ -1585,6 +1606,22 @@ impl App {
                     _ => {}
                 }
             }
+            Some(Panel::Skills { index }) => match code {
+                KeyCode::Up => *index = index.saturating_sub(1),
+                KeyCode::Down => *index = (*index + 1).min(self.skills.len().saturating_sub(1)),
+                KeyCode::Char(' ') => {
+                    let Some(skill) = self.skills.get(*index) else { return };
+                    let name = skill.name.clone();
+                    self.update_settings(|s| {
+                        if s.disabled_skills.contains(&name) {
+                            s.disabled_skills.retain(|disabled| *disabled != name);
+                        } else {
+                            s.disabled_skills.push(name);
+                        }
+                    });
+                }
+                _ => {}
+            },
             Some(Panel::Plugins { index }) => {
                 let views = self.plugins.list();
                 *index = (*index).min(views.len().saturating_sub(1));
@@ -2230,6 +2267,27 @@ impl App {
                 };
                 view.render(width, PANEL_ROWS)
             }
+            Panel::Skills { index } => {
+                let rows: Vec<panel::Row> = self
+                    .skills
+                    .iter()
+                    .map(|skill| {
+                        let right = if self.settings.disabled_skills.contains(&skill.name) { span("disabled", MUTED) } else { span("enabled", PLAIN) };
+                        let description = skill.description.split_whitespace().collect::<Vec<_>>().join(" ");
+                        panel::Row { left: format!("{}  {description}", skill.name), right: vec![right] }
+                    })
+                    .collect();
+                let view = panel::Panel {
+                    title: "Skills".into(),
+                    tabs: &[],
+                    tab: 0,
+                    rows: &rows,
+                    selected: *index,
+                    empty: "No skills. Add one under ~/.agents/skills/<name>/SKILL.md.",
+                    hint: "↑↓ navigate     space enable/disable     esc close",
+                };
+                view.render(width, PANEL_ROWS)
+            }
             Panel::Plugins { index } => {
                 let rows: Vec<panel::Row> = self
                     .plugins
@@ -2378,6 +2436,7 @@ impl App {
             Some(query) => matching_paths(&self.cwd, query),
             None => {
                 let mut commands = self.slash_commands.clone();
+                commands.extend(self.enabled_skills().map(|skill| (format!("skill:{}", skill.name), skill.description.split_whitespace().collect::<Vec<_>>().join(" "))));
                 commands.extend(self.plugins.commands());
                 matching_commands(&commands, &self.editor.text())
             }

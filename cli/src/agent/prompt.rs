@@ -179,7 +179,7 @@ fn collect_skill_files(dir: &Path, root: bool, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn parse_skill(path: &Path) -> Option<Skill> {
+pub fn parse_skill(path: &Path) -> Option<Skill> {
     let text = read_text(path)?;
     let fields = frontmatter(&text)?;
     let field = |key: &str| fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
