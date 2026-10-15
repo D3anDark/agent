@@ -12,6 +12,7 @@ pub mod ask;
 pub mod bg;
 pub mod external;
 pub mod goal;
+pub mod guard;
 pub mod hashline;
 pub mod plan;
 pub mod rtk;

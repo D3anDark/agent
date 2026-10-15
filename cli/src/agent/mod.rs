@@ -24,6 +24,7 @@ use crate::settings::Settings;
 use crate::tools::ask::{self, Answer, Question};
 use crate::tools::bg::{self, Terminals};
 use crate::tools::goal::{AfterTurn, Goal, Status as GoalStatus};
+use crate::tools::guard;
 use crate::tools::hashline::Anchors;
 use crate::tools::plan::{self, Plan};
 use crate::tools::rtk::Rtk;
@@ -434,6 +435,11 @@ impl Agent {
         }
         if *self.plan.lock().unwrap() != Plan::Off
             && let Some(reason) = plan::blocked(name, input)
+        {
+            return (reason, true);
+        }
+        if matches!(name, "bash" | "bg_start")
+            && let Some(reason) = guard::bash(input["command"].as_str().unwrap_or_default())
         {
             return (reason, true);
         }
