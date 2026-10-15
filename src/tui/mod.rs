@@ -2466,19 +2466,16 @@ fn render_tool(name: &str, input: &Value, result: Option<&(String, bool)>, width
         Some((_, true)) => ("✗", ERROR),
     };
     let label = if name == "bash" { "Bash" } else { name };
-    let left = vec![span(icon, icon_style), span(" ", PLAIN), span(label, TOOL_NAME), span(" ", PLAIN), span(tool_args(name, input), TOOL_ARGS)];
-    let mut lines = vec![left];
+    let header = vec![span(icon, icon_style), span(" ", PLAIN), span(label, TOOL_NAME), span(" ", PLAIN), span(tool_args(name, input), TOOL_ARGS)];
+    if !expanded {
+        return vec![truncate(&header, width)];
+    }
+    let mut lines = vec![header];
     let Some((output, is_error)) = result else { return lines };
     let style = if *is_error { ERROR } else { TOOL_ARGS };
-    let shown: Vec<String> = if expanded {
-        output.lines().take(TOOL_OUTPUT_LINES).map(|line| line.replace('\t', "    ")).collect()
-    } else if *is_error || name == "bash" {
-        Some(summary_line(output, *is_error)).filter(|line| !line.is_empty()).into_iter().collect()
-    } else {
-        Vec::new()
-    };
+    let shown = output.lines().take(TOOL_OUTPUT_LINES).map(|line| line.replace('\t', "    "));
     let is_diff = !is_error && matches!(name, "replace" | "replace_match" | "insert" | "copy" | "move");
-    for (index, line) in shown.into_iter().enumerate() {
+    for (index, line) in shown.enumerate() {
         let lead = if index == 0 { "└ " } else { "  " };
         let style = match line.chars().next() {
             Some('+') if is_diff => OK,
@@ -2488,7 +2485,7 @@ fn render_tool(name: &str, input: &Value, result: Option<&(String, bool)>, width
         lines.push(truncate(&vec![span(lead, MUTED), span(line, style)], width));
     }
     let hidden = output.lines().count().saturating_sub(TOOL_OUTPUT_LINES);
-    if expanded && hidden > 0 {
+    if hidden > 0 {
         lines.push(vec![span(format!("  … {hidden} more lines"), MUTED)]);
     }
     lines
@@ -2530,15 +2527,6 @@ fn tool_args(name: &str, input: &Value) -> String {
         },
         "fd" => input["pattern"].as_str().or(input["path"].as_str()).unwrap_or_default().to_string(),
         _ => input.to_string(),
-    }
-}
-
-fn summary_line(output: &str, is_error: bool) -> String {
-    let mut lines = output.lines().map(str::trim).filter(|l| !l.is_empty());
-    let line = if is_error { lines.next() } else { lines.next_back() };
-    match line {
-        Some("(no output)") | None => String::new(),
-        Some(line) => line.to_string(),
     }
 }
 
@@ -2992,11 +2980,22 @@ mod tests {
     }
 
     #[test]
-    fn tool_row_puts_the_bash_output_under_a_hook() {
+    fn collapsed_tool_call_is_one_line_even_for_long_bash_and_errors() {
+        let ok = ("total 1\na.txt  6B\n".to_string(), false);
+        let long = json!({"command": "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"});
+        let rows: Vec<String> = render_tool("bash", &long, Some(&ok), 20, false).iter().map(text).collect();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].chars().count() <= 20, "{rows:?}");
+        let failed = ("no such file\n".to_string(), true);
+        assert_eq!(render_tool("read", &json!({"path": "x"}), Some(&failed), 40, false).len(), 1);
+    }
+
+    #[test]
+    fn expanded_tool_call_puts_the_output_under_a_hook() {
         let result = ("total 1\na.txt  6B\n".to_string(), false);
-        let lines = render_tool("bash", &json!({"command": "ls", "timeout": 10}), Some(&result), 40, false);
+        let lines = render_tool("bash", &json!({"command": "ls", "timeout": 10}), Some(&result), 40, true);
         let rows: Vec<String> = lines.iter().map(text).collect();
-        assert_eq!(rows, ["✓ Bash ls (timeout 10s)", "└ a.txt  6B"]);
+        assert_eq!(rows, ["✓ Bash ls (timeout 10s)", "└ total 1", "  a.txt  6B"]);
     }
 
     #[test]
