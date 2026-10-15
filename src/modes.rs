@@ -1,0 +1,143 @@
+//! Native ponytail and caveman: the host tracks the level in settings and injects the
+//! official rules, downloaded from each project's GitHub repo and cached in ~/.agent/modes.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+pub const PONYTAIL_LEVELS: [&str; 4] = ["off", "lite", "full", "ultra"];
+pub const CAVEMAN_LEVELS: [&str; 4] = ["off", "full", "ultra", "wenyan"];
+pub const PONYTAIL_BANNER: &str = "PONYTAIL MODE ACTIVE — level: ";
+pub const CAVEMAN_BANNER: &str = "CAVEMAN MODE ACTIVE — mode: ";
+const PONYTAIL_URL: &str = "https://raw.githubusercontent.com/DietrichGebert/ponytail/main/skills/ponytail/SKILL.md";
+const CAVEMAN_SKILLS_URL: &str = "https://raw.githubusercontent.com/JuliusBrussee/caveman/main/skills";
+const REFRESH_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Downloads the rules the active levels need when the cached copy is missing or a day old.
+/// A failed refresh keeps the old copy; only a missing copy is an error.
+pub fn fetch(home: &Path, ponytail: &str, caveman: &str) -> Result<(), String> {
+    let mut wanted = Vec::new();
+    if ponytail != "off" {
+        wanted.push(("ponytail", PONYTAIL_URL.to_string()));
+    }
+    if let Some(skill) = caveman_skill(caveman) {
+        wanted.push((skill, format!("{CAVEMAN_SKILLS_URL}/{skill}/SKILL.md")));
+    }
+    for (skill, url) in wanted {
+        let path = cache_path(home, skill);
+        let age = fs::metadata(&path).and_then(|meta| meta.modified()).ok().and_then(|modified| modified.elapsed().ok());
+        if age.is_some_and(|age| age < REFRESH_AFTER) {
+            continue;
+        }
+        match download(&url) {
+            Ok(rules) => {
+                fs::create_dir_all(path.parent().expect("cache_path has a parent")).map_err(|e| format!("Cannot create {}: {e}", path.display()))?;
+                fs::write(&path, rules).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+            }
+            Err(e) if age.is_none() => return Err(format!("Cannot download the {skill} rules from {url}: {e}")),
+            Err(_) => {} // offline: the day-old copy still works
+        }
+    }
+    Ok(())
+}
+
+/// The system prompt section for the active levels, built from the cached rules.
+pub fn prompt(home: &Path, ponytail: &str, caveman: &str) -> String {
+    let mut sections = Vec::new();
+    if ponytail != "off"
+        && let Some(rules) = read(home, "ponytail")
+    {
+        sections.push(format!("<ponytail>\n{PONYTAIL_BANNER}{ponytail}\n\n{}\n</ponytail>", only_level(body(&rules), ponytail)));
+    }
+    if let Some(skill) = caveman_skill(caveman)
+        && let Some(rules) = read(home, skill)
+    {
+        sections.push(format!("<caveman>\n{CAVEMAN_BANNER}{skill}\n\n{}\n</caveman>", body(&rules)));
+    }
+    sections.join("\n\n")
+}
+
+/// What a typed message turns off, as (ponytail, caveman): the official "stop ponytail",
+/// "stop caveman" and "normal mode" phrases.
+pub fn stopped_by(text: &str) -> (bool, bool) {
+    let phrase = text.trim().trim_end_matches(['.', '!', '?']).to_lowercase();
+    (phrase == "stop ponytail" || phrase == "normal mode", phrase == "stop caveman" || phrase == "normal mode")
+}
+
+/// caveman ships each level as its own skill; these are its legacy level names.
+fn caveman_skill(level: &str) -> Option<&'static str> {
+    match level {
+        "full" => Some("caveman"),
+        "ultra" => Some("ultracave"),
+        "wenyan" => Some("megacave"),
+        _ => None,
+    }
+}
+
+fn cache_path(home: &Path, skill: &str) -> PathBuf {
+    home.join(".agent/modes").join(format!("{skill}.md"))
+}
+
+fn read(home: &Path, skill: &str) -> Option<String> {
+    fs::read_to_string(cache_path(home, skill)).ok()
+}
+
+fn download(url: &str) -> Result<String, String> {
+    let http: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(10))).build().into();
+    let rules = http.get(url).call().map_err(|e| e.to_string())?.body_mut().read_to_string().map_err(|e| e.to_string())?;
+    if !rules.starts_with("---") {
+        return Err("the response is not a SKILL.md".into());
+    }
+    Ok(rules)
+}
+
+fn body(skill: &str) -> &str {
+    skill.strip_prefix("---").and_then(|rest| rest.split_once("---")).map_or(skill, |(_, body)| body.trim_start())
+}
+
+/// ponytail's SKILL.md lists every level; keep only the active level's table row and examples.
+fn only_level(body: &str, level: &str) -> String {
+    let mut kept = Vec::new();
+    for line in body.split('\n').map(|line| line.trim_end_matches('\r')) {
+        let label = line
+            .strip_prefix("| **")
+            .and_then(|rest| rest.split_once("**"))
+            .map(|(label, _)| label)
+            .or_else(|| line.strip_prefix('-').and_then(|rest| rest.split_once(':')).filter(|(_, value)| value.trim_start().starts_with('"')).map(|(label, _)| label));
+        let label = label.map(|l| l.trim().to_lowercase());
+        if label.as_deref().is_some_and(|l| PONYTAIL_LEVELS[1..].contains(&l) && l != level) {
+            continue;
+        }
+        kept.push(line);
+    }
+    kept.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ponytail_keeps_only_the_active_level() {
+        let body = "Rules\n| **lite** | a |\n| **ultra** | b |\n- lite: \"x\"\n- ultra: \"y\"\n- Full: prose stays";
+        assert_eq!(only_level(body, "ultra"), "Rules\n| **ultra** | b |\n- ultra: \"y\"\n- Full: prose stays");
+    }
+
+    #[test]
+    fn prompt_uses_cached_rules_for_active_levels_only() {
+        let home = std::env::temp_dir().join(format!("agent-modes-{}", std::process::id()));
+        fs::create_dir_all(home.join(".agent/modes")).unwrap();
+        fs::write(cache_path(&home, "ponytail"), "---\nname: ponytail\n---\nBe lazy.").unwrap();
+        fs::write(cache_path(&home, "ultracave"), "---\nname: ultracave\n---\nFew word.").unwrap();
+        let prompt = prompt(&home, "full", "ultra");
+        fs::remove_dir_all(&home).unwrap();
+        assert_eq!(prompt, "<ponytail>\nPONYTAIL MODE ACTIVE — level: full\n\nBe lazy.\n</ponytail>\n\n<caveman>\nCAVEMAN MODE ACTIVE — mode: ultracave\n\nFew word.\n</caveman>");
+    }
+
+    #[test]
+    fn stop_phrases_turn_off_their_mode() {
+        assert_eq!(stopped_by("Stop caveman!"), (false, true));
+        assert_eq!(stopped_by("normal mode"), (true, true));
+        assert_eq!(stopped_by("stop ponytail from rewriting this"), (false, false));
+    }
+}

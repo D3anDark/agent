@@ -1,0 +1,224 @@
+use serde_json::{Value, json};
+use std::io::BufRead;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::api::{ApiError, Delta, Reply, Usage};
+
+/// Turns an Anthropic Messages request into a Codex Responses body, like pi-ai's openai-codex-responses.
+/// shortcut: reasoning items are not kept in history, so they are never replayed; keep them if answers lose the thread.
+pub fn request(anthropic: &Value, cache_key: &str) -> Value {
+    let system: Vec<&str> = anthropic["system"].as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).collect();
+    let mut input = Vec::new();
+    for (index, message) in anthropic["messages"].as_array().into_iter().flatten().enumerate() {
+        let blocks = message["content"].as_array().cloned().unwrap_or_else(|| vec![json!({"type": "text", "text": message["content"]})]);
+        if message["role"] == "assistant" {
+            for block in &blocks {
+                match block["type"].as_str() {
+                    Some("text") => input.push(json!({
+                        "type": "message", "role": "assistant", "id": format!("msg_{index}"), "status": "completed",
+                        "content": [{"type": "output_text", "text": block["text"], "annotations": []}],
+                    })),
+                    Some("tool_use") => input.push(json!({"type": "function_call", "call_id": block["id"], "name": block["name"], "arguments": block["input"].to_string()})),
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        let mut parts = Vec::new();
+        for block in &blocks {
+            match block["type"].as_str() {
+                Some("tool_result") => input.push(json!({"type": "function_call_output", "call_id": block["tool_use_id"], "output": tool_output(&block["content"])})),
+                Some("text") => parts.push(json!({"type": "input_text", "text": block["text"]})),
+                Some("image") => {
+                    let source = &block["source"];
+                    let url = format!("data:{};base64,{}", source["media_type"].as_str().unwrap_or_default(), source["data"].as_str().unwrap_or_default());
+                    parts.push(json!({"type": "input_image", "image_url": url}));
+                }
+                _ => {}
+            }
+        }
+        if !parts.is_empty() {
+            input.push(json!({"role": "user", "content": parts}));
+        }
+    }
+    let tools: Vec<Value> = anthropic["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|tool| json!({"type": "function", "name": tool["name"], "description": tool["description"], "parameters": tool["input_schema"]}))
+        .collect();
+    let effort = match anthropic["output_config"]["effort"].as_str() {
+        None => "none",
+        Some("max") => "xhigh",
+        Some(effort) => effort,
+    };
+    let reasoning = if effort == "none" { json!({"effort": "none"}) } else { json!({"effort": effort, "summary": "auto"}) };
+    let mut body = json!({
+        "model": anthropic["model"],
+        "store": false,
+        "stream": true,
+        "instructions": system.join("\n\n"),
+        "input": input,
+        "text": {"verbosity": "low"},
+        "prompt_cache_key": cache_key,
+        "tool_choice": "auto",
+        "parallel_tool_calls": true,
+        "reasoning": reasoning,
+    });
+    if !tools.is_empty() {
+        body["tools"] = json!(tools);
+    }
+    body
+}
+
+fn tool_output(content: &Value) -> String {
+    match content.as_array() {
+        Some(blocks) => blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
+        None => content.as_str().unwrap_or_default().to_string(),
+    }
+}
+
+/// Reads Responses SSE into the Anthropic reply shape the agent stores: text and tool_use blocks.
+pub fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn FnMut(Delta)) -> Result<Reply, ApiError> {
+    let mut slots: Vec<Option<Value>> = Vec::new();
+    let mut arguments: Vec<String> = Vec::new();
+    let mut usage = Usage::default();
+    let mut stop_reason: String;
+    let mut line = String::new();
+    loop {
+        if abort.load(Ordering::Relaxed) {
+            stop_reason = "aborted".into();
+            break;
+        }
+        line.clear();
+        let read = reader.read_line(&mut line).map_err(|e| ApiError::retryable(format!("Stream read failed: {e}.")))?;
+        if read == 0 {
+            return Err(ApiError::retryable("Stream ended before response.completed.".into()));
+        }
+        let Some(data) = line.strip_prefix("data:").map(str::trim).filter(|d| *d != "[DONE]") else { continue };
+        let event: Value = serde_json::from_str(data).map_err(|e| ApiError::fatal(format!("Bad stream event: {e}.")))?;
+        let index = event["output_index"].as_u64().unwrap_or(0) as usize;
+        if slots.len() <= index {
+            slots.resize(index + 1, None);
+            arguments.resize(index + 1, String::new());
+        }
+        let item = &event["item"];
+        match event["type"].as_str().unwrap_or_default() {
+            "response.output_item.added" => {
+                slots[index] = match item["type"].as_str() {
+                    Some("message") => Some(json!({"type": "text", "text": ""})),
+                    Some("function_call") => Some(json!({"type": "tool_use", "id": item["call_id"], "name": item["name"], "input": {}})),
+                    _ => None,
+                };
+            }
+            "response.output_text.delta" => {
+                let text = event["delta"].as_str().unwrap_or_default();
+                on_delta(Delta::Text(text));
+                if let Some(block) = slots[index].as_mut() {
+                    let joined = format!("{}{text}", block["text"].as_str().unwrap_or_default());
+                    block["text"] = json!(joined);
+                }
+            }
+            "response.reasoning_summary_text.delta" => on_delta(Delta::Thinking(event["delta"].as_str().unwrap_or_default())),
+            "response.function_call_arguments.delta" => arguments[index].push_str(event["delta"].as_str().unwrap_or_default()),
+            "response.output_item.done" => match item["type"].as_str() {
+                Some("function_call") => {
+                    let raw = item["arguments"].as_str().filter(|a| !a.is_empty()).unwrap_or(&arguments[index]);
+                    let input: Value = serde_json::from_str(if raw.is_empty() { "{}" } else { raw }).map_err(|e| ApiError::fatal(format!("Bad tool input JSON: {e}.")))?;
+                    slots[index] = Some(json!({"type": "tool_use", "id": item["call_id"], "name": item["name"], "input": input}));
+                }
+                Some("message") => {
+                    let parts = item["content"].as_array().into_iter().flatten();
+                    let text: String = parts.filter_map(|p| p["text"].as_str().or(p["refusal"].as_str())).collect();
+                    slots[index] = Some(json!({"type": "text", "text": text}));
+                }
+                _ => {}
+            },
+            "response.completed" | "response.incomplete" => {
+                let response = &event["response"];
+                let cached = response["usage"]["input_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0);
+                usage.input = response["usage"]["input_tokens"].as_u64().unwrap_or(0).saturating_sub(cached);
+                usage.cache_read = cached;
+                usage.output = response["usage"]["output_tokens"].as_u64().unwrap_or(0);
+                stop_reason = match response["incomplete_details"]["reason"].as_str() {
+                    Some("max_output_tokens") => "max_tokens".into(),
+                    Some(reason) => return Err(ApiError::fatal(format!("Response incomplete: {reason}"))),
+                    None => "end_turn".into(),
+                };
+                break;
+            }
+            "response.failed" => {
+                let error = &event["response"]["error"];
+                return Err(ApiError::fatal(format!("Codex error {}: {}", error["code"].as_str().unwrap_or("unknown"), error["message"].as_str().unwrap_or("no message"))));
+            }
+            "error" => return Err(ApiError::fatal(format!("Codex error {}: {}", event["code"].as_str().unwrap_or("unknown"), event["message"].as_str().unwrap_or("no message")))),
+            _ => {}
+        }
+    }
+    let blocks: Vec<Value> = slots.into_iter().flatten().filter(|b| b["type"] != "text" || b["text"] != "").collect();
+    if stop_reason == "end_turn" && blocks.iter().any(|b| b["type"] == "tool_use") {
+        stop_reason = "tool_use".into();
+    }
+    Ok(Reply { message: json!({"role": "assistant", "content": blocks}), stop_reason, usage })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anthropic_history_becomes_responses_input() {
+        let anthropic = json!({
+            "model": "gpt-6-sol",
+            "system": [{"type": "text", "text": "Be brief.", "cache_control": {"type": "ephemeral"}}],
+            "tools": [{"name": "bash", "description": "Run", "input_schema": {"type": "object"}, "cache_control": {"type": "ephemeral"}}],
+            "messages": [
+                {"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBO"}}, {"type": "text", "text": "hi"}]},
+                {"role": "assistant", "content": [{"type": "thinking", "thinking": "hm", "signature": "s"}, {"type": "text", "text": "ok"}, {"type": "tool_use", "id": "toolu_1", "name": "bash", "input": {"command": "ls"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": [{"type": "text", "text": "a.txt"}]}, {"type": "text", "text": "[summary]"}]},
+            ],
+            "output_config": {"effort": "max"},
+        });
+        let body = request(&anthropic, "key");
+        assert_eq!(body["instructions"], "Be brief.");
+        assert_eq!(body["reasoning"], json!({"effort": "xhigh", "summary": "auto"}));
+        assert_eq!(body["tools"], json!([{"type": "function", "name": "bash", "description": "Run", "parameters": {"type": "object"}}]));
+        assert_eq!(
+            body["input"],
+            json!([
+                {"role": "user", "content": [{"type": "input_image", "image_url": "data:image/png;base64,iVBO"}, {"type": "input_text", "text": "hi"}]},
+                {"type": "message", "role": "assistant", "id": "msg_1", "status": "completed", "content": [{"type": "output_text", "text": "ok", "annotations": []}]},
+                {"type": "function_call", "call_id": "toolu_1", "name": "bash", "arguments": "{\"command\":\"ls\"}"},
+                {"type": "function_call_output", "call_id": "toolu_1", "output": "a.txt"},
+                {"role": "user", "content": [{"type": "input_text", "text": "[summary]"}]},
+            ])
+        );
+        assert_eq!(request(&json!({"model": "m", "messages": []}), "k")["reasoning"], json!({"effort": "none"}));
+    }
+
+    #[test]
+    fn stream_becomes_text_and_tool_use_blocks() {
+        let events = [
+            r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}"#,
+            r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"think"}"#,
+            r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1"}}"#,
+            r#"{"type":"response.output_text.delta","output_index":1,"delta":"Hi"}"#,
+            r#"{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","call_id":"call_1","name":"bash","arguments":""}}"#,
+            r#"{"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"command\":\"ls\"}"}"#,
+            r#"{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","call_id":"call_1","name":"bash","arguments":""}}"#,
+            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":100,"output_tokens":7,"input_tokens_details":{"cached_tokens":60}}}}"#,
+        ];
+        let body: String = events.iter().map(|e| format!("event: x\ndata: {e}\n\n")).collect();
+        let mut streamed = String::new();
+        let on_delta = &mut |delta: Delta| match delta {
+            Delta::Text(t) => streamed.push_str(t),
+            Delta::Thinking(t) => streamed.push_str(&format!("[{t}]")),
+            Delta::Notice(_) => {}
+        };
+        let reply = parse_stream(&mut body.as_bytes(), &AtomicBool::new(false), on_delta).ok().unwrap();
+        assert_eq!(streamed, "[think]Hi");
+        assert_eq!(reply.stop_reason, "tool_use");
+        assert_eq!((reply.usage.input, reply.usage.cache_read, reply.usage.output), (40, 60, 7));
+        assert_eq!(reply.message["content"], json!([{"type": "text", "text": "Hi"}, {"type": "tool_use", "id": "call_1", "name": "bash", "input": {"command": "ls"}}]));
+    }
+}

@@ -1,0 +1,142 @@
+use serde_json::Value;
+
+/// The row rpiv-ask-user-question appends to every question for a typed answer.
+pub const TYPE_SOMETHING: &str = "Type something.";
+pub const NO_UI: &str = "Error: UI not available (running in non-interactive mode)";
+const DECLINED: &str = "User declined to answer questions";
+const RESERVED: [&str; 3] = ["Other", TYPE_SOMETHING, "Next"];
+
+#[derive(Clone, Debug)]
+pub struct Question {
+    pub question: String,
+    pub header: String,
+    pub options: Vec<Choice>,
+    pub multi: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Choice {
+    pub label: String,
+    pub description: String,
+    pub preview: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Answer {
+    Picked(usize),
+    Typed(String),
+    Multi { picked: Vec<usize>, typed: String },
+}
+
+/// Reads and validates the tool input with rpiv-ask-user-question's rules and messages.
+pub fn parse(input: &Value) -> Result<Vec<Question>, String> {
+    let text = |value: &Value, key: &str| value[key].as_str().unwrap_or_default().to_string();
+    let questions: Vec<Question> = input["questions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|q| Question {
+            question: text(q, "question"),
+            header: text(q, "header"),
+            multi: q["multiSelect"].as_bool() == Some(true),
+            options: q["options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|o| Choice { label: text(o, "label"), description: text(o, "description"), preview: o["preview"].as_str().map(String::from) })
+                .collect(),
+        })
+        .collect();
+    if questions.is_empty() {
+        return Err("Error: At least one question is required".into());
+    }
+    if questions.len() > 4 {
+        return Err("Error: At most 4 questions are allowed per invocation".into());
+    }
+    for (index, q) in questions.iter().enumerate() {
+        if questions[..index].iter().any(|earlier| earlier.question == q.question) {
+            return Err("Error: Question text must be unique within an invocation".into());
+        }
+    }
+    for q in &questions {
+        if q.options.len() < 2 {
+            return Err("Error: Each question requires at least 2 options".into());
+        }
+        for (index, option) in q.options.iter().enumerate() {
+            if RESERVED.contains(&option.label.as_str()) {
+                return Err(format!("Error: Option label is reserved ({})", RESERVED.join(", ")));
+            }
+            if q.options[..index].iter().any(|earlier| earlier.label == option.label) {
+                return Err("Error: Option labels must be unique within a question".into());
+            }
+        }
+    }
+    Ok(questions)
+}
+
+/// rpiv's envelope: `"Question"="Answer".` per answered question; nothing answered means declined.
+pub fn response(questions: &[Question], answers: &[Option<Answer>]) -> String {
+    let mut segments = Vec::new();
+    let mut unanswered = Vec::new();
+    for (index, question) in questions.iter().enumerate() {
+        let Some(Some(answer)) = answers.get(index) else {
+            unanswered.push(format!("\"{}\"", question.question));
+            continue;
+        };
+        let label = |i: &usize| question.options[*i].label.clone();
+        let (value, preview) = match answer {
+            Answer::Picked(i) => (label(i), question.options[*i].preview.clone()),
+            Answer::Typed(text) => (text.clone(), None),
+            Answer::Multi { picked, typed } => {
+                let mut values: Vec<String> = picked.iter().map(label).collect();
+                if !typed.is_empty() {
+                    values.push(typed.clone());
+                }
+                (values.join(", "), None)
+            }
+        };
+        let value = if value.is_empty() { "(no input)".to_string() } else { value };
+        let mut segment = format!("\"{}\"=\"{value}\"", question.question);
+        if let Some(preview) = preview.filter(|p| !p.is_empty()) {
+            segment.push_str(&format!(". selected preview: {preview}"));
+        }
+        segments.push(format!("{segment}."));
+    }
+    if segments.is_empty() {
+        return DECLINED.into();
+    }
+    if !unanswered.is_empty() {
+        segments.push(format!("unanswered: {}.", unanswered.join(", ")));
+    }
+    format!("User has answered your questions: {} You can now continue with the user's answers in mind.", segments.join(" "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn input(labels: [&str; 2]) -> Value {
+        json!({"questions": [
+            {"question": "Which db?", "header": "DB", "options": [{"label": labels[0], "description": ""}, {"label": labels[1], "description": "", "preview": "P"}]},
+            {"question": "Which parts?", "header": "Parts", "multiSelect": true, "options": [{"label": "a", "description": ""}, {"label": "b", "description": ""}]},
+        ]})
+    }
+
+    #[test]
+    fn validation_and_envelope_match_rpiv() {
+        assert_eq!(parse(&input(["x", "x"])).unwrap_err(), "Error: Option labels must be unique within a question");
+        assert_eq!(parse(&input(["Other", "x"])).unwrap_err(), "Error: Option label is reserved (Other, Type something., Next)");
+        let questions = parse(&input(["pg", "sqlite"])).unwrap();
+        assert_eq!(response(&questions, &[None, None]), DECLINED);
+        let answers = [Some(Answer::Picked(1)), Some(Answer::Multi { picked: vec![0, 1], typed: "c".into() })];
+        assert_eq!(
+            response(&questions, &answers),
+            "User has answered your questions: \"Which db?\"=\"sqlite\". selected preview: P. \"Which parts?\"=\"a, b, c\". You can now continue with the user's answers in mind."
+        );
+        assert_eq!(
+            response(&questions, &[Some(Answer::Typed("mysql".into())), None]),
+            "User has answered your questions: \"Which db?\"=\"mysql\". unanswered: \"Which parts?\". You can now continue with the user's answers in mind."
+        );
+    }
+}
