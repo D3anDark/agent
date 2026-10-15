@@ -50,6 +50,8 @@ pub struct Settings {
     pub scroll_lines: usize,
     /// Copy a mouse selection on release; when off, Ctrl+C copies it.
     pub copy_on_select: bool,
+    /// Shell commands the TUI runs in the background at start, e.g. a global tool update.
+    pub on_start: Vec<String>,
 }
 
 impl Settings {
@@ -107,6 +109,7 @@ pub fn load(home: &Path) -> Settings {
         notifications: own["notifications"].as_bool().unwrap_or(true),
         scroll_lines: own["scroll_lines"].as_u64().unwrap_or(3) as usize,
         copy_on_select: own["copy_on_select"].as_bool().unwrap_or(true),
+        on_start: own["on_start"].as_array().into_iter().flatten().filter_map(|command| Some(command.as_str()?.to_string())).collect(),
     }
 }
 
@@ -131,6 +134,7 @@ pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
         "notifications": settings.notifications,
         "scroll_lines": settings.scroll_lines,
         "copy_on_select": settings.copy_on_select,
+        "on_start": settings.on_start,
         "condense": {"enabled": settings.condense, "model": settings.condense_model, "min_batch_chars": settings.condense_min_batch_chars},
         "subagents": {"concurrency": settings.subagent_concurrency, "implementation_effort": settings.subagent_effort},
         "accounts": {"switch_at_percent": settings.switch_at_percent, "when_all_over_limit": settings.when_all_over_limit.label(), "fallback_model": settings.fallback_model, "default": settings.default_accounts},
@@ -148,6 +152,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("agent-settings-{}", std::process::id()));
         let mut settings = load(&home);
         assert_eq!((settings.model.as_str(), settings.thinking.as_str(), settings.reserve_tokens), ("claude-opus-5-5", "high", 16_384));
+        assert!(settings.on_start.is_empty());
         settings.thinking = "max".into();
         settings.permission_mode = Mode::Auto;
         settings.when_all_over_limit = Policy::OtherProvider;
@@ -165,6 +170,7 @@ mod tests {
         settings.notifications = false;
         settings.scroll_lines = 10;
         settings.copy_on_select = false;
+        settings.on_start = vec!["echo started".into()];
         save(&home, &settings).unwrap();
         assert_eq!(load(&home), settings);
         std::fs::remove_dir_all(&home).unwrap();

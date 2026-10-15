@@ -370,6 +370,7 @@ pub fn run(agent: Agent, setup: Setup) -> Result<(), String> {
     if crate::update::enabled() {
         spawn_update(events.clone());
     }
+    spawn_on_start(app.settings.on_start.clone(), events.clone());
     spawn_input(events);
     let mut out = std::io::stdout();
     enter(&mut out).map_err(|e| format!("Cannot set up the terminal: {e}"))?;
@@ -561,6 +562,24 @@ fn spawn_update(events: Sender<Msg>) {
         };
         let _ = events.send(Msg::Agent(Event::Notice(notice)));
     });
+}
+
+fn spawn_on_start(commands: Vec<String>, events: Sender<Msg>) {
+    std::thread::spawn(move || {
+        for command in commands {
+            let failure = match std::process::Command::new("sh").args(["-c", &command]).stdin(std::process::Stdio::null()).output() {
+                Ok(output) if output.status.success() => continue,
+                Ok(output) => tail(&String::from_utf8_lossy(&output.stderr)),
+                Err(e) => e.to_string(),
+            };
+            let _ = events.send(Msg::Agent(Event::Notice(format!("on_start \"{command}\" failed: {failure}"))));
+        }
+    });
+}
+
+fn tail(text: &str) -> String {
+    let lines: Vec<&str> = text.trim_end().lines().collect();
+    lines[lines.len().saturating_sub(5)..].join("\n")
 }
 
 fn spawn_input(events: Sender<Msg>) {
