@@ -1,6 +1,6 @@
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-use super::render::{Line, PLAIN, Span, Style, span, wrap};
+use super::render::{Line, PLAIN, Span, Style, line_width, span, wrap};
 
 const BULLET: Style = Style::fg(245);
 const INLINE_CODE: Style = Style::fg(245);
@@ -18,6 +18,7 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
     let mut item_prefix: Option<Span> = None;
     let mut quote_depth = 0;
     let mut in_code = false;
+    let mut table: Vec<Vec<Line>> = Vec::new();
     let base = |depth: usize, quote: usize| -> Line {
         let mut indent = vec![span(" ", PLAIN)];
         for _ in 0..quote {
@@ -133,8 +134,15 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
                 out.push(vec![span(" ", PLAIN), span("─".repeat(width.saturating_sub(1)), CODE_BORDER)]);
             }
             Event::Html(html) | Event::InlineHtml(html) => spans.push(span(html.to_string(), style)),
-            Event::End(TagEnd::TableCell) => spans.push(span("  ", style)),
-            Event::End(TagEnd::TableRow | TagEnd::TableHead) => flush(&mut out, &mut spans, &mut item_prefix, base(lists.len(), quote_depth)),
+            Event::Start(Tag::Table(_)) => gap(&mut out),
+            Event::Start(Tag::TableHead | Tag::TableRow) => table.push(Vec::new()),
+            Event::End(TagEnd::TableCell) => table.last_mut().expect("a cell sits in a row").push(std::mem::take(&mut spans)),
+            Event::End(TagEnd::Table) => {
+                for row in aligned(std::mem::take(&mut table)) {
+                    spans = row;
+                    flush(&mut out, &mut spans, &mut item_prefix, base(lists.len(), quote_depth));
+                }
+            }
             _ => {}
         }
     }
@@ -143,6 +151,38 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
         out.remove(0);
     }
     out
+}
+
+/// Pads every cell to its column's widest cell, splits columns with `│` and rules off the header row.
+fn aligned(rows: Vec<Vec<Line>>) -> Vec<Line> {
+    let mut widths: Vec<usize> = Vec::new();
+    for row in &rows {
+        for (column, cell) in row.iter().enumerate() {
+            if column == widths.len() {
+                widths.push(0);
+            }
+            widths[column] = widths[column].max(line_width(cell));
+        }
+    }
+    let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
+    let mut lines = Vec::new();
+    for (index, row) in rows.into_iter().enumerate() {
+        let last = row.len().saturating_sub(1);
+        let mut line = Vec::new();
+        for (column, cell) in row.into_iter().enumerate() {
+            let pad = widths[column] - line_width(&cell);
+            line.extend(cell);
+            if column != last {
+                line.push(span(" ".repeat(pad), PLAIN));
+                line.push(span(" │ ", CODE_BORDER));
+            }
+        }
+        lines.push(line);
+        if index == 0 {
+            lines.push(vec![span(rule.join("─┼─"), CODE_BORDER)]);
+        }
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -163,5 +203,11 @@ mod tests {
     #[test]
     fn paragraphs_are_separated_by_one_blank_line() {
         assert_eq!(text(&render("a\n\nb", 20)), [" a", "", " b"]);
+    }
+
+    #[test]
+    fn table_columns_line_up() {
+        let lines = render("text\n\n| a | bb |\n|---|---|\n| ccc | d |", 40);
+        assert_eq!(text(&lines), [" text", "", " a   │ bb", " ────┼───", " ccc │ d"]);
     }
 }
