@@ -8,6 +8,7 @@ mod render;
 mod login;
 mod selection;
 mod notify;
+mod voice;
 
 use crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event as Input, KeyCode,
@@ -44,6 +45,7 @@ use render::{Line, PLAIN, Screen, Style, line_width, link_at, select, span, take
 use selection::{Point, Selection};
 
 const WORKING: &str = "Working";
+const TRANSCRIBING: &str = "Transcribing";
 const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const TOOL_OUTPUT_LINES: usize = 20;
 
@@ -69,6 +71,7 @@ enum Msg {
     LoginFinished { provider: &'static str, result: Result<Tokens, String> },
     /// Account usage arrived for /account.
     UsageFetched,
+    Transcribed(Result<String, String>),
     RewindPoints(Vec<RewindPoint>),
     /// `entry` is where the rewound prompt sits on screen; None redraws from `messages`.
     Rewound { messages: Vec<Value>, files: Option<RestoredFiles>, entry: Option<usize> },
@@ -141,6 +144,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("thinking", "<level> — Set thinking level"),
     ("ponytail", "<off | lite | full | ultra> — Set the ponytail level"),
     ("caveman", "<off | full | ultra | wenyan> — Set the caveman level"),
+    ("voice", "Dictate in any language with whisper.cpp, Enter to stop"),
     ("context-window", "<100k to 1M | auto> — Set this model's context window"),
     ("copy", "Copy last agent message to clipboard"),
     ("session", "Show session info and stats"),
@@ -247,6 +251,8 @@ struct App {
     editor: Editor,
     commands: Sender<Command>,
     working: Option<Instant>,
+    recording: Option<voice::Recording>,
+    transcribing: Option<Instant>,
     /// None until the terminal reports focus or a key arrives; notifications go out unless it is Some(true).
     focused: Option<bool>,
     prompt_usage: Usage,
@@ -336,6 +342,9 @@ pub fn run(agent: Agent, setup: Setup) -> Result<(), String> {
     let result = event_loop(&mut app, &inbox, &mut out);
     app.terminals.lock().unwrap().kill_all();
     app.subagents.lock().unwrap().stop_all();
+    if let Some(recording) = app.recording.take() {
+        recording.cancel();
+    }
     leave(&mut out);
     if let Some(path) = &app.session_path {
         let has_messages = std::fs::read_to_string(path).is_ok_and(|text| text.contains(r#""type":"message""#));
@@ -503,8 +512,10 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
         let (width, height) = terminal::size().map_err(|e| e.to_string())?;
         let (rows, cursor) = app.frame(width as usize, height as usize);
         screen.draw(out, rows, Some(cursor)).map_err(|e| e.to_string())?;
-        let wait = if app.working.is_some() || app.hint.is_some() {
+        let wait = if app.working.is_some() || app.hint.is_some() || app.transcribing.is_some() {
             Duration::from_millis(80)
+        } else if app.recording.is_some() {
+            Duration::from_secs(1)
         } else if app.terminals.lock().unwrap().running() > 0 || app.subagents.lock().unwrap().running() > 0 {
             // A terminal or background subagent that ends while idle queues a follow-up that must start a turn.
             Duration::from_secs(1)
@@ -549,6 +560,8 @@ impl App {
             editor: Editor::new(),
             commands,
             working: None,
+            recording: None,
+            transcribing: None,
             focused: None,
             prompt_usage: Usage::default(),
             spent: agent.spent,
@@ -799,6 +812,13 @@ impl App {
                 }
             }
             Msg::UsageFetched => {}
+            Msg::Transcribed(result) => {
+                self.transcribing = None;
+                match result {
+                    Ok(text) => self.editor.insert(&text),
+                    Err(e) => self.push(Item::Error(e)),
+                }
+            }
             Msg::RewindPoints(points) if points.is_empty() => self.hint = Some(("Nothing to rewind yet".into(), Instant::now())),
             Msg::RewindPoints(points) => self.panel = Some(Panel::Rewind { index: points.len() - 1, points }),
             Msg::Rewound { messages, files, entry } => {
@@ -842,6 +862,15 @@ impl App {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         if self.panel.is_some() {
             self.panel_key(key);
+            return;
+        }
+        if self.recording.is_some() {
+            match key.code {
+                KeyCode::Enter => self.stop_recording(),
+                KeyCode::Esc => self.recording.take().unwrap().cancel(),
+                KeyCode::Char('c') if ctrl => self.recording.take().unwrap().cancel(),
+                _ => {}
+            }
             return;
         }
         let matches = self.menu_matches();
@@ -942,6 +971,15 @@ impl App {
         self.images = image_slots(&point.text, point.images);
     }
 
+    fn stop_recording(&mut self) {
+        let recording = self.recording.take().unwrap();
+        let events = self.events.clone();
+        self.transcribing = Some(Instant::now());
+        std::thread::spawn(move || {
+            let _ = events.send(Msg::Transcribed(recording.transcribe()));
+        });
+    }
+
     fn ctrl_c(&mut self) {
         if !self.editor.is_empty() {
             self.editor.set("");
@@ -994,7 +1032,7 @@ impl App {
             return;
         }
         // Panels and local info leave the turn alone, so they run mid-turn too.
-        let local = ["/subagents", "/ps", "/todos", "/help", "/hotkeys", "/session", "/copy"].iter().any(|name| command_args(&text, name).is_some());
+        let local = ["/subagents", "/ps", "/todos", "/help", "/hotkeys", "/session", "/copy", "/voice"].iter().any(|name| command_args(&text, name).is_some());
         if self.working.is_some() && !local {
             self.steering.lock().unwrap().push(text);
             return;
@@ -1083,6 +1121,10 @@ impl App {
             "subagents" if self.subagents.lock().unwrap().list.is_empty() => self.system("subagents", "No subagent runs yet."),
             "subagents" => self.panel = Some(Panel::Subagents { index: 0 }),
             "login" => self.panel = Some(Panel::Login(login::Login::Choose { index: 0 })),
+            "voice" => match voice::start(&self.home) {
+                Ok(recording) => self.recording = Some(recording),
+                Err(e) => self.push(Item::Error(e)),
+            },
             "logout" | "account" if self.client.accounts().is_empty() => self.system(name, "No accounts. Add one with /login."),
             "logout" | "account" => {
                 self.panel = Some(Panel::Accounts { logout: name == "logout", index: 0 });
@@ -2053,7 +2095,7 @@ impl App {
         if let Some(started) = self.working {
             let tick = (started.elapsed().as_millis() / 80) as usize;
             bottom.push(Vec::new());
-            bottom.push(working_line(tick));
+            bottom.push(shimmer_line(WORKING, tick));
         }
         let queued = self.steering.lock().unwrap().clone();
         for text in &queued {
@@ -2064,6 +2106,13 @@ impl App {
         }
         if let Some((hint, _)) = &self.hint {
             bottom.push(vec![span(format!(" {hint}"), DIM)]);
+        }
+        if let Some(recording) = &self.recording {
+            bottom.push(Vec::new());
+            bottom.push(recording_line(recording.started.elapsed()));
+        } else if let Some(started) = self.transcribing {
+            bottom.push(Vec::new());
+            bottom.push(shimmer_line(TRANSCRIBING, (started.elapsed().as_millis() / 80) as usize));
         }
         bottom.extend(todo_lines(&self.todos.lock().unwrap()));
         let running = self.terminals.lock().unwrap().running();
@@ -2809,18 +2858,27 @@ fn age(time: std::time::SystemTime) -> String {
     }
 }
 
-fn working_line(tick: usize) -> Line {
-    let head = (tick % (WORKING.len() + 10)) as isize - 3;
+fn shimmer_line(label: &str, tick: usize) -> Line {
+    let head = (tick % (label.len() + 10)) as isize - 3;
     let level = |column: usize| match (column as isize - head).unsigned_abs() {
         distance @ 0..=2 => 255 - 4 * distance as u8,
         _ => 245,
     };
     let glyph = if level(0) > 245 { span("✦", Style::fg(level(0))) } else { span("✧", DIM) };
     let mut line = vec![span(" ", PLAIN), glyph, span(" ", PLAIN)];
-    for (index, letter) in WORKING.chars().enumerate() {
+    for (index, letter) in label.chars().enumerate() {
         line.push(span(letter.to_string(), Style::fg(level(index + 2))));
     }
     line
+}
+
+fn recording_line(elapsed: Duration) -> Line {
+    let seconds = elapsed.as_secs();
+    vec![
+        span(" ●", ERROR),
+        span(format!(" {}:{:02}", seconds / 60, seconds % 60), BRIGHT),
+        span("  Enter to transcribe · Esc to cancel", DIM),
+    ]
 }
 
 #[cfg(test)]
@@ -2834,11 +2892,11 @@ mod tests {
 
     #[test]
     fn working_glyph_fills_only_while_the_band_passes_it() {
-        let lit = working_line(3);
+        let lit = shimmer_line(WORKING, 3);
         assert_eq!(text(&lit), " ✦ Working");
         assert_eq!(lit[1].style, Style::fg(255));
 
-        let later = working_line(10);
+        let later = shimmer_line(WORKING, 10);
         assert_eq!(text(&later), " ✧ Working");
         assert_eq!(later[1].style, DIM);
         assert_eq!(later[3 + 5].style, Style::fg(255));
@@ -2900,6 +2958,13 @@ mod tests {
         assert_eq!(names("/thinking m"), ["thinking minimal", "thinking medium", "thinking max"]);
         assert_eq!(names("/permissions "), ["permissions ask", "permissions auto", "permissions full access"]);
         assert!(names("/thinking medium ").is_empty());
+    }
+
+    #[test]
+    fn recording_line_shows_minutes_and_seconds() {
+        let line = recording_line(Duration::from_secs(75));
+        assert_eq!(text(&line), " ● 1:15  Enter to transcribe · Esc to cancel");
+        assert_eq!(line[0].style, ERROR);
     }
 
     #[test]
