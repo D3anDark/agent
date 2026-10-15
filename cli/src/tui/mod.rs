@@ -174,8 +174,8 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("help", "show available slash commands"),
     ("clear", "start a fresh conversation"),
     ("resume", "resume a saved session"),
-    ("rename", "rename the current session"),
-    ("rename-title", "Name the session again from its first prompt"),
+    ("rename-title", "rename the current session"),
+    ("rename-title-ai", "Name the session again from its first prompt"),
     ("clone", "Duplicate the current session at the current position"),
     ("import", "<file.jsonl> — Import and resume a session from a JSONL file"),
     ("export", "[path] — Export session: .jsonl (default) or .md for plain text"),
@@ -1319,7 +1319,7 @@ impl App {
         // Settings changes reach the agent through Command::Apply, which the worker takes after the turn.
         let local = [
             "/subagents", "/ps", "/todos", "/help", "/hotkeys", "/session", "/copy", "/voice", "/settings", "/model", "/thinking", "/ponytail",
-            "/caveman", "/permissions", "/context-window", "/plugins", "/skills", "/skill-usage", "/rtk", "/login", "/logout", "/account", "/rename", "/export", "/quit", "/exit",
+            "/caveman", "/permissions", "/context-window", "/plugins", "/skills", "/skill-usage", "/rtk", "/login", "/logout", "/account", "/rename-title", "/export", "/quit", "/exit",
         ]
         .iter()
         .any(|name| command_args(&text, name).is_some());
@@ -1363,13 +1363,13 @@ impl App {
                 self.context_tokens = 0;
                 self.start(Command::Clear);
             }
-            "rename" if args.is_empty() => self.push(Item::Error("Usage: /rename <name>".into())),
-            "rename" => {
+            "rename-title" if args.is_empty() => self.push(Item::Error("Usage: /rename-title <name>".into())),
+            "rename-title" => {
                 let _ = self.commands.send(Command::Rename(args.to_string()));
                 set_terminal_title(args);
                 self.system("session", format!("Renamed to {args}"));
             }
-            "rename-title" => _ = self.commands.send(Command::RenameTitle),
+            "rename-title-ai" => _ = self.commands.send(Command::RenameTitle),
             "clone" => self.start(Command::Clone),
             "import" if args.is_empty() => self.push(Item::Error("Usage: /import <file.jsonl>".into())),
             "import" => self.start(Command::Import(self.cwd.join(args))),
@@ -2661,7 +2661,7 @@ impl App {
     fn accept_slash(&mut self, run: bool) {
         let matches = self.menu_matches();
         let (name, _) = &matches[self.menu_index.min(matches.len() - 1)];
-        let takes_args = matches!(name.as_str(), "thinking" | "rename" | "btw" | "goal" | "import") || name.starts_with("skill:") || self.templates.iter().any(|t| &t.name == name);
+        let takes_args = matches!(name.as_str(), "thinking" | "rename-title" | "btw" | "goal" | "import") || name.starts_with("skill:") || self.templates.iter().any(|t| &t.name == name);
         if takes_args || !run {
             self.editor.set(&format!("/{name}{}", if takes_args { " " } else { "" }));
             return;

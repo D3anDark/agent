@@ -717,7 +717,7 @@ impl Agent {
         self.pending_title = Some(std::thread::spawn(move || name_session(&client, &session, &cwd, &request)));
     }
 
-    /// /rename-title: names the session again from its first prompt.
+    /// /rename-title-ai: names the session again from its first prompt.
     pub fn rename_title(&self) -> Result<String, String> {
         let first = self.messages.iter().find(|m| m["role"] == "user" && m["content"][0]["type"] == "text");
         let Some(text) = first.and_then(|m| m["content"][0]["text"].as_str()) else { return Err("Nothing to name yet.".into()) };
