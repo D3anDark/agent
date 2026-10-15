@@ -2268,13 +2268,15 @@ impl App {
                 view.render(width, PANEL_ROWS)
             }
             Panel::Skills { index } => {
+                let name_width = self.skills.iter().map(|skill| skill.name.chars().count()).max().unwrap_or(0);
                 let rows: Vec<panel::Row> = self
                     .skills
                     .iter()
                     .map(|skill| {
-                        let right = if self.settings.disabled_skills.contains(&skill.name) { span("disabled", MUTED) } else { span("enabled", PLAIN) };
+                        let disabled = self.settings.disabled_skills.contains(&skill.name);
+                        let (mark, right) = if disabled { ("[ ]", span("disabled", MUTED)) } else { ("[x]", span("enabled", PLAIN)) };
                         let description = skill.description.split_whitespace().collect::<Vec<_>>().join(" ");
-                        panel::Row { left: format!("{}  {description}", skill.name), right: vec![right] }
+                        panel::Row { left: format!("{mark} {:<name_width$}  {description}", skill.name), right: vec![right] }
                     })
                     .collect();
                 let view = panel::Panel {
