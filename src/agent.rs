@@ -157,17 +157,18 @@ pub struct Agent {
     pub home: PathBuf,
     /// None outside a git repo and in print mode; then a rewind leaves files alone.
     pub snapshots: Option<Snapshots>,
-    /// Work tree snapshots around each prompt, oldest first.
+    /// Files changed by this session's own tool calls, oldest first.
     pub checkpoints: Vec<Checkpoint>,
 }
 
-/// Snapshots of the work tree taken when the prompt at message `at` started and finished.
+/// Work tree snapshots around one tool call made while message `at` was the latest,
+/// and the paths that call changed. Other sessions' edits outside the call never land here.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Checkpoint {
     pub at: usize,
     pub before: String,
-    /// None until the prompt finishes, and forever if the process died during it.
-    pub after: Option<String>,
+    pub after: String,
+    pub paths: Vec<String>,
 }
 
 /// A user prompt the conversation can go back to.
@@ -251,14 +252,9 @@ impl Agent {
         }
         content.append(&mut self.images);
         content.push(json!({"type": "text", "text": text}));
-        let at = self.messages.len();
         self.push(json!({"role": "user", "content": content}))?;
-        let checkpointed = self.start_checkpoint(at, emit)?;
         let turns_before = self.turns;
         let result = self.run_turns(text, emit);
-        if checkpointed {
-            self.finish_checkpoint(emit)?;
-        }
         if result.is_err() && self.turns == turns_before {
             // No reply means the API refused this prompt (e.g. a 400 on its image); resending it would fail again.
             self.rewind(self.messages.len() - 1)?;
@@ -327,7 +323,7 @@ impl Agent {
                     shown["path"] = file.strip_prefix(&self.cwd).unwrap_or(&file).display().to_string().into();
                 }
                 emit(Event::ToolStart { id: id.clone(), name: name.clone(), input: shown });
-                let (output, is_error) = self.run_tool(&name, &input, text, emit);
+                let (output, is_error) = self.run_tool_with_checkpoint(&name, &input, text, emit)?;
                 self.tool_calls += 1;
                 emit(Event::ToolEnd { id: id.clone(), output: output.clone(), is_error });
                 results.push(json!({"type": "tool_result", "tool_use_id": id, "content": output, "is_error": is_error}));
@@ -669,34 +665,33 @@ impl Agent {
         Ok(files)
     }
 
-    /// Returns whether the work tree was snapshotted; a failed snapshot only costs this prompt's file rewind.
-    fn start_checkpoint(&mut self, at: usize, emit: &mut dyn FnMut(Event)) -> Result<bool, String> {
-        let Some(snapshots) = &self.snapshots else { return Ok(false) };
-        match snapshots.take() {
-            Ok(before) => {
-                self.session.append(&json!({"type": "checkpoint", "at": at, "before": before}))?;
-                self.checkpoints.push(Checkpoint { at, before, after: None });
-                Ok(true)
-            }
+    /// Snapshots around a tool that can change files, so a rewind touches only what this session changed.
+    /// A file another session edits while this call runs still counts as this session's.
+    fn run_tool_with_checkpoint(&mut self, name: &str, input: &Value, user_request: &str, emit: &mut dyn FnMut(Event)) -> Result<(String, bool), String> {
+        const CHANGES_FILES: [&str; 9] = ["write", "replace", "replace_match", "insert", "copy", "move", "undo_last_change", "bash", "subagent"];
+        let Some(snapshots) = self.snapshots.as_ref().filter(|_| CHANGES_FILES.contains(&name)) else {
+            return Ok(self.run_tool(name, input, user_request, emit));
+        };
+        let before = match snapshots.take() {
+            Ok(before) => before,
             Err(error) => {
-                emit(Event::Notice(format!("File snapshot failed, a rewind will not restore files from this prompt: {error}")));
-                Ok(false)
+                emit(Event::Notice(format!("File snapshot failed, a rewind will not restore files from this tool call: {error}")));
+                return Ok(self.run_tool(name, input, user_request, emit));
             }
-        }
-    }
-
-    fn finish_checkpoint(&mut self, emit: &mut dyn FnMut(Event)) -> Result<(), String> {
-        let Some(snapshots) = &self.snapshots else { return Ok(()) };
-        // Compaction during the prompt can drop its checkpoint along with the summarized messages.
-        let Some(checkpoint) = self.checkpoints.last_mut().filter(|checkpoint| checkpoint.after.is_none()) else { return Ok(()) };
-        match snapshots.take() {
-            Ok(after) => {
-                self.session.append(&json!({"type": "checkpoint_after", "after": after}))?;
-                checkpoint.after = Some(after);
+        };
+        let result = self.run_tool(name, input, user_request, emit);
+        let Some(snapshots) = &self.snapshots else { return Ok(result) };
+        let changed = snapshots.take().and_then(|after| Ok((snapshots.changed(&before, &after)?, after)));
+        match changed {
+            Ok((paths, _)) if paths.is_empty() => {}
+            Ok((paths, after)) => {
+                let at = self.messages.len();
+                self.session.append(&json!({"type": "tool_checkpoint", "at": at, "before": before, "after": after, "paths": paths}))?;
+                self.checkpoints.push(Checkpoint { at, before, after, paths });
             }
-            Err(error) => emit(Event::Notice(format!("File snapshot failed, a rewind will not restore files from this prompt: {error}"))),
+            Err(error) => emit(Event::Notice(format!("File snapshot failed, a rewind will not restore files from this tool call: {error}"))),
         }
-        Ok(())
+        Ok(result)
     }
 
     /// Summarizes everything before a recent assistant message and keeps the rest verbatim, like pi.
@@ -897,15 +892,16 @@ impl Session {
                     history.messages.truncate(to as usize);
                     history.checkpoints.retain(|checkpoint| checkpoint.at < to as usize);
                 }
-                Some("checkpoint") => {
-                    let at = entry["at"].as_u64().ok_or(format!("{}:{}: checkpoint without at", path.display(), number + 1))?;
-                    let before = entry["before"].as_str().ok_or(format!("{}:{}: checkpoint without before", path.display(), number + 1))?;
-                    history.checkpoints.push(Checkpoint { at: at as usize, before: before.into(), after: None });
-                }
-                Some("checkpoint_after") => {
-                    if let Some(checkpoint) = history.checkpoints.last_mut().filter(|checkpoint| checkpoint.after.is_none()) {
-                        checkpoint.after = entry["after"].as_str().map(String::from);
-                    }
+                Some("tool_checkpoint") => {
+                    let missing = |field: &str| format!("{}:{}: tool_checkpoint without {field}", path.display(), number + 1);
+                    let text = |field: &str| entry[field].as_str().map(String::from).ok_or_else(|| missing(field));
+                    let paths = entry["paths"].as_array().ok_or_else(|| missing("paths"))?;
+                    history.checkpoints.push(Checkpoint {
+                        at: entry["at"].as_u64().ok_or_else(|| missing("at"))? as usize,
+                        before: text("before")?,
+                        after: text("after")?,
+                        paths: paths.iter().map(|path| path.as_str().map(String::from)).collect::<Option<_>>().ok_or_else(|| missing("paths"))?,
+                    });
                 }
                 Some("checkpoints_reset") => history.checkpoints.clear(),
                 Some("compaction") => {
@@ -1053,26 +1049,29 @@ pub struct RestoredFiles {
     pub kept: Vec<String>,
 }
 
-/// Puts each file the prompts from message `index` on changed back as it was before the first of them.
+/// Puts each file this session's tool calls from message `index` on changed back as it was before the first of them.
 fn restore_files(snapshots: &Snapshots, checkpoints: &[Checkpoint], index: usize) -> Result<RestoredFiles, String> {
     let mut files = RestoredFiles::default();
-    let rewound: Vec<&Checkpoint> = checkpoints.iter().filter(|checkpoint| checkpoint.at >= index).collect();
-    let Some(first) = rewound.first() else { return Ok(files) };
-    let mut last_written: BTreeMap<String, &str> = BTreeMap::new();
-    for checkpoint in &rewound {
-        let Some(after) = &checkpoint.after else { continue };
-        for path in snapshots.changed(&checkpoint.before, after)? {
-            last_written.insert(path, after);
+    let mut first_before: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut last_after: BTreeMap<&str, &str> = BTreeMap::new();
+    for checkpoint in checkpoints.iter().filter(|checkpoint| checkpoint.at >= index) {
+        for path in &checkpoint.paths {
+            first_before.entry(path).or_insert(&checkpoint.before);
+            last_after.insert(path, &checkpoint.after);
         }
     }
+    if last_after.is_empty() {
+        return Ok(files);
+    }
     let now = snapshots.take()?;
-    for (path, after) in last_written {
-        let current = snapshots.blob(&now, &path);
-        if current != snapshots.blob(after, &path) {
-            files.kept.push(path);
-        } else if current != snapshots.blob(&first.before, &path) {
-            snapshots.restore(&first.before, &path)?;
-            files.restored.push(path);
+    for (path, after) in last_after {
+        let before = first_before[path];
+        let current = snapshots.blob(&now, path);
+        if current != snapshots.blob(after, path) {
+            files.kept.push(path.into());
+        } else if current != snapshots.blob(before, path) {
+            snapshots.restore(before, path)?;
+            files.restored.push(path.into());
         }
     }
     Ok(files)
@@ -1217,20 +1216,18 @@ mod tests {
     fn resumed_session_drops_rewound_messages_and_their_checkpoints() {
         let dir = std::env::temp_dir().join(format!("agent-rewind-{}", std::process::id()));
         let session = Session::start(&dir, true, Path::new("/w"), "m").unwrap();
-        session.append(&json!({"type": "checkpoint", "at": 0, "before": "t0"})).unwrap();
-        session.append(&json!({"type": "checkpoint_after", "after": "t1"})).unwrap();
-        for message in [user("hi"), assistant("hello")] {
-            session.append(&json!({"type": "message", "message": message})).unwrap();
-        }
-        session.append(&json!({"type": "checkpoint", "at": 2, "before": "t1"})).unwrap();
-        for message in [user("look at this image"), assistant("nice")] {
-            session.append(&json!({"type": "message", "message": message})).unwrap();
-        }
+        let checkpoint = |at: usize| json!({"type": "tool_checkpoint", "at": at, "before": "t0", "after": "t1", "paths": ["a.txt"]});
+        session.append(&json!({"type": "message", "message": user("hi")})).unwrap();
+        session.append(&checkpoint(1)).unwrap();
+        session.append(&json!({"type": "message", "message": assistant("hello")})).unwrap();
+        session.append(&json!({"type": "message", "message": user("look at this image")})).unwrap();
+        session.append(&checkpoint(3)).unwrap();
+        session.append(&json!({"type": "message", "message": assistant("nice")})).unwrap();
         session.append(&json!({"type": "rewind", "to": 2})).unwrap();
         let (_, history) = Session::resume(&dir, &session.id).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(history.messages, [user("hi"), assistant("hello")]);
-        assert_eq!(history.checkpoints, [Checkpoint { at: 0, before: "t0".into(), after: Some("t1".into()) }]);
+        assert_eq!(history.checkpoints, [Checkpoint { at: 1, before: "t0".into(), after: "t1".into(), paths: vec!["a.txt".into()] }]);
     }
 
     #[test]
@@ -1246,7 +1243,7 @@ mod tests {
     }
 
     #[test]
-    fn rewind_restores_what_the_agent_changed_and_keeps_later_user_edits() {
+    fn rewind_restores_only_what_this_session_changed() {
         let root = std::env::temp_dir().join(format!("agent-restore-{}", std::process::id()));
         let work = root.join("work");
         std::fs::create_dir_all(&work).unwrap();
@@ -1254,24 +1251,28 @@ mod tests {
         git(&["init", "-q"]);
         let write = |name: &str, text: &str| std::fs::write(work.join(name), text).unwrap();
         let read = |name: &str| std::fs::read_to_string(work.join(name)).ok();
-        write("a.txt", "v1");
         let snapshots = Snapshots::open(&root, &work).unwrap();
-        let first = Checkpoint { at: 0, before: snapshots.take().unwrap(), after: None };
-        write("a.txt", "v2");
-        let first = Checkpoint { after: Some(snapshots.take().unwrap()), ..first };
+        let tool_call = |at: usize, writes: &[(&str, &str)]| {
+            let before = snapshots.take().unwrap();
+            for (name, text) in writes {
+                write(name, text);
+            }
+            let after = snapshots.take().unwrap();
+            Checkpoint { at, paths: snapshots.changed(&before, &after).unwrap(), before, after }
+        };
+        write("a.txt", "v1");
+        let first = tool_call(1, &[("a.txt", "v2")]);
         write("between.txt", "user");
-        let second = Checkpoint { at: 2, before: snapshots.take().unwrap(), after: None };
-        write("a.txt", "v3");
-        write("new.txt", "agent");
-        write("shared.txt", "agent");
-        let second = Checkpoint { after: Some(snapshots.take().unwrap()), ..second };
+        let second = tool_call(3, &[("a.txt", "v3"), ("new.txt", "agent"), ("shared.txt", "agent")]);
+        write("other.txt", "another session");
+        let third = tool_call(3, &[("a.txt", "v4")]);
         write("shared.txt", "mine");
 
-        let files = restore_files(&snapshots, &[first, second], 2).unwrap();
-        let state = [read("a.txt"), read("new.txt"), read("shared.txt"), read("between.txt")];
+        let files = restore_files(&snapshots, &[first, second, third], 2).unwrap();
+        let state = [read("a.txt"), read("new.txt"), read("shared.txt"), read("between.txt"), read("other.txt")];
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(files, RestoredFiles { restored: vec!["a.txt".into(), "new.txt".into()], kept: vec!["shared.txt".into()] });
-        assert_eq!(state, [Some("v2".into()), None, Some("mine".into()), Some("user".into())]);
+        assert_eq!(state, [Some("v2".into()), None, Some("mine".into()), Some("user".into()), Some("another session".into())]);
     }
 
     #[test]
