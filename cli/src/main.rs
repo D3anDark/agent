@@ -193,7 +193,7 @@ fn run(options: Options) -> Result<(), String> {
         session.append(&serde_json::json!({"type": "parent", "session": parent}))?;
     }
     let cheap_model = models::small_model(&catalog, &model.provider);
-    let modes_error = modes::fetch(&home, &settings.ponytail, &settings.caveman).err();
+    let modes_error = modes::fetch(&home, &settings.ponytail, &settings.caveman, true).err();
     let mut agent = Agent {
         client,
         system: prompt::system_prompt(&agent_dir, &cwd, &settings.disabled_skills),

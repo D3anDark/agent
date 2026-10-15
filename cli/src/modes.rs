@@ -11,11 +11,10 @@ pub const PONYTAIL_BANNER: &str = "PONYTAIL MODE ACTIVE — level: ";
 pub const CAVEMAN_BANNER: &str = "CAVEMAN MODE ACTIVE — mode: ";
 const PONYTAIL_URL: &str = "https://raw.githubusercontent.com/DietrichGebert/ponytail/main/skills/ponytail/SKILL.md";
 const CAVEMAN_SKILLS_URL: &str = "https://raw.githubusercontent.com/JuliusBrussee/caveman/main/skills";
-const REFRESH_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Downloads the rules the active levels need when the cached copy is missing or a day old.
+/// Downloads the rules the active levels need: always with `refresh`, otherwise only when missing.
 /// A failed refresh keeps the old copy; only a missing copy is an error.
-pub fn fetch(home: &Path, ponytail: &str, caveman: &str) -> Result<(), String> {
+pub fn fetch(home: &Path, ponytail: &str, caveman: &str, refresh: bool) -> Result<(), String> {
     let mut wanted = Vec::new();
     if ponytail != "off" {
         wanted.push(("ponytail", PONYTAIL_URL.to_string()));
@@ -25,8 +24,8 @@ pub fn fetch(home: &Path, ponytail: &str, caveman: &str) -> Result<(), String> {
     }
     for (skill, url) in wanted {
         let path = cache_path(home, skill);
-        let age = fs::metadata(&path).and_then(|meta| meta.modified()).ok().and_then(|modified| modified.elapsed().ok());
-        if age.is_some_and(|age| age < REFRESH_AFTER) {
+        let cached = path.exists();
+        if cached && !refresh {
             continue;
         }
         match download(&url) {
@@ -34,8 +33,8 @@ pub fn fetch(home: &Path, ponytail: &str, caveman: &str) -> Result<(), String> {
                 fs::create_dir_all(path.parent().expect("cache_path has a parent")).map_err(|e| format!("Cannot create {}: {e}", path.display()))?;
                 fs::write(&path, rules).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
             }
-            Err(e) if age.is_none() => return Err(format!("Cannot download the {skill} rules from {url}: {e}")),
-            Err(_) => {} // offline: the day-old copy still works
+            Err(e) if !cached => return Err(format!("Cannot download the {skill} rules from {url}: {e}")),
+            Err(_) => {} // offline: the cached copy still works
         }
     }
     Ok(())

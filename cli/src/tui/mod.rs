@@ -1176,8 +1176,8 @@ impl App {
         self.expanded = self.settings.expand_tools;
         *self.permission_mode.lock().unwrap() = self.settings.permission_mode;
         self.client.configure(&self.settings);
-        // Blocks only when the rules are missing or a day old; the agent thread reads the cache.
-        if let Err(error) = modes::fetch(&self.home, &self.settings.ponytail, &self.settings.caveman) {
+        // Startup already refreshed the rules; a new level downloads only its missing file.
+        if let Err(error) = modes::fetch(&self.home, &self.settings.ponytail, &self.settings.caveman, false) {
             self.push(Item::Error(error));
         }
         let model = self.model().clone();
