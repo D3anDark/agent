@@ -1,0 +1,237 @@
+#!/usr/bin/env bun
+/**
+ * Shows this device's usagefleet limits (5h + weekly) and its group's budget in the footer,
+ * and refuses prompts while that budget is blocked.
+ *
+ * usagefleet's watcher writes the device's last limits report into its config file every minute.
+ * The group budget lives only on the server, so it is fetched with the device token of the
+ * session's Claude account, the same request `usagefleet guard` makes per prompt.
+ */
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+/** What agent sends with every event and input request. */
+export type Context = {
+	provider: string;
+	model: string;
+	/** The Claude account uuid; null for API keys. */
+	accountId: string | null;
+	/** The name the user gave the account at /login. */
+	accountName: string | null;
+	cwd: string;
+	sessionId: string;
+};
+
+const SERVER_LIMITS_URL = "https://usagefleet.com/api/v1/limits";
+const CONFIG_PATH = process.env.USAGEFLEET_CONFIG ?? join(homedir(), ".config", "usagefleet", "config.json");
+const COLLECTOR_PATHS = [
+	join(homedir(), ".config", "usagefleet", "pi-claude", ".claude.json"),
+	process.env.CLAUDE_CONFIG_DIR ? join(process.env.CLAUDE_CONFIG_DIR, ".claude.json") : join(homedir(), ".claude.json"),
+];
+/** Four missed watcher reports: the numbers describe a past that has moved on. */
+const STALE_AFTER_MS = 5 * 60_000;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+
+/** "5h 12% · 7d 8%", or null when the config has no fresh reading. */
+export function formatLimits(config: unknown, now: number): string | null {
+	const limits = isRecord(config) ? config.limits : undefined;
+	if (!isRecord(limits)) return null;
+	const { fiveHourPct, sevenDayPct, at } = limits;
+	if (typeof fiveHourPct !== "number" || typeof sevenDayPct !== "number") return null;
+	const reported = typeof at === "string" ? Date.parse(at) : Number.NaN;
+	if (Number.isNaN(reported) || now - reported > STALE_AFTER_MS) return null;
+	return formatWindows(fiveHourPct, sevenDayPct);
+}
+
+/** "Artur: 5h 30% · 7d 17%", or null when the device is in no group or the group repeats the account's numbers. */
+export function formatGroupLimits(view: unknown, accountLimits: string | null): string | null {
+	if (!isRecord(view)) return null;
+	const { group, sessionPct, weeklyPct } = view;
+	if (typeof group !== "string" || typeof sessionPct !== "number" || typeof weeklyPct !== "number") return null;
+	const windows = formatWindows(sessionPct, weeklyPct);
+	// The server does not say how many groups there are; a sole group's budget slice is the whole account.
+	if (windows === accountLimits) return null;
+	return `${group}: ${windows}`;
+}
+
+const formatWindows = (fiveHourPct: number, sevenDayPct: number) =>
+	`5h ${Math.round(fiveHourPct)}% · 7d ${Math.round(sevenDayPct)}%`;
+
+export function detectAccountUuid(raw: unknown): string | null {
+	if (!isRecord(raw)) return null;
+	const account = raw.oauthAccount;
+	if (!isRecord(account) || typeof account.accountUuid !== "string" || !account.accountUuid) return null;
+	return account.accountUuid;
+}
+
+/** USAGEFLEET_TOKEN, then the account's device token, then the shared one, then any account's. */
+export function resolveToken(config: unknown, accountId: string, env: NodeJS.ProcessEnv = process.env): string | null {
+	if (env.USAGEFLEET_TOKEN) return env.USAGEFLEET_TOKEN;
+	if (!isRecord(config)) return null;
+	const accountTokens = isRecord(config.accountTokens) ? config.accountTokens : {};
+	const own = accountTokens[accountId];
+	if (typeof own === "string" && own) return own;
+	if (typeof config.token === "string" && config.token) return config.token;
+	return Object.values(accountTokens).find((token): token is string => typeof token === "string" && Boolean(token)) ?? null;
+}
+
+/** usagefleet guards the Claude subscription; other providers and API keys have no budget here. */
+export const claudeAccount = (context: Context): string | null =>
+	context.provider === "anthropic" ? context.accountId : null;
+
+/** "uf_tVdC…": enough to tell tokens apart without showing one. */
+const maskToken = (token: string) => `${token.slice(0, 7)}…`;
+
+/** What `/usagefleet` with no args says about the token the account's prompts use. */
+export function tokenReport(config: unknown, accountId: string, accountName: string, env: NodeJS.ProcessEnv = process.env): string {
+	const account = `Account ${accountName}`;
+	if (env.USAGEFLEET_TOKEN) return `USAGEFLEET_TOKEN (${maskToken(env.USAGEFLEET_TOKEN)}) overrides the config for every account.`;
+	const accountTokens = isRecord(config) && isRecord(config.accountTokens) ? config.accountTokens : {};
+	const own = accountTokens[accountId];
+	if (typeof own === "string" && own) return `${account} uses its own token ${maskToken(own)}.`;
+	const fallback = resolveToken(config, accountId, env);
+	const set = "Set its own with /usagefleet <token> from the usagefleet Devices page.";
+	if (fallback) return `${account} has no token of its own and uses ${maskToken(fallback)}. ${set}`;
+	return `${account} has no usagefleet token. ${set}`;
+}
+
+/** `/account` panel text per Claude account uuid: the token assigned to it, masked. */
+export function accountLabels(config: unknown): Record<string, string> {
+	const accountTokens = isRecord(config) && isRecord(config.accountTokens) ? config.accountTokens : {};
+	const labels: Record<string, string> = {};
+	for (const [accountId, token] of Object.entries(accountTokens)) {
+		if (typeof token === "string" && token) labels[accountId] = maskToken(token);
+	}
+	return labels;
+}
+
+/** The config with `token` assigned to the account; every other key stays as it was. */
+export function assignToken(config: Record<string, unknown>, accountId: string, token: string): Record<string, unknown> {
+	const accountTokens = isRecord(config.accountTokens) ? config.accountTokens : {};
+	return { ...config, accountTokens: { ...accountTokens, [accountId]: token } };
+}
+
+/** Unlike readJson, a broken config throws: writing over it would lose the watcher's state. */
+async function readConfigForWrite(): Promise<Record<string, unknown>> {
+	const text = await readFile(CONFIG_PATH, "utf8").catch((error: NodeJS.ErrnoException) => {
+		if (error.code === "ENOENT") return "{}";
+		throw error;
+	});
+	const config: unknown = JSON.parse(text);
+	if (!isRecord(config)) throw new Error(`${CONFIG_PATH} does not hold a JSON object.`);
+	return config;
+}
+
+/** `/usagefleet [token]`: shows or sets the device token of the session's Claude account. */
+async function usagefleetCommand(args: string, context: Context): Promise<string> {
+	const account = claudeAccount(context);
+	if (context.provider !== "anthropic") throw new Error("Switch to a Claude model first.");
+	// Accounts saved before the agent stored account.uuid have none until the next /login.
+	if (!account) throw new Error("This Claude account has no account id. API keys have none. For a subscription, run /login again.");
+	const name = context.accountName ?? account;
+	if (!args) return tokenReport(await readJson(CONFIG_PATH), account, name);
+	if (/\s/.test(args)) throw new Error("Usage: /usagefleet <token>");
+	const config = assignToken(await readConfigForWrite(), account, args);
+	await mkdir(dirname(CONFIG_PATH), { recursive: true });
+	// The watcher reads this file every few seconds, so it must never see a half-written one.
+	const partial = `${CONFIG_PATH}.${process.pid}.tmp`;
+	await writeFile(partial, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+	await rename(partial, CONFIG_PATH);
+	return `Account ${name} now uses token ${maskToken(args)}.`;
+}
+/** Mirrors `usagefleet guard`: the reason to refuse a prompt, or null unless the server says `blocked: true`. */
+export function blockMessage(view: unknown): string | null {
+	if (!isRecord(view) || view.blocked !== true) return null;
+	const { group, blockedWindow, blockedModel, blockedPct, blockedUntil } = view;
+	const window = blockedWindow === "weekly" ? "weekly" : "5h";
+	const limit = typeof blockedModel === "string" && blockedModel ? `${blockedModel} ${window}` : window;
+	const pct = typeof blockedPct === "number" ? Number(blockedPct.toFixed(1)) : 100;
+	const who = typeof group === "string" && group ? `"${group}"` : "this group";
+	const until = typeof blockedUntil === "string" ? new Date(blockedUntil) : null;
+	const resets =
+		until && !Number.isNaN(until.getTime())
+			? ` Resets ${until.toLocaleString([], { dateStyle: "short", timeStyle: "short" })}.`
+			: "";
+	return `usagefleet: ${who} has used ${pct}% of its ${limit} budget, so new prompts are blocked.${resets}`;
+}
+
+const readJson = (path: string): Promise<unknown> =>
+	readFile(path, "utf8")
+		.then(JSON.parse)
+		.catch(() => null);
+
+async function collectorAccount(): Promise<string | null> {
+	for (const path of COLLECTOR_PATHS) {
+		const uuid = detectAccountUuid(await readJson(path));
+		if (uuid) return uuid;
+	}
+	return null;
+}
+
+async function fetchServerLimits(token: string): Promise<unknown> {
+	const response = await fetch(SERVER_LIMITS_URL, { headers: { "x-api-key": token }, signal: AbortSignal.timeout(4_000) });
+	return response.ok ? response.json() : null;
+}
+
+async function status(context: Context): Promise<string | null> {
+	const account = claudeAccount(context);
+	if (!account) return null;
+	const config = await readJson(CONFIG_PATH);
+	// The watcher reads limits for one account; a session on another account would show the wrong numbers.
+	const limits = account === (await collectorAccount()) ? formatLimits(config, Date.now()) : null;
+	const token = resolveToken(config, account);
+	// Offline or rejected hides the group numbers rather than freezing old ones.
+	const view = token ? await fetchServerLimits(token).catch(() => null) : null;
+	const parts = [limits, formatGroupLimits(view, limits)].filter(Boolean);
+	return parts.length ? parts.join("  ") : null;
+}
+
+/** Fails open on every error, the same guarantee `usagefleet guard` makes. */
+async function blockedReason(context: Context): Promise<string | null> {
+	const account = claudeAccount(context);
+	if (!account) return null;
+	const token = resolveToken(await readJson(CONFIG_PATH), account);
+	if (!token) return null;
+	return blockMessage(await fetchServerLimits(token).catch(() => null));
+}
+
+const send = (message: object) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+
+type Message = { id?: number; method?: string; params?: { type?: string; args?: string; context?: Context } };
+
+async function handle(message: Message): Promise<void> {
+	const context = message.params?.context;
+	if (!context) return;
+	if (message.method === "event" && (message.params?.type === "session_start" || message.params?.type === "prompt_end")) {
+		if (message.params.type === "session_start") await refreshAccountLabels();
+		send({ method: "ui.setStatus", params: { text: await status(context).catch(() => null) } });
+	} else if (message.method === "input") {
+		const reason = await blockedReason(context).catch(() => null);
+		send({ id: message.id, result: reason ? { action: "block", reason } : { action: "continue" } });
+	} else if (message.method === "command") {
+		try {
+			send({ id: message.id, result: { text: await usagefleetCommand(message.params?.args ?? "", context) } });
+		} catch (error) {
+			send({ id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } });
+			return;
+		}
+		await refreshAccountLabels();
+		send({ method: "ui.setStatus", params: { text: await status(context).catch(() => null) } });
+	}
+}
+
+async function refreshAccountLabels(): Promise<void> {
+	send({ method: "ui.setAccountLabels", params: { labels: accountLabels(await readJson(CONFIG_PATH)) } });
+}
+
+if (import.meta.main) {
+	for await (const line of console) {
+		// Bun yields an empty line when stdin closes.
+		if (!line) continue;
+		// Not awaited: a slow status refresh must not hold up the next input answer.
+		handle(JSON.parse(line)).catch(() => {});
+	}
+}

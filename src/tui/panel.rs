@@ -30,15 +30,15 @@ impl Panel<'_> {
         }
         let first = (self.selected + 1).saturating_sub(max_rows);
         let below = self.rows.len().saturating_sub(first + max_rows);
-        if first > 0 {
-            header.push(span(format!("  {first} above"), MUTED));
-        }
-        if below > 0 {
-            header.push(span(format!("  {below} below"), MUTED));
-        }
+        // A list that scrolls always gets both count lines, so the panel keeps its height while moving.
+        let scrolls = self.rows.len() > max_rows;
+        let count = |arrow: &str, hidden: usize| if hidden > 0 { vec![span(format!("  {arrow} {hidden} more"), MUTED)] } else { Vec::new() };
         let mut lines = vec![rule.clone(), header, Vec::new()];
         if self.rows.is_empty() {
             lines.push(vec![span(format!("  {}", self.empty), MUTED)]);
+        }
+        if scrolls {
+            lines.push(count("↑", first));
         }
         let left_width = self.rows.iter().map(|r| width(&r.left)).max().unwrap_or(0);
         for (index, row) in self.rows.iter().enumerate().skip(first).take(max_rows) {
@@ -47,6 +47,9 @@ impl Panel<'_> {
             let mut line = vec![span("  ", PLAIN), span(format!("{}{pad}", row.left), style), span("    ", PLAIN)];
             line.extend(row.right.iter().cloned());
             lines.push(truncate(&line, columns));
+        }
+        if scrolls {
+            lines.push(count("↓", below));
         }
         lines.push(rule);
         lines.push(vec![span(self.hint, MUTED)]);
@@ -74,10 +77,12 @@ mod tests {
     }
 
     #[test]
-    fn header_counts_rows_scrolled_out_of_view() {
+    fn rows_scrolled_out_of_view_are_counted_above_and_below_the_list() {
         let rows: Vec<Row> = (0..5).map(|i| Row { left: i.to_string(), right: Vec::new() }).collect();
-        let panel = Panel { title: "Settings 5".into(), tabs: &[], tab: 0, rows: &rows, selected: 3, empty: "", hint: "" };
-        assert_eq!(text(&panel.render(40, 2)[1]), "Settings 5  2 above  1 below");
-        assert_eq!(text(&panel.render(40, 5)[1]), "Settings 5");
+        let panel = |selected| Panel { title: "Settings".into(), tabs: &[], tab: 0, rows: &rows, selected, empty: "", hint: "" };
+        let lines: Vec<String> = panel(3).render(40, 2).iter().map(text).collect();
+        assert_eq!(lines[1..7], ["Settings", "", "  ↑ 2 more", "  2    ", "  3    ", "  ↓ 1 more"]);
+        assert_eq!(panel(0).render(40, 2).iter().map(text).collect::<Vec<_>>()[3], "");
+        assert_eq!(panel(3).render(40, 5).len(), 10);
     }
 }

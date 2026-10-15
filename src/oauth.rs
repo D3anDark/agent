@@ -29,7 +29,7 @@ pub struct Tokens {
     pub refresh: String,
     /// Unix milliseconds.
     pub expires: u64,
-    /// ChatGPT account, read from the Codex access token.
+    /// ChatGPT account read from the Codex access token, or the Claude account uuid from the token response.
     pub account_id: Option<String>,
 }
 
@@ -78,7 +78,8 @@ fn claude_tokens(data: Value) -> Result<Tokens, String> {
         return Err("The token response is missing fields.".into());
     };
     // pi-ai stores Anthropic expiry five minutes early.
-    Ok(Tokens { access: access.into(), refresh: refresh.into(), expires: now_ms() + expires_in * 1000 - REFRESH_MARGIN_MS, account_id: None })
+    let account_id = data["account"]["uuid"].as_str().map(String::from);
+    Ok(Tokens { access: access.into(), refresh: refresh.into(), expires: now_ms() + expires_in * 1000 - REFRESH_MARGIN_MS, account_id })
 }
 
 pub fn start_codex() -> Pending {

@@ -1,0 +1,7 @@
+{
+	"version": "0.1.0",
+	"description": "usagefleet limits in the footer; refuses prompts while the group budget is blocked",
+	"author": "rokartur",
+	"command": ["bun", "index.ts"],
+	"commands": [{ "name": "usagefleet", "description": "Show or set the usagefleet token of this Claude account: /usagefleet [token]" }]
+}

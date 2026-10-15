@@ -16,6 +16,11 @@ pub struct AskPanel {
     reply: Sender<Vec<Option<Answer>>>,
     answers: Vec<Option<Answer>>,
     current: usize,
+    drafts: Vec<Draft>,
+}
+
+/// Per-question input, kept while moving between questions.
+struct Draft {
     /// Focused row; `options.len()` is the "Type something." row.
     row: usize,
     picked: Vec<usize>,
@@ -24,52 +29,60 @@ pub struct AskPanel {
 
 impl AskPanel {
     pub fn new(questions: Vec<Question>, reply: Sender<Vec<Option<Answer>>>) -> AskPanel {
-        AskPanel { answers: vec![None; questions.len()], questions, reply, current: 0, row: 0, picked: Vec::new(), typed: Editor::new() }
+        let drafts = questions.iter().map(|_| Draft { row: 0, picked: Vec::new(), typed: Editor::new() }).collect();
+        AskPanel { answers: vec![None; questions.len()], questions, reply, current: 0, drafts }
     }
 
     /// Pasted text can only be a typed answer, so it moves to the "Type something." row.
     pub fn paste(&mut self, text: &str) {
-        self.row = self.questions[self.current].options.len();
-        self.typed.insert(text);
+        let draft = &mut self.drafts[self.current];
+        draft.row = self.questions[self.current].options.len();
+        draft.typed.insert(text);
     }
 
     /// Returns true once the answers (or the cancel) went back to the agent.
     pub fn key(&mut self, key: KeyEvent) -> bool {
         let question = &self.questions[self.current];
+        let draft = &mut self.drafts[self.current];
         let custom_row = question.options.len();
+        let editing = draft.row == custom_row && !draft.typed.is_empty();
         match key.code {
             KeyCode::Esc => {
                 let _ = self.reply.send(vec![None; self.questions.len()]);
                 return true;
             }
-            KeyCode::Up => self.row = self.row.saturating_sub(1),
-            KeyCode::Down => self.row = (self.row + 1).min(custom_row),
-            KeyCode::Char(' ') if question.multi && self.row < custom_row => {
-                match self.picked.iter().position(|i| *i == self.row) {
-                    Some(at) => _ = self.picked.remove(at),
-                    None => self.picked.push(self.row),
+            KeyCode::Left if !editing => self.current = self.current.saturating_sub(1),
+            KeyCode::Right if !editing => self.current = (self.current + 1).min(self.questions.len() - 1),
+            KeyCode::Up => draft.row = draft.row.saturating_sub(1),
+            KeyCode::Down => draft.row = (draft.row + 1).min(custom_row),
+            KeyCode::Char(' ') if question.multi && draft.row < custom_row => {
+                match draft.picked.iter().position(|i| *i == draft.row) {
+                    Some(at) => _ = draft.picked.remove(at),
+                    None => draft.picked.push(draft.row),
                 }
             }
             KeyCode::Enter => {
-                let answer = match (question.multi, self.row == custom_row) {
-                    (true, _) if self.picked.is_empty() && self.typed.is_empty() => return false,
+                let answer = match (question.multi, draft.row == custom_row) {
+                    (true, _) if draft.picked.is_empty() && draft.typed.is_empty() => return false,
                     (true, _) => {
-                        self.picked.sort();
-                        Answer::Multi { picked: std::mem::take(&mut self.picked), typed: self.typed.take() }
+                        draft.picked.sort();
+                        Answer::Multi { picked: draft.picked.clone(), typed: draft.typed.text() }
                     }
-                    (false, true) if self.typed.is_empty() => return false,
-                    (false, true) => Answer::Typed(self.typed.take()),
-                    (false, false) => Answer::Picked(self.row),
+                    (false, true) if draft.typed.is_empty() => return false,
+                    (false, true) => Answer::Typed(draft.typed.text()),
+                    (false, false) => Answer::Picked(draft.row),
                 };
                 self.answers[self.current] = Some(answer);
-                self.current += 1;
-                self.row = 0;
-                if self.current == self.questions.len() {
-                    let _ = self.reply.send(std::mem::take(&mut self.answers));
-                    return true;
+                let count = self.questions.len();
+                match (1..=count).map(|step| (self.current + step) % count).find(|&i| self.answers[i].is_none()) {
+                    Some(unanswered) => self.current = unanswered,
+                    None => {
+                        let _ = self.reply.send(std::mem::take(&mut self.answers));
+                        return true;
+                    }
                 }
             }
-            _ if self.row == custom_row => _ = self.typed.edit_key(key),
+            _ if draft.row == custom_row => _ = draft.typed.edit_key(key),
             _ => {}
         }
         false
@@ -77,48 +90,64 @@ impl AskPanel {
 
     pub fn render(&self, width: usize) -> Vec<Line> {
         let question = &self.questions[self.current];
+        let draft = &self.drafts[self.current];
         let rule = vec![span("─".repeat(width), RULE)];
-        let count = format!("  {}/{}", self.current + 1, self.questions.len());
-        let mut lines = vec![rule.clone(), vec![span(question.header.clone(), BRIGHT.bold()), span(count, MUTED)]];
+        let mut lines = vec![rule.clone(), self.tabs()];
         lines.extend(wrap(&[span(question.question.clone(), PLAIN.bold())], width, &Vec::new()));
         lines.push(Vec::new());
         for (index, option) in question.options.iter().enumerate() {
-            let check = match (question.multi, self.picked.contains(&index)) {
+            let check = match (question.multi, draft.picked.contains(&index)) {
                 (false, _) => "",
                 (true, true) => "[x] ",
                 (true, false) => "[ ] ",
             };
-            let mut line = self.lead(index);
-            line.push(span(format!("{check}{}", option.label), self.style(index)));
-            if !option.description.is_empty() {
-                line.push(span(format!("  {}", option.description), MUTED));
-            }
+            let mut line = lead(draft.row, index);
+            line.push(span(format!("{check}{}", option.label), style(draft.row, index)));
             lines.push(line);
+            if !option.description.is_empty() {
+                let indent = vec![span("       ", PLAIN)];
+                lines.extend(wrap(&[span(option.description.as_str(), MUTED)], width, &indent));
+            }
         }
         let custom = question.options.len();
-        let mut line = self.lead(custom);
-        line.push(span(TYPE_SOMETHING, self.style(custom)));
+        let mut line = lead(draft.row, custom);
+        line.push(span(TYPE_SOMETHING, style(draft.row, custom)));
         lines.push(line);
-        if self.row == custom || !self.typed.is_empty() {
+        if draft.row == custom || !draft.typed.is_empty() {
             let indent = vec![span("       ", PLAIN)];
-            lines.extend(wrap(&[span(self.typed.field(None), BRIGHT)], width, &indent));
+            lines.extend(wrap(&[span(draft.typed.field(None), BRIGHT)], width, &indent));
         }
-        if let Some(preview) = question.options.get(self.row).and_then(|o| o.preview.as_ref()) {
+        if let Some(preview) = question.options.get(draft.row).and_then(|o| o.preview.as_ref()) {
             lines.push(Vec::new());
             lines.extend(preview.lines().take(PREVIEW_LINES).map(|l| vec![span(format!("    {l}"), MUTED)]));
         }
-        let hint = if question.multi { "↑↓ move     space toggle     enter submit     esc cancel" } else { "↑↓ move     enter choose     esc cancel" };
-        lines.extend([Vec::new(), rule, vec![span(hint, MUTED)]]);
+        let switch = if self.questions.len() > 1 { "←→ question     " } else { "" };
+        let action = if question.multi { "space toggle     enter submit" } else { "enter choose" };
+        lines.extend([Vec::new(), rule, vec![span(format!("↑↓ move     {switch}{action}     esc cancel"), MUTED)]]);
         lines
     }
 
-    fn lead(&self, row: usize) -> Line {
-        vec![span(if row == self.row { "  ❯ " } else { "    " }, PLAIN), span(format!("{}. ", row + 1), MUTED)]
+    /// One tab per question header: the current one bright, answered ones checked.
+    fn tabs(&self) -> Line {
+        let mut line = Vec::new();
+        for (index, question) in self.questions.iter().enumerate() {
+            if index > 0 {
+                line.push(span("   ", PLAIN));
+            }
+            let mark = if self.answers[index].is_some() { "✓ " } else { "" };
+            let style = if index == self.current { BRIGHT.bold() } else { MUTED };
+            line.push(span(format!("{mark}{}", question.header), style));
+        }
+        line
     }
+}
 
-    fn style(&self, row: usize) -> Style {
-        if row == self.row { BRIGHT.bold() } else { PLAIN }
-    }
+fn lead(focused: usize, row: usize) -> Line {
+    vec![span(if row == focused { "  ❯ " } else { "    " }, PLAIN), span(format!("{}. ", row + 1), MUTED)]
+}
+
+fn style(focused: usize, row: usize) -> Style {
+    if row == focused { BRIGHT.bold() } else { PLAIN }
 }
 
 #[cfg(test)]
@@ -139,6 +168,17 @@ mod tests {
     }
 
     #[test]
+    fn a_long_description_wraps_below_its_label() {
+        let input = json!({"questions": [{"question": "Q?", "header": "H", "options": [{"label": "a", "description": "one two three four five six seven eight nine ten"}, {"label": "b", "description": ""}]}]});
+        let (reply, _answers) = mpsc::channel();
+        let panel = AskPanel::new(crate::ask::parse(&input).unwrap(), reply);
+        let text: Vec<String> = panel.render(24).iter().map(|l| l.iter().map(|s| s.text.as_str()).collect()).collect();
+        let label = text.iter().position(|row| row.ends_with("1. a")).expect("label on its own row");
+        assert!(text[label + 1].trim_start().starts_with("one"), "{text:#?}");
+        assert_eq!(text[label + 4], "       ten", "{text:#?}");
+    }
+
+    #[test]
     fn answers_each_question_in_turn_then_replies() {
         let input = json!({"questions": [
             {"question": "Q1?", "header": "One", "options": [{"label": "a", "description": ""}, {"label": "b", "description": ""}]},
@@ -150,5 +190,32 @@ mod tests {
         assert!(keys.into_iter().all(|code| !panel.key(code.into())));
         assert!(panel.key(KeyCode::Enter.into()));
         assert_eq!(answers.recv().unwrap(), [Some(Answer::Typed("x".into())), Some(Answer::Multi { picked: vec![0, 1], typed: String::new() })]);
+    }
+
+    #[test]
+    fn going_back_keeps_and_changes_an_answer() {
+        let input = json!({"questions": [
+            {"question": "Q1?", "header": "One", "options": [{"label": "a", "description": ""}, {"label": "b", "description": ""}]},
+            {"question": "Q2?", "header": "Two", "multiSelect": true, "options": [{"label": "c", "description": ""}, {"label": "d", "description": ""}]},
+        ]});
+        let (reply, answers) = mpsc::channel();
+        let mut panel = AskPanel::new(crate::ask::parse(&input).unwrap(), reply);
+        let keys = [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Left, KeyCode::Down, KeyCode::Enter];
+        assert!(keys.into_iter().all(|code| !panel.key(code.into())));
+        assert!(panel.key(KeyCode::Enter.into()));
+        assert_eq!(answers.recv().unwrap(), [Some(Answer::Picked(1)), Some(Answer::Multi { picked: vec![0], typed: String::new() })]);
+    }
+
+    #[test]
+    fn tabs_name_every_question_and_mark_the_answered() {
+        let input = json!({"questions": [
+            {"question": "Q1?", "header": "One", "options": [{"label": "a", "description": ""}, {"label": "b", "description": ""}]},
+            {"question": "Q2?", "header": "Two", "options": [{"label": "c", "description": ""}, {"label": "d", "description": ""}]},
+        ]});
+        let (reply, _answers) = mpsc::channel();
+        let mut panel = AskPanel::new(crate::ask::parse(&input).unwrap(), reply);
+        panel.key(KeyCode::Enter.into());
+        let text: Vec<String> = panel.render(40).iter().map(|l| l.iter().map(|s| s.text.as_str()).collect()).collect();
+        assert_eq!(text[1], "✓ One   Two", "{text:#?}");
     }
 }

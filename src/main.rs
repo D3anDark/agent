@@ -11,6 +11,8 @@ mod models;
 mod modes;
 mod oauth;
 mod permissions;
+mod plan;
+mod plugins;
 mod prompt;
 mod rtk;
 mod settings;
@@ -34,6 +36,9 @@ use hashline::Anchors;
 use permissions::{Decision, Grants, Mode};
 
 const USAGE: &str = "Usage: agent [options] [message...]
+       agent plugin install|update <name|path>   Copy a bundled plugin or a plugin directory into ~/.agent/plugins
+       agent plugin remove <name>
+       agent plugin list
 
 Options:
   --model <id>          Model id, e.g. claude-opus-5-5
@@ -68,12 +73,44 @@ enum Resume {
     Id(String),
 }
 
+fn plugin_command(args: &[String]) -> Result<(), String> {
+    let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set.")?);
+    match args {
+        [action, source] if action == "install" || action == "update" => println!("Installed {}.", plugins::install(&home, source)?),
+        [action, name] if action == "remove" => {
+            plugins::remove(&home, name)?;
+            println!("Removed {name}.");
+        }
+        [action] if action == "list" => {
+            let disabled = settings::load(&home).disabled_plugins;
+            for view in plugins::Plugins::new(&home).list() {
+                let state = match (view.installed, disabled.contains(&view.name)) {
+                    (false, _) => "available",
+                    (true, true) => "disabled",
+                    (true, false) => "enabled",
+                };
+                println!("{:<16} {:<10} {:<10} {}", view.name, view.version, state, view.description);
+            }
+        }
+        _ => return Err(format!("Unknown plugin command.\n{USAGE}")),
+    }
+    Ok(())
+}
+
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--version") {
         println!("agent {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    let options = match parse_args(std::env::args().skip(1).collect()) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|command| command == "plugin") {
+        if let Err(message) = plugin_command(&args[1..]) {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let options = match parse_args(args) {
         Ok(options) => options,
         Err(message) => {
             eprintln!("{message}\n{USAGE}");
@@ -190,6 +227,7 @@ fn run(options: Options) -> Result<(), String> {
         grants: Grants::default(),
         todos: Arc::default(),
         goal: Arc::default(),
+        plan: Arc::default(),
         follow_ups: Arc::default(),
         terminals: Arc::default(),
         subagents: Arc::default(),
@@ -200,6 +238,7 @@ fn run(options: Options) -> Result<(), String> {
         interactive: false,
         agent_dir: agent_dir.clone(),
         home: home.clone(),
+        plugins: plugins::Plugins::new(&home),
         snapshots: None,
         checkpoints: Vec::new(),
         cwd,
@@ -207,6 +246,7 @@ fn run(options: Options) -> Result<(), String> {
         session,
         sessions_dir,
     };
+    agent.plugins.sync(&settings.disabled_plugins, &settings.plugin_settings);
     agent.load(history);
     // After load, which resets the tools to the session's loaded groups. Only the root spawns, and a child has no UI to ask in.
     if options.parent.is_some() {
@@ -301,4 +341,20 @@ fn preview(input: &Value) -> String {
 
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+/// Whether `binary` is an executable file in some PATH directory; rtk and headroom are optional installs.
+pub fn installed(binary: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(path) = std::env::var_os("PATH") else { return false };
+    std::env::split_paths(&path).any(|dir| std::fs::metadata(dir.join(binary)).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn installed_finds_only_executables_on_path() {
+        assert!(super::installed("sh"));
+        assert!(!super::installed("agent-no-such-binary"));
+    }
 }

@@ -14,6 +14,7 @@ use crate::ask::{self, Answer, Question};
 use crate::bg::{self, Terminals};
 use crate::condense::{self, Condensed};
 use crate::goal::{AfterTurn, Goal, Status as GoalStatus};
+use crate::plan::{self, Plan};
 use crate::hashline::Anchors;
 use crate::models::Model;
 use crate::modes;
@@ -140,6 +141,8 @@ pub struct Agent {
     pub todos: Arc<Mutex<Todos>>,
     /// Shared with the UI for the footer and /goal pause, which must work mid-turn.
     pub goal: Arc<Mutex<Option<Goal>>>,
+    /// Shared with the UI, which opens the plan menu after the turn that completed the plan.
+    pub plan: Arc<Mutex<Plan>>,
     pub follow_ups: Arc<Mutex<Vec<FollowUp>>>,
     /// Shared with the UI for /ps and the running count above the editor.
     pub terminals: Arc<Mutex<Terminals>>,
@@ -155,6 +158,8 @@ pub struct Agent {
     /// pi's agent dir, for rebuilding the system prompt after /worktree.
     pub agent_dir: PathBuf,
     pub home: PathBuf,
+    /// Shared with the UI for the footer and /plugins.
+    pub plugins: crate::plugins::Plugins,
     /// None outside a git repo and in print mode; then a rewind leaves files alone.
     pub snapshots: Option<Snapshots>,
     /// Files changed by this session's own tool calls, oldest first.
@@ -240,6 +245,7 @@ impl Agent {
 
     /// Runs the model and its tool calls until it ends the turn; returns the last assistant text.
     pub fn prompt(&mut self, text: &str, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
+        let text = &self.plugins.input(text, &self.plugin_context())?;
         self.abort.store(false, Ordering::Relaxed);
         if self.interactive && self.messages.is_empty() {
             self.start_naming(text);
@@ -259,7 +265,22 @@ impl Agent {
             // No reply means the API refused this prompt (e.g. a 400 on its image); resending it would fail again.
             self.rewind(self.messages.len() - 1)?;
         }
+        self.plugins.event(json!({"type": "prompt_end", "error": result.as_ref().err(), "context": self.plugin_context()}));
         result
+    }
+
+    /// Sent with every plugin message; see plugins/README.md.
+    pub fn plugin_context(&self) -> Value {
+        let provider = &self.client.catalog().iter().find(|m| m.id == self.model).expect("the model comes from the catalog").provider;
+        let (account_name, account_id) = self.client.account(provider).unzip();
+        json!({
+            "provider": provider,
+            "model": self.model,
+            "accountId": account_id.flatten(),
+            "accountName": account_name,
+            "cwd": self.cwd,
+            "sessionId": self.session.id,
+        })
     }
 
     fn run_turns(&mut self, text: &str, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
@@ -272,8 +293,14 @@ impl Agent {
             }
             self.collect_condensed(emit)?;
             let messages = condense::view(&self.messages, &self.condensed);
-            let system = if self.modes.is_empty() { self.system.clone() } else { format!("{}\n\n{}", self.system, self.modes) };
-            let request = api::request(&self.model, self.max_tokens, &self.effort, &system, &self.tools, &messages);
+            let mut system = if self.modes.is_empty() { self.system.clone() } else { format!("{}\n\n{}", self.system, self.modes) };
+            let mut tools = self.tools.clone();
+            tools.as_array_mut().expect("tool schemas are an array").extend(self.plugins.tools());
+            if *self.plan.lock().unwrap() != Plan::Off {
+                system = format!("{system}\n\n{}", plan::PROMPT);
+                tools.as_array_mut().expect("tool schemas are an array").push(plan::tool());
+            }
+            let request = api::request(&self.model, self.max_tokens, &self.effort, &system, &tools, &messages);
             let mut reply = self.client.send(&request, &self.abort, &mut |delta| match delta {
                 Delta::Text(text) => emit(Event::Text(text.to_string())),
                 Delta::Thinking(text) => emit(Event::Thinking(text.to_string())),
@@ -323,8 +350,10 @@ impl Agent {
                     shown["path"] = file.strip_prefix(&self.cwd).unwrap_or(&file).display().to_string().into();
                 }
                 emit(Event::ToolStart { id: id.clone(), name: name.clone(), input: shown });
+                self.plugins.event(json!({"type": "tool_call", "name": name, "input": input, "context": self.plugin_context()}));
                 let (output, is_error) = self.run_tool_with_checkpoint(&name, &input, text, emit)?;
                 self.tool_calls += 1;
+                self.plugins.event(json!({"type": "tool_result", "name": name, "output": output, "isError": is_error, "context": self.plugin_context()}));
                 emit(Event::ToolEnd { id: id.clone(), output: output.clone(), is_error });
                 results.push(json!({"type": "tool_result", "tool_use_id": id, "content": output, "is_error": is_error}));
                 finished.push(condense::Call { id, name, input, output, is_error });
@@ -347,12 +376,18 @@ impl Agent {
         if self.abort.load(Ordering::Relaxed) {
             return ("Operation aborted".into(), true);
         }
+        if *self.plan.lock().unwrap() != Plan::Off
+            && let Some(reason) = plan::blocked(name, input)
+        {
+            return (reason, true);
+        }
         if let Some(reason) = self.check_permission(name, input, user_request, emit) {
             return (reason, true);
         }
         let result = match name {
             "context_tree_query" => condense::query(&self.messages, &self.condensed, input),
             "todo" => self.todo(input),
+            "plan_mode_complete" => self.complete_plan(input),
             "create_goal" | "get_goal" | "update_goal" => self.goal_tool(name, input),
             "load_tools" => self.load_tools(input),
             "bg_start" | "bg_status" | "bg_list" => self.terminals.lock().unwrap().run(name, input, &self.cwd, &self.follow_ups),
@@ -362,7 +397,10 @@ impl Agent {
             }
             "subagent" => self.subagent(input, emit),
             "ask_user_question" => self.ask_user(input, emit),
-            _ => return self.run_file_tool(name, input),
+            _ => match self.plugins.tool(name, input, &self.plugin_context(), &self.abort) {
+                Some(answer) => return answer,
+                None => return self.run_file_tool(name, input),
+            },
         };
         match result {
             Ok(text) => (text, false),
@@ -472,6 +510,15 @@ impl Agent {
         }
         let sections: Vec<String> = runs.iter().map(|r| format!("## {} ({})\n\n{}", r.label, r.id, r.result_text())).collect();
         Ok(sections.join("\n\n"))
+    }
+
+    fn complete_plan(&mut self, input: &Value) -> Result<String, String> {
+        let plan = input["plan"].as_str().map(str::trim).unwrap_or_default();
+        if plan.is_empty() {
+            return Err("Error: plan required".into());
+        }
+        *self.plan.lock().unwrap() = Plan::Ready(plan.to_string());
+        Ok("Plan submitted. End your turn now; the user picks what happens next.".into())
     }
 
     fn goal_tool(&mut self, name: &str, input: &Value) -> Result<String, String> {
@@ -829,6 +876,7 @@ impl Agent {
         self.last_context_tokens = 0;
         self.nested_instructions.clear();
         self.checkpoints = history.checkpoints;
+        self.plugins.event(json!({"type": "session_start", "context": self.plugin_context()}));
     }
 
     pub fn summary(&self, answer: &str) -> Value {

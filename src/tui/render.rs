@@ -241,6 +241,25 @@ pub fn text_in(line: &Line, from: usize, to: usize) -> String {
     inside.iter().map(|s| s.text.as_str()).collect()
 }
 
+/// `line` with `overlay` drawn over its last columns up to `width`: a longer line is cut with "…", a shorter one padded.
+pub fn overlay_right(line: &Line, overlay: Line, width: usize) -> Line {
+    let start = width.saturating_sub(line_width(&overlay));
+    let mut left = truncate(line, start);
+    left.push(span(" ".repeat(start.saturating_sub(line_width(&left))), PLAIN));
+    left.extend(overlay);
+    left
+}
+
+/// `line` with `overlay` drawn over its middle columns, padding a line too short to reach them.
+pub fn overlay_center(line: &Line, overlay: Line, width: usize) -> Line {
+    let start = width.saturating_sub(line_width(&overlay)) / 2;
+    let [mut out, _, after] = split_columns(line, start, start + line_width(&overlay));
+    out.push(span(" ".repeat(start.saturating_sub(line_width(&out))), PLAIN));
+    out.extend(overlay);
+    out.extend(after);
+    out
+}
+
 /// ANSI for `line`; http(s) URLs are underlined wherever they appear.
 fn to_ansi(line: &Line) -> String {
     let mut out = String::new();
@@ -365,6 +384,20 @@ mod tests {
         let clear = out.find("\x1b[2;1H\x1b[J").unwrap();
         // CUP clamps on a full-height frame, so a clear after the rows would erase the last one.
         assert!(clear < out.find('a').unwrap());
+    }
+
+    #[test]
+    fn overlay_cuts_the_line_before_it_and_pads_a_short_line() {
+        let text = |line: Line| line.iter().map(|s| s.text.as_str()).collect::<String>();
+        assert_eq!(text(overlay_right(&vec![span("abcdefgh", PLAIN)], vec![span("XY", PLAIN)], 6)), "abc…XY");
+        assert_eq!(text(overlay_right(&vec![span("ab", PLAIN)], vec![span("XY", PLAIN)], 6)), "ab  XY");
+    }
+
+    #[test]
+    fn center_overlay_keeps_both_sides_of_the_line_and_pads_a_short_line() {
+        let text = |line: Line| line.iter().map(|s| s.text.as_str()).collect::<String>();
+        assert_eq!(text(overlay_center(&vec![span("abcdefgh", PLAIN)], vec![span("XY", PLAIN)], 8)), "abcXYfgh");
+        assert_eq!(text(overlay_center(&vec![span("a", PLAIN)], vec![span("XY", PLAIN)], 8)), "a  XY");
     }
 
     #[test]

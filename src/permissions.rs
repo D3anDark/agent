@@ -69,6 +69,7 @@ pub fn request_for(tool: &str, input: &Value, edited_file: Option<&Path>) -> Opt
             Some(Request { kind: "Edit", question: "Would you like to make the following edit?", detail: format!("{tool} in {path}"), grant: format!("edit:{path}") })
         }
         _ if tool.starts_with("mcp__") => Some(Request { kind: "MCP", question: "Would you like to call the following MCP tool?", detail: format!("{tool} {input}"), grant: format!("mcp:{tool}") }),
+        _ if tool.contains("__") => Some(Request { kind: "Plugin", question: "Would you like to call the following plugin tool?", detail: format!("{tool} {input}"), grant: format!("plugin:{tool}") }),
         _ => None,
     }
 }

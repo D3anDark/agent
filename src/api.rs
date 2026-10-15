@@ -83,10 +83,12 @@ impl Usage {
 }
 
 /// One row of /account and the footer.
+#[derive(Clone)]
 pub struct AccountView {
     pub provider: String,
     pub name: String,
     pub oauth: bool,
+    pub account_id: Option<String>,
     pub usage: Option<Windows>,
     pub current: bool,
     pub pinned: bool,
@@ -162,7 +164,7 @@ impl Client {
         state.policy = Some(settings.when_all_over_limit);
         state.fallback_model = settings.fallback_model.clone();
         state.pinned = settings.default_accounts.clone();
-        state.headroom = settings.headroom;
+        state.headroom = settings.headroom && crate::installed("headroom");
     }
 
     fn reload(&self, mut saved: Vec<Account>) {
@@ -290,6 +292,7 @@ impl Client {
             _ => oauth::refresh_codex(&tokens.refresh),
         }
         .map_err(|e| format!("Cannot refresh {}: {e} Use /login again.", account.name))?;
+        let refreshed = oauth::Tokens { account_id: refreshed.account_id.or_else(|| tokens.account_id.clone()), ..refreshed };
         let account = Account { secret: Secret::OAuth(refreshed), ..account };
         let updated = account.clone();
         let saved = accounts::update(&self.home, |list| {
@@ -379,12 +382,13 @@ impl Client {
                 provider: a.provider.clone(),
                 name: a.name.clone(),
                 oauth: a.is_oauth(),
+                account_id: a.account_id().map(String::from),
                 usage: state.usage.get(&key(a)).and_then(|(_, u)| u.clone()),
                 current: state.current.get(&a.provider) == Some(&a.name),
                 pinned: state.pinned.get(&a.provider) == Some(&a.name),
             })
             .collect();
-        views.sort_by(|a, b| a.provider.cmp(&b.provider));
+        views.sort_by(|a, b| (!a.oauth, &a.provider, &a.name).cmp(&(!b.oauth, &b.provider, &b.name)));
         views
     }
 
@@ -415,6 +419,17 @@ impl Client {
         Ok(())
     }
 
+    /// Name and provider account id of the account the next request is likely to use: the current pick, the pinned one, or the first.
+    pub fn account(&self, provider: &str) -> Option<(String, Option<String>)> {
+        let state = self.state.lock().unwrap();
+        let name = state.current.get(provider).or_else(|| state.pinned.get(provider));
+        let mut candidates = state.accounts.iter().filter(|a| a.provider == provider);
+        let account = match name {
+            Some(name) => candidates.find(|a| &a.name == name),
+            None => candidates.next(),
+        }?;
+        Some((account.name.clone(), account.account_id().map(String::from)))
+    }
 }
 
 fn key(account: &Account) -> String {

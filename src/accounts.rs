@@ -23,6 +23,14 @@ impl Account {
     pub fn is_oauth(&self) -> bool {
         matches!(self.secret, Secret::OAuth(_))
     }
+
+    /// The Claude account uuid or ChatGPT account id; API keys have none.
+    pub fn account_id(&self) -> Option<&str> {
+        match &self.secret {
+            Secret::OAuth(tokens) => tokens.account_id.as_deref(),
+            Secret::ApiKey(_) => None,
+        }
+    }
 }
 
 pub fn path(home: &Path) -> PathBuf {
@@ -190,7 +198,11 @@ pub enum Pick {
 }
 
 /// The pinned account while it is under `threshold`, else the first one under it, else what `policy` says.
+/// A `threshold` of 0 turns switching off: always the pinned (or first) account, even when limited.
 pub fn pick(candidates: &[Candidate], threshold: f64, policy: Policy, pinned: Option<usize>) -> Pick {
+    if threshold <= 0.0 {
+        return Pick::Account(pinned.unwrap_or(0));
+    }
     let eligible = |c: &Candidate| !c.limited && c.usage.as_ref().is_none_or(|u| u.peak() < threshold);
     if let Some(index) = pinned.filter(|i| candidates.get(*i).is_some_and(eligible)) {
         return Pick::Account(index);
@@ -256,6 +268,7 @@ mod tests {
         assert_eq!(pick(&full, 90.0, Policy::OtherProvider, None), Pick::OtherProvider);
         let all_limited = [Candidate { usage: None, limited: true }];
         assert_eq!(pick(&all_limited, 90.0, Policy::LeastUsed, None), Pick::OverLimit(0));
+        assert_eq!(pick(&all_limited, 0.0, Policy::Block, Some(0)), Pick::Account(0));
     }
 
     #[test]
