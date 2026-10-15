@@ -209,19 +209,34 @@ const KEEP_RECENT_TOKENS: [u64; 4] = [10_000, 20_000, 40_000, 80_000];
 const CONDENSE_MIN_CHARS: [u64; 4] = [500, 1000, 2000, 5000];
 const SWITCH_AT_PERCENT: [u64; 4] = [70, 80, 90, 95];
 
-const HOTKEYS: &str = "Enter  send (queues as steering while working)
-Shift+Enter, Alt+Enter, Ctrl+J  new line
-Esc  abort the running turn, twice while idle to rewind to an earlier prompt and its files
-Ctrl+C  clear the editor, twice to quit
-Cmd+Z, Ctrl+Z  undo the last edit
-Ctrl+D  quit on an empty editor
-Ctrl+O  expand tool output and thinking
-Shift+Tab  cycle thinking level
-Option+Up  edit queued messages
-Up, Down  history; menu selection
-Tab  complete a slash command or an @path
-PageUp, PageDown  scroll the transcript
-Ctrl+A, Ctrl+E, Ctrl+U, Ctrl+K, Ctrl+W  line editing";
+const ALT: &str = if cfg!(target_os = "macos") { "Option" } else { "Alt" };
+
+const HOTKEYS: [(&str, &[(&str, &str)]); 4] = [
+    ("Send", &[
+        ("Enter", "send, queues as steering while working"),
+        ("Shift+Enter", "new line (also Alt+Enter, Ctrl+J)"),
+        ("Tab", "complete a slash command or an @path"),
+        ("Up, Down", "history, menu selection"),
+        (if cfg!(target_os = "macos") { "Option+Up" } else { "Alt+Up" }, "edit queued messages"),
+    ]),
+    ("Edit", &[
+        (if cfg!(target_os = "macos") { "Cmd+Z, Ctrl+Z" } else { "Ctrl+Z" }, "undo the last edit"),
+        ("Ctrl+A E U K W", "line editing"),
+        ("Ctrl+C", "clear the editor"),
+    ]),
+    ("View", &[
+        ("Ctrl+O", "expand tool output and thinking"),
+        ("Shift+Tab", "cycle thinking level"),
+        ("PageUp, PageDown", "scroll the transcript"),
+        (if cfg!(target_os = "macos") { "Option+Down" } else { "Alt+Down" }, "jump to the latest message"),
+    ]),
+    ("Stop", &[
+        ("Esc", "abort the running turn"),
+        ("Esc Esc", "rewind to an earlier prompt and its files (idle)"),
+        ("Ctrl+C Ctrl+C", "quit"),
+        ("Ctrl+D", "quit on an empty editor"),
+    ]),
+];
 
 enum Item {
     Lines(Vec<Line>),
@@ -935,11 +950,11 @@ impl App {
                     self.editor.set(&queued.join("\n\n"));
                 }
             }
+            KeyCode::Down if alt => self.scroll = 0,
             KeyCode::PageUp => self.scroll += 10,
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
             KeyCode::Up => self.editor.up(self.editor_width),
             KeyCode::Down => self.editor.down(self.editor_width),
-            KeyCode::End if ctrl => self.scroll = 0,
             KeyCode::Char('v') if ctrl => self.attach(image::from_clipboard()),
             _ => _ = self.editor.edit_key(key),
         }
@@ -1175,7 +1190,7 @@ impl App {
                 let info = format!("{}\nFile: {file}\nContext: {} of {} ({percent}%)", self.session_id, tokens(self.context_tokens), tokens(window));
                 self.system("session", info);
             }
-            "hotkeys" => self.system("hotkeys", HOTKEYS),
+            "hotkeys" => self.push(Item::Lines(hotkeys_lines())),
             "help" => {
                 let mut lines: Vec<String> = self.slash_commands.iter().filter(|(name, _)| !name.starts_with("skill:")).map(|(name, description)| format!("/{name:<14} {description}")).collect();
                 lines.push(format!("/{:<14} run a skill ({} loaded)", "skill:<name>", self.skills.len()));
@@ -2106,7 +2121,7 @@ impl App {
             bottom.push(vec![span(format!(" Steering: {}", text.replace('\n', " ")), DIM)]);
         }
         if !queued.is_empty() {
-            bottom.push(vec![span(" ↳ Option+Up to edit all queued messages", DIM)]);
+            bottom.push(vec![span(format!(" ↳ {ALT}+Up to edit all queued messages"), DIM)]);
         }
         if let Some((hint, _)) = &self.hint {
             bottom.push(vec![span(format!(" {hint}"), DIM)]);
@@ -2130,7 +2145,7 @@ impl App {
             bottom.push(vec![span(format!(" {running} {noun} running • /subagents to view"), DIM)]);
         }
         if self.scroll > 0 {
-            bottom.push(vec![span(" ↓ Jump to latest message · Ctrl+End", DIM)]);
+            bottom.push(vec![span(format!(" ↓ Jump to latest message · {ALT}+Down"), DIM)]);
         }
         bottom.push(Vec::new());
         self.editor_width = width;
@@ -2612,6 +2627,18 @@ fn spread(left: Line, right: Line, width: usize) -> Line {
     [left, vec![span(" ".repeat(gap), PLAIN)], right].concat()
 }
 
+fn hotkeys_lines() -> Vec<Line> {
+    let key_width = HOTKEYS.iter().flat_map(|(_, keys)| keys.iter()).map(|(key, _)| key.len()).max().unwrap_or(0);
+    let mut lines = vec![vec![span("⚙", SYSTEM), span(" ", PLAIN), span("hotkeys", SYSTEM)]];
+    for (group, keys) in HOTKEYS {
+        lines.push(vec![span(format!("  {group}"), TOOL_NAME.bold())]);
+        for (key, action) in keys {
+            lines.push(vec![span(format!("    {key:key_width$}   "), TOOL_NAME), span(*action, TOOL_ARGS)]);
+        }
+    }
+    lines
+}
+
 fn banner() -> Vec<Line> {
     vec![vec![span("agent", BRIGHT.bold()), span(format!(" v{} · Run /help for commands", env!("CARGO_PKG_VERSION")), MUTED)]]
 }
@@ -2930,10 +2957,28 @@ mod tests {
     }
 
     #[test]
+    fn recording_line_shows_minutes_and_seconds() {
+        let line = recording_line(Duration::from_secs(75));
+        assert_eq!(text(&line), " ● 1:15  Enter to transcribe · Esc to cancel");
+        assert_eq!(line[0].style, ERROR);
+    }
+
+    #[test]
     fn every_setting_sits_in_exactly_one_group() {
         let mut rows: Vec<usize> = SETTING_GROUPS.iter().flat_map(|(_, rows)| rows.iter().copied()).collect();
         rows.sort();
         assert_eq!(rows, (0..SETTING_NAMES.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn hotkeys_list_groups_with_keys_in_one_column() {
+        let rows: Vec<String> = hotkeys_lines().iter().map(text).collect();
+        assert_eq!(rows[0], "⚙ hotkeys");
+        assert_eq!(rows[1], "  Send");
+        assert!(rows[2].starts_with("    Enter  "), "{rows:?}");
+        let column = |row: &String| row.trim_start().len() - row.trim_start().split("  ").skip(1).collect::<Vec<_>>().join("  ").trim_start().len();
+        let starts: Vec<usize> = rows.iter().filter(|row| row.starts_with("    ")).map(|row| row.len() - row.trim_start().len() + column(row)).collect();
+        assert!(starts.windows(2).all(|pair| pair[0] == pair[1]), "{rows:?}");
     }
 
     #[test]
@@ -2985,13 +3030,6 @@ mod tests {
         assert_eq!(names("/thinking m"), ["thinking minimal", "thinking medium", "thinking max"]);
         assert_eq!(names("/permissions "), ["permissions ask", "permissions auto", "permissions full access"]);
         assert!(names("/thinking medium ").is_empty());
-    }
-
-    #[test]
-    fn recording_line_shows_minutes_and_seconds() {
-        let line = recording_line(Duration::from_secs(75));
-        assert_eq!(text(&line), " ● 1:15  Enter to transcribe · Esc to cancel");
-        assert_eq!(line[0].style, ERROR);
     }
 
     #[test]
