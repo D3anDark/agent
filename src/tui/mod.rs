@@ -668,9 +668,9 @@ impl App {
             }
             MouseEventKind::Up(MouseButton::Left) if row < visible => {
                 let point = self.point_at(row, mouse.column);
-                let text = self.transcript_text(point.line);
-                let Some(url) = link_at(&text, point.column) else { return };
-                if let Err(error) = open_in_browser(url) {
+                let line = self.transcript_line(point.line);
+                let Some(url) = link_at(&line, point.column) else { return };
+                if let Err(error) = open_in_browser(&url) {
                     self.push(Item::Error(error));
                 }
             }
@@ -729,10 +729,14 @@ impl App {
 
     /// Plain text of transcript line `line` (counted up from the last one) as rendered at the last frame's width.
     fn transcript_text(&mut self, line: usize) -> String {
+        self.transcript_line(line).iter().map(|s| s.text.as_str()).collect()
+    }
+
+    fn transcript_line(&mut self, line: usize) -> Line {
         let (_, width) = self.transcript_view;
-        let (tail, _, _) = self.transcript_tail(width, line + 1);
-        let Some(index) = tail.len().checked_sub(line + 1) else { return String::new() };
-        tail[index].iter().map(|s| s.text.as_str()).collect()
+        let (mut tail, _, _) = self.transcript_tail(width, line + 1);
+        let Some(index) = tail.len().checked_sub(line + 1) else { return Line::new() };
+        tail.swap_remove(index)
     }
 
     /// shortcut: copies wrapped lines as shown, gutters included except the user prompt bar; unwrap to source text if that gets in the way.

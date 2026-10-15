@@ -62,12 +62,14 @@ pub const PLAIN: Style = Style { fg: Color::Default, bold: false, italic: false,
 pub struct Span {
     pub text: String,
     pub style: Style,
+    /// The whole URL this text is part of, set by `wrap` so a URL split across rows opens in full.
+    pub link: Option<String>,
 }
 
 pub type Line = Vec<Span>;
 
 pub fn span(text: impl Into<String>, style: Style) -> Span {
-    Span { text: text.into(), style }
+    Span { text: text.into(), style, link: None }
 }
 
 pub fn width(text: &str) -> usize {
@@ -102,7 +104,7 @@ pub fn wrap(spans: &[Span], max: usize, indent: &Line) -> Vec<Line> {
     let mut lines: Vec<Line> = Vec::new();
     let mut current: Line = Vec::new();
     let mut used = 0;
-    for piece in spans.iter().flat_map(split_words) {
+    for piece in spans.iter().flat_map(split_words).flat_map(mark_links) {
         if piece.text == "\n" {
             lines.push(std::mem::take(&mut current));
             used = 0;
@@ -129,7 +131,7 @@ pub fn wrap(spans: &[Span], max: usize, indent: &Line) -> Vec<Line> {
                 used = 0;
             }
             used += w;
-            push_span(&mut current, span(ch.to_string(), piece.style));
+            push_span(&mut current, Span { text: ch.to_string(), ..piece.clone() });
         }
     }
     if !current.is_empty() || lines.is_empty() {
@@ -157,9 +159,26 @@ fn split_words(s: &Span) -> Vec<Span> {
     out
 }
 
+/// Splits a word so each http(s) URL in it is its own underlined span carrying the URL.
+fn mark_links(word: Span) -> Vec<Span> {
+    let mut out = Vec::new();
+    let mut rest = word.text.as_str();
+    while let Some((before, url, after)) = split_link(rest) {
+        if !before.is_empty() {
+            out.push(span(before, word.style));
+        }
+        out.push(Span { text: url.to_string(), style: word.style.underline(), link: Some(url.to_string()) });
+        rest = after;
+    }
+    if !rest.is_empty() || out.is_empty() {
+        out.push(span(rest, word.style));
+    }
+    out
+}
+
 fn push_span(line: &mut Line, piece: Span) {
     match line.last_mut() {
-        Some(last) if last.style == piece.style => last.text.push_str(&piece.text),
+        Some(last) if last.style == piece.style && last.link == piece.link => last.text.push_str(&piece.text),
         _ => line.push(piece),
     }
 }
@@ -223,7 +242,6 @@ pub fn text_in(line: &Line, from: usize, to: usize) -> String {
 }
 
 /// ANSI for `line`; http(s) URLs are underlined wherever they appear.
-/// shortcut: the part of a URL wrapped onto the next row is not underlined; mark spans in `wrap` if that shows.
 fn to_ansi(line: &Line) -> String {
     let mut out = String::new();
     for s in line {
@@ -262,8 +280,24 @@ fn split_link(text: &str) -> Option<(&str, &str, &str)> {
     Some((&text[..start], url, &text[start + url.len()..]))
 }
 
-/// The http(s) URL covering display column `column` of `text`.
-pub fn link_at(text: &str, column: usize) -> Option<&str> {
+/// The http(s) URL covering display column `column` of `line`, whole even when `wrap` split it across rows.
+pub fn link_at(line: &Line, column: usize) -> Option<String> {
+    let mut col = 0;
+    for s in line {
+        let start = col;
+        col += s.text.width();
+        if !(start..col).contains(&column) {
+            continue;
+        }
+        if let Some(link) = &s.link {
+            return Some(link.clone());
+        }
+        return url_at(&s.text, column - start).map(str::to_string);
+    }
+    None
+}
+
+fn url_at(text: &str, column: usize) -> Option<&str> {
     let mut rest = text;
     let mut col = 0;
     while let Some((before, url, after)) = split_link(rest) {
@@ -336,11 +370,19 @@ mod tests {
 
     #[test]
     fn link_at_finds_the_url_under_a_column() {
-        let text = "世界 https://a.dev, http://b.dev";
-        assert_eq!(link_at(text, 5), Some("https://a.dev"));
-        assert_eq!(link_at(text, 18), None);
-        assert_eq!(link_at(text, 20), Some("http://b.dev"));
-        assert_eq!(link_at(text, 2), None);
+        let line = vec![span("世界 https://a.dev, http://b.dev", PLAIN)];
+        assert_eq!(link_at(&line, 5).as_deref(), Some("https://a.dev"));
+        assert_eq!(link_at(&line, 18), None);
+        assert_eq!(link_at(&line, 20).as_deref(), Some("http://b.dev"));
+        assert_eq!(link_at(&line, 2), None);
+    }
+
+    #[test]
+    fn a_wrapped_url_is_underlined_and_opens_whole_on_every_row() {
+        let rows = wrap(&[span("go https://a.dev/long", PLAIN)], 10, &vec![]);
+        assert_eq!(text(&rows), ["go ", "https://a.", "dev/long"]);
+        assert!(to_ansi(&rows[2]).starts_with("\x1b[0;4mdev/long"));
+        assert_eq!(link_at(&rows[2], 0).as_deref(), Some("https://a.dev/long"));
     }
 
     fn text(lines: &[Line]) -> Vec<String> {
