@@ -30,18 +30,41 @@
 }
 </script>
 <style>
-  body { margin: 0; min-height: 100vh; display: grid; place-content: center; background: #000; color: #fff; font: 15px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  h1 { font-size: 15px; margin: 0 0 8px; }
-  pre { margin: 0; user-select: all; }
-  a { color: #fff; }
+  body { margin: 0; padding: 40px 20px; background: #000; color: #fff; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  h1 { font: inherit; color: #888; margin: 0; }
+  p { margin: 14px 0 0; }
+  .muted { color: #888; }
+  a { color: inherit; text-decoration: none; }
+  a:hover, a:focus-visible { color: #fff; }
+  button { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+  button:focus-visible { outline: 1px solid #fff; outline-offset: 4px; }
+  code { font: inherit; font-weight: 600; }
+  .icon { display: inline-flex; color: #888; transition: opacity 120ms; }
+  @media (hover: hover) {
+    .icon { opacity: 0; }
+    button:hover .icon, button:focus-visible .icon { opacity: 1; }
+  }
+  .meta { font-size: 13px; }
+  #install { font-size: clamp(9px, 2.5vw, 14px); }
+  @media (min-width: 640px) { body { padding: 56px 32px; } }
 </style>
 </head>
 <body>
 <main>
-  <h1>agent</h1>
-  <p>simple af possible</p>
-  <pre>curl -fsSL https://agent.rokartur.com/install.sh | sh</pre>
-  <p><a href="https://github.com/rokartur/agent">github.com/rokartur/agent</a></p>
+  <h1>simple af possible</h1>
+  <p><button id="install" type="button" aria-label="Copy install command"><span class="muted">$ </span><code>curl -fsSL https://agent.rokartur.com/install.sh | sh</code><span class="icon" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span><span class="muted" role="status"></span></button></p>
+  <p class="meta muted">macOS, Linux · <a href="https://github.com/rokartur/agent">github</a></p>
 </main>
+<script>
+  const install = document.getElementById("install");
+  const copied = install.querySelector("[role=status]");
+  let hideCopied;
+  install.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(install.querySelector("code").textContent);
+    copied.textContent = "copied";
+    clearTimeout(hideCopied);
+    hideCopied = setTimeout(() => { copied.textContent = ""; }, 1500);
+  });
+</script>
 </body>
 </html>
