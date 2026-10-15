@@ -306,7 +306,7 @@ impl Agent {
                 system = format!("{system}\n\n{}", plan::PROMPT);
                 tools.as_array_mut().expect("tool schemas are an array").push(plan::tool());
             }
-            let request = api::request(&self.model, self.max_tokens, &self.effort, &system, &tools, &messages);
+            let request = api::request(&self.model, self.max_tokens, &self.effort, &system, &prompt::cwd_section(&self.cwd), &tools, &messages);
             let mut reply = self.client.send(&request, &self.abort, &mut |delta| match delta {
                 Delta::Text(text) => emit(Event::Text(text.to_string())),
                 Delta::Thinking(text) => emit(Event::Thinking(text.to_string())),

@@ -461,8 +461,9 @@ impl ApiError {
 }
 
 /// Builds a Messages request with cache breakpoints on the system prompt, the last tool, and the last message.
+/// `per_session_system` follows the cached system block, so a value that differs per session does not rewrite it.
 /// `thinking` is pi's level; "off" sends no thinking config and "minimal" maps to the lowest effort.
-pub fn request(model: &str, max_tokens: u64, thinking: &str, system: &str, tools: &Value, messages: &[Value]) -> Value {
+pub fn request(model: &str, max_tokens: u64, thinking: &str, system: &str, per_session_system: &str, tools: &Value, messages: &[Value]) -> Value {
     let mut tools = tools.clone();
     if let Some(last) = tools.as_array_mut().and_then(|t| t.last_mut()) {
         last["cache_control"] = json!({"type": "ephemeral"});
@@ -479,6 +480,9 @@ pub fn request(model: &str, max_tokens: u64, thinking: &str, system: &str, tools
         "tools": tools,
         "messages": messages,
     });
+    if !per_session_system.is_empty() {
+        request["system"].as_array_mut().unwrap().push(json!({"type": "text", "text": per_session_system}));
+    }
     if thinking != "off" {
         let effort = if thinking == "minimal" { "low" } else { thinking };
         // Same as pi: thinking that no longer matches the history after compaction is dropped instead of failing with 400.
@@ -649,11 +653,13 @@ mod tests {
     fn request_marks_cache_breakpoints() {
         let tools = json!([{"name": "a"}, {"name": "b"}]);
         let messages = [json!({"role": "user", "content": [{"type": "text", "text": "1"}, {"type": "text", "text": "2"}]})];
-        let request = request("m", 1000, "high", "sys", &tools, &messages);
-        assert!(request["tools"][0].get("cache_control").is_none());
-        assert_eq!(request["tools"][1]["cache_control"]["type"], "ephemeral");
-        assert!(request["messages"][0]["content"][0].get("cache_control").is_none());
-        assert_eq!(request["messages"][0]["content"][1]["cache_control"]["type"], "ephemeral");
-        assert_eq!(request["system"][0]["cache_control"]["type"], "ephemeral");
+        let body = request("m", 1000, "high", "sys", "<cwd>/a</cwd>", &tools, &messages);
+        assert!(body["tools"][0].get("cache_control").is_none());
+        assert_eq!(body["tools"][1]["cache_control"]["type"], "ephemeral");
+        assert!(body["messages"][0]["content"][0].get("cache_control").is_none());
+        assert_eq!(body["messages"][0]["content"][1]["cache_control"]["type"], "ephemeral");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(body["system"][1], json!({"type": "text", "text": "<cwd>/a</cwd>"}));
+        assert_eq!(request("m", 1000, "high", "sys", "", &tools, &messages)["system"].as_array().unwrap().len(), 1);
     }
 }

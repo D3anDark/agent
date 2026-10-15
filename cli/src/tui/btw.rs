@@ -50,7 +50,7 @@ impl Btw {
                 messages.push(json!({"role": "assistant", "content": [{"type": "text", "text": answer}]}));
             }
         }
-        api::request(model, max_tokens, thinking, SYSTEM, &json!([]), &messages)
+        api::request(model, max_tokens, thinking, SYSTEM, "", &json!([]), &messages)
     }
 
     pub fn render(&self, width: usize) -> Vec<Line> {

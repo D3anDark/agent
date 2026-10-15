@@ -36,9 +36,13 @@ pub fn system_prompt(agent_dir: &Path, cwd: &Path, disabled_skills: &[String]) -
     if !skills.is_empty() {
         sections.push(tag("skills", &format_skills(skills)));
     }
-    sections.push(tag("cwd", &cwd.display().to_string()));
     sections.retain(|s| !s.is_empty());
     sections.join("\n\n")
+}
+
+/// Sent after the cached system prompt, so moving to another directory keeps that cache.
+pub fn cwd_section(cwd: &Path) -> String {
+    tag("cwd", &cwd.display().to_string())
 }
 
 fn tag(name: &str, content: &str) -> String {
@@ -383,6 +387,15 @@ mod tests {
         assert_eq!(fields[0], ("name".into(), "say \"hi\"".into()));
         assert_eq!(fields[1], ("description".into(), "first line second line".into()));
         assert_eq!(fields[2], ("license".into(), "MIT".into()));
+    }
+
+    #[test]
+    fn system_prompt_is_the_same_in_every_directory_so_it_stays_cached() {
+        let root = std::env::temp_dir().join(format!("agent-stable-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::create_dir_all(root.join("b")).unwrap();
+        assert_eq!(system_prompt(&root, &root.join("a"), &[]), system_prompt(&root, &root.join("b"), &[]));
+        assert_eq!(cwd_section(&root.join("a")), format!("<cwd>\n{}\n</cwd>", root.join("a").display()));
     }
 
     #[test]
