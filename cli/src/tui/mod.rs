@@ -124,8 +124,10 @@ enum Panel {
     History { entries: Vec<history::Entry>, tab: usize, query: Editor, index: usize },
     /// Double Esc while idle: the prompts from `agent::rewind_points` to go back to.
     Rewind { index: usize, points: Vec<RewindPoint> },
-    /// /changes: files this session changed; Enter prints the diff.
+    /// /changes: files this session changed; Enter opens the diff.
     Changes { files: Vec<FileChange>, index: usize },
+    /// One /changes file's diff filling the screen; Esc goes back to the list.
+    Diff { files: Vec<FileChange>, index: usize, scroll: usize },
     /// What to do with the plan from plan_mode_complete, opened when its turn ends or by /plan.
     Plan { index: usize },
 }
@@ -1565,6 +1567,10 @@ impl App {
             self.context_windows_key(key);
             return;
         }
+        if matches!(self.panel, Some(Panel::Diff { .. })) {
+            self.diff_key(code);
+            return;
+        }
         if matches!(self.panel, Some(Panel::Subagent { .. })) {
             self.subagent_key(code);
             return;
@@ -1773,9 +1779,8 @@ impl App {
                 KeyCode::Up => *index = index.saturating_sub(1),
                 KeyCode::Down => *index = (*index + 1).min(files.len() - 1),
                 KeyCode::Enter => {
-                    let lines = diff_lines(&files[*index]);
-                    self.panel = None;
-                    self.push(Item::Lines(lines));
+                    let (files, index) = (std::mem::take(files), *index);
+                    self.panel = Some(Panel::Diff { files, index, scroll: DIFF_TOP });
                 }
                 _ => {}
             },
@@ -1832,7 +1837,7 @@ impl App {
                     }
                 }
             }
-            Some(Panel::Permission { .. } | Panel::Ask(_) | Panel::Btw | Panel::Login(_) | Panel::Models { .. } | Panel::ContextWindows { .. } | Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Plan { .. } | Panel::PluginSettings { .. } | Panel::Plugin { .. } | Panel::Usage { .. }) | None => {}
+            Some(Panel::Permission { .. } | Panel::Ask(_) | Panel::Btw | Panel::Login(_) | Panel::Models { .. } | Panel::ContextWindows { .. } | Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Diff { .. } | Panel::Plan { .. } | Panel::PluginSettings { .. } | Panel::Plugin { .. } | Panel::Usage { .. }) | None => {}
         }
     }
 
@@ -2479,7 +2484,7 @@ impl App {
                 view.render(width, PANEL_ROWS)
             }
             Panel::Btw => self.btw.as_ref().expect("the btw panel opens with a thread").render(width),
-            Panel::Subagent { .. } | Panel::Terminal { .. } => unreachable!("frame draws the full-screen view instead of a panel"),
+            Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Diff { .. } => unreachable!("frame draws the full-screen view instead of a panel"),
             Panel::Worktrees { remove, index, worktrees, current } => {
                 let home = std::env::var("HOME").unwrap_or_default();
                 let rows: Vec<panel::Row> = worktrees
@@ -2743,6 +2748,9 @@ impl App {
     /// The whole screen: transcript, then status, editor, slash menu and footer right below it.
     /// The bottom block only reaches the last row once the transcript fills the screen.
     fn frame(&mut self, width: usize, height: usize) -> (Vec<Line>, (u16, u16)) {
+        if matches!(self.panel, Some(Panel::Diff { .. })) {
+            return (self.diff_view(width, height), (0, height.saturating_sub(1) as u16));
+        }
         if matches!(self.panel, Some(Panel::Subagent { .. })) {
             return (self.subagent_view(width, height), (0, height.saturating_sub(1) as u16));
         }
@@ -2872,6 +2880,30 @@ impl App {
         }
         let header = vec![span(format!(" {}", run.summary()), SYSTEM), span("  read-only", DIM)];
         full_screen(header, lines, scroll, width, height, " ↑↓ scroll     ←→ previous/next run     esc back")
+    }
+
+    fn diff_view(&mut self, width: usize, height: usize) -> Vec<Line> {
+        let Some(Panel::Diff { files, index, scroll }) = self.panel.as_mut() else { unreachable!("frame checks the panel") };
+        let lines: Vec<Line> = diff_lines(&files[*index]).iter().map(|line| truncate(line, width)).collect();
+        let header = vec![span(format!(" {}", files[*index].path), TOOL_NAME), span(format!("  {}/{}", *index + 1, files.len()), DIM)];
+        full_screen(header, &lines, scroll, width, height, " ↑↓ scroll     ←→ previous/next file     esc back")
+    }
+
+    fn diff_key(&mut self, code: KeyCode) {
+        let Some(Panel::Diff { files, index, scroll }) = self.panel.as_mut() else { unreachable!("panel_key checks the panel") };
+        match code {
+            KeyCode::Up => *scroll = scroll.saturating_add(1),
+            KeyCode::Down => *scroll = scroll.saturating_sub(1),
+            KeyCode::PageUp => *scroll = scroll.saturating_add(10),
+            KeyCode::PageDown => *scroll = scroll.saturating_sub(10),
+            KeyCode::Left => (*index, *scroll) = (index.saturating_sub(1), DIFF_TOP),
+            KeyCode::Right => (*index, *scroll) = ((*index + 1).min(files.len() - 1), DIFF_TOP),
+            KeyCode::Esc => {
+                let (files, index) = (std::mem::take(files), *index);
+                self.panel = Some(Panel::Changes { files, index });
+            }
+            _ => {}
+        }
     }
 
     fn subagent_key(&mut self, code: KeyCode) {
@@ -3047,9 +3079,12 @@ fn diff_stat(diff: &str) -> Line {
     vec![span(format!("+{added}"), OK), span(" ", PLAIN), span(format!("-{removed}"), ERROR)]
 }
 
+/// `full_screen` counts scroll up from the bottom and clamps it, so this opens a diff at its first line.
+const DIFF_TOP: usize = usize::MAX;
+
 /// A file's /changes diff without git's header lines, added lines green and removed red.
 fn diff_lines(file: &FileChange) -> Vec<Line> {
-    let mut lines = vec![vec![span(file.path.clone(), TOOL_NAME)]];
+    let mut lines = Vec::new();
     let hunks = file.diff.lines().skip_while(|line| !line.starts_with("@@"));
     for line in hunks {
         let style = match line.chars().next() {
