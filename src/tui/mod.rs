@@ -43,7 +43,7 @@ use editor::Editor;
 use render::{Line, PLAIN, Screen, Style, line_width, link_at, select, span, take_cursor, text_in, truncate, wrap};
 use selection::{Point, Selection};
 
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const WORKING: &str = "Working";
 const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const TOOL_OUTPUT_LINES: usize = 20;
 
@@ -2051,9 +2051,9 @@ impl App {
         }
         let mut bottom: Vec<Line> = Vec::new();
         if let Some(started) = self.working {
-            let frame = (started.elapsed().as_millis() / 80) as usize % SPINNER.len();
+            let tick = (started.elapsed().as_millis() / 80) as usize;
             bottom.push(Vec::new());
-            bottom.push(vec![span(" ", PLAIN), span(SPINNER[frame], BRIGHT), span(" ", PLAIN), span("Working", MUTED)]);
+            bottom.push(working_line(tick));
         }
         let queued = self.steering.lock().unwrap().clone();
         for text in &queued {
@@ -2809,6 +2809,20 @@ fn age(time: std::time::SystemTime) -> String {
     }
 }
 
+fn working_line(tick: usize) -> Line {
+    let head = (tick % (WORKING.len() + 10)) as isize - 3;
+    let level = |column: usize| match (column as isize - head).unsigned_abs() {
+        distance @ 0..=2 => 255 - 4 * distance as u8,
+        _ => 245,
+    };
+    let glyph = if level(0) > 245 { span("✦", Style::fg(level(0))) } else { span("✧", DIM) };
+    let mut line = vec![span(" ", PLAIN), glyph, span(" ", PLAIN)];
+    for (index, letter) in WORKING.chars().enumerate() {
+        line.push(span(letter.to_string(), Style::fg(level(index + 2))));
+    }
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2816,6 +2830,18 @@ mod tests {
 
     fn text(line: &Line) -> String {
         line.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn working_glyph_fills_only_while_the_band_passes_it() {
+        let lit = working_line(3);
+        assert_eq!(text(&lit), " ✦ Working");
+        assert_eq!(lit[1].style, Style::fg(255));
+
+        let later = working_line(10);
+        assert_eq!(text(&later), " ✧ Working");
+        assert_eq!(later[1].style, DIM);
+        assert_eq!(later[3 + 5].style, Style::fg(255));
     }
 
     #[test]
