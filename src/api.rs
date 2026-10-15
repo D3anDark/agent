@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::accounts::{self, Account, Candidate, Pick, Policy, Secret, Usage as Windows};
-use crate::models::Model;
+use crate::models::{self, Model};
 use crate::settings::Settings;
 use crate::{codex, oauth};
 
@@ -99,19 +99,61 @@ enum Choice {
 
 impl Client {
     /// Loads `~/.agent/accounts.json`; without an Anthropic account, `ANTHROPIC_API_KEY` acts as one named `env`.
-    pub fn new(home: &Path, catalog: &[Model]) -> Result<Client, String> {
+    /// Then loads the model catalog, asking each logged-in provider when the cached list is a day old.
+    pub fn new(home: &Path) -> Result<Client, String> {
         let base = |var: &str, default: &str| std::env::var(var).unwrap_or_else(|_| default.into()).trim_end_matches('/').to_string();
-        let client = Client {
+        let mut client = Client {
             http: ureq::Agent::config_builder().http_status_as_error(false).timeout_connect(Some(Duration::from_secs(30))).build().into(),
             home: home.to_path_buf(),
             anthropic_base: base("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
             chatgpt_base: base("CHATGPT_BASE_URL", "https://chatgpt.com/backend-api"),
-            catalog: Arc::new(catalog.to_vec()),
+            catalog: Arc::default(),
             cache_key: format!("agent-{}-{}", std::process::id(), crate::now_ms()),
             state: Arc::new(Mutex::new(State { threshold: 90.0, ..State::default() })),
         };
         client.reload(accounts::load(home)?);
+        let catalog = models::load(home, |provider| client.list_models(provider));
+        client.catalog = Arc::new(catalog);
         Ok(client)
+    }
+
+    pub fn catalog(&self) -> &[Model] {
+        &self.catalog
+    }
+
+    /// The models this provider serves the first saved account right now; see models-endpoints.md.
+    fn list_models(&self, provider: &str) -> Result<Vec<Model>, String> {
+        let account = self.state.lock().unwrap().accounts.iter().find(|a| a.provider == provider).cloned();
+        let account = self.fresh(account.ok_or(format!("No {provider} account."))?)?;
+        let http: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(10))).build().into();
+        let request = match (&account.secret, provider) {
+            (Secret::ApiKey(key), "anthropic") => http
+                .get(format!("{}/v1/models?limit=100", self.anthropic_base))
+                .header("anthropic-version", "2023-06-01")
+                .header("x-api-key", key),
+            (Secret::OAuth(tokens), "anthropic") => http
+                .get(format!("{}/v1/models?limit=100", self.anthropic_base))
+                .header("anthropic-version", "2023-06-01")
+                .header("authorization", format!("Bearer {}", tokens.access))
+                .header("anthropic-beta", "oauth-2025-04-20"),
+            (Secret::OAuth(tokens), _) => http
+                // An old client_version gets an empty list, a missing one a 400.
+                .get(format!("{}/codex/models?client_version=0.160.0", self.chatgpt_base))
+                .header("authorization", format!("Bearer {}", tokens.access))
+                .header("chatgpt-account-id", tokens.account_id.as_deref().unwrap_or_default()),
+            (Secret::ApiKey(_), _) => return Err(format!("{provider} accounts need /login, not an API key.")),
+        };
+        let mut response = request.call().map_err(|e| format!("Model list request failed: {e}."))?;
+        let status = response.status().as_u16();
+        if status != 200 {
+            return Err(format!("Model list request failed ({status})."));
+        }
+        let text = response.body_mut().read_to_string().map_err(|e| format!("Model list request failed: {e}."))?;
+        let body: Value = serde_json::from_str(&text).map_err(|e| format!("Model list is not JSON: {e}."))?;
+        Ok(match provider {
+            "anthropic" => models::parse_anthropic(&body),
+            _ => models::parse_codex(&body),
+        })
     }
 
     pub fn configure(&self, settings: &Settings) {

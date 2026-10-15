@@ -141,7 +141,9 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(mode) = options.permission_mode {
         settings.permission_mode = mode;
     }
-    let catalog = models::all();
+    let client = Client::new(&home)?;
+    client.configure(&settings);
+    let catalog = client.catalog().to_vec();
     let model = catalog.iter().find(|m| m.id == settings.model).ok_or(format!("Unknown model {}.", settings.model))?;
     let cwd = std::env::current_dir().map_err(|e| format!("Cannot read the working directory: {e}"))?;
     let sessions_dir = home.join(".agent/sessions");
@@ -153,9 +155,7 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(parent) = &options.parent {
         session.append(&serde_json::json!({"type": "parent", "session": parent}))?;
     }
-    let cheap_model = models::cheapest(&catalog, &model.provider);
-    let client = Client::new(&home, &catalog)?;
-    client.configure(&settings);
+    let cheap_model = models::small_model(&catalog, &model.provider);
     let modes_error = modes::fetch(&home, &settings.ponytail, &settings.caveman).err();
     let mut agent = Agent {
         client,

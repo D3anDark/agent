@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn model_window_beats_provider_window_beats_catalog() {
-        let catalog = crate::models::all();
+        let catalog = crate::models::built_in();
         let opus = catalog.iter().find(|m| m.provider == "anthropic" && m.id == "claude-opus-4-6").unwrap();
         let sonnet = catalog.iter().find(|m| m.provider == "anthropic" && m.id == "claude-sonnet-4-6").unwrap();
         let mut settings = load(Path::new("/nonexistent"));

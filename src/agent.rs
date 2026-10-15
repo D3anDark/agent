@@ -435,9 +435,8 @@ impl Agent {
     /// Runs child agents: in the foreground `subagent_concurrency` at a time, or all in the background.
     fn subagent(&mut self, input: &Value, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
         let tasks = subagent::tasks(input)?;
-        let catalog = crate::models::all();
         // A child with an unknown model dies before its first JSONL line, so reject it here.
-        if let Some(model) = tasks.iter().filter_map(|t| t.model.as_deref()).find(|m| !catalog.iter().any(|c| c.id == *m)) {
+        if let Some(model) = tasks.iter().filter_map(|t| t.model.as_deref()).find(|m| !self.client.catalog().iter().any(|c| c.id == *m)) {
             return Err(format!("Unknown model {model}."));
         }
         let cwd = match input["cwd"].as_str() {

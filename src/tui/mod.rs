@@ -1009,7 +1009,7 @@ impl App {
             self.push(Item::Error(error));
         }
         let model = self.model().clone();
-        let cheap_model = models::cheapest(&self.catalog, &model.provider).id.clone();
+        let cheap_model = models::small_model(&self.catalog, &model.provider).id.clone();
         let _ = self.commands.send(Command::Apply(self.settings.clone(), model, cheap_model));
         if let Err(error) = settings::save(&self.home, &self.settings) {
             self.push(Item::Error(error));
@@ -3021,7 +3021,7 @@ mod tests {
 
     #[test]
     fn model_search_matches_provider_or_id_ignoring_case() {
-        let catalog = models::all();
+        let catalog = models::built_in();
         let ids = |row, query| {
             matching_models(&catalog, row, query).iter().map(|m| m.map_or("auto", |m| m.id.as_str()).to_string()).collect::<Vec<_>>()
         };
