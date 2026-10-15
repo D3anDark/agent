@@ -34,7 +34,7 @@ impl Account {
 }
 
 pub fn path(home: &Path) -> PathBuf {
-    home.join(".agent/accounts.json")
+    home.join(".agents/accounts.json")
 }
 
 /// Every saved account, in priority order per provider. A missing file is no accounts; a broken one is an error, never overwritten.

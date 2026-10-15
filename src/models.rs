@@ -23,7 +23,7 @@ pub struct Model {
 /// The cached catalog while it is under a day old; otherwise asks `fetch` for each provider and caches the result.
 /// A provider that cannot be fetched keeps its cached or built-in models.
 pub fn load(home: &Path, mut fetch: impl FnMut(&str) -> Result<Vec<Model>, String>) -> Vec<Model> {
-    let path = home.join(".agent/models.json");
+    let path = home.join(".agents/models.json");
     let cached = std::fs::read_to_string(&path).ok().and_then(|text| parse(&text));
     let age = std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|modified| modified.elapsed().ok());
     if let Some(cached) = &cached
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn load_takes_fetched_lists_and_keeps_built_in_models_for_a_failed_provider() {
         let home = std::env::temp_dir().join(format!("agent-models-{}", std::process::id()));
-        std::fs::create_dir_all(home.join(".agent")).unwrap();
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
         let fetch = |provider: &str| match provider {
             "anthropic" => Ok(vec![model("anthropic", "claude-haiku-9")]),
             _ => Err("No openai-codex account.".to_string()),
@@ -155,10 +155,10 @@ mod tests {
     #[test]
     fn a_list_without_a_small_model_is_not_trusted() {
         let home = std::env::temp_dir().join(format!("agent-models-small-{}", std::process::id()));
-        std::fs::create_dir_all(home.join(".agent")).unwrap();
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
         let catalog = load(&home, |provider| Ok(vec![model(provider, "big")]));
         assert!(catalog.iter().all(|m| m.id != "big"));
-        assert!(!home.join(".agent/models.json").exists());
+        assert!(!home.join(".agents/models.json").exists());
         std::fs::remove_dir_all(&home).unwrap();
     }
 

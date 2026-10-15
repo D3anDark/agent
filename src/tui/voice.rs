@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Instant;
 
-const MODEL: &str = ".agent/models/ggml-large-v3-turbo-q5_0.bin";
+const MODEL: &str = ".agents/models/ggml-large-v3-turbo-q5_0.bin";
 const MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
 
 pub struct Recording {

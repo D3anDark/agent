@@ -1,4 +1,4 @@
-//! Plugins are long-lived processes in ~/.agent/plugins/<name>/ that speak JSON-RPC 2.0 over stdio,
+//! Plugins are long-lived processes in ~/.agents/plugins/<name>/ that speak JSON-RPC 2.0 over stdio,
 //! one message per line. The protocol is described in this repo's `plugins/README.md`.
 
 use std::collections::HashMap;
@@ -81,7 +81,7 @@ pub struct View {
 impl Plugins {
     /// The plugins installed in `home`, none started yet; `sync` starts them.
     pub fn new(home: &Path) -> Plugins {
-        Plugins { dir: home.join(".agent/plugins"), state: Arc::default() }
+        Plugins { dir: home.join(".agents/plugins"), state: Arc::default() }
     }
 
     /// Called after a status changes or a plugin exits, from a plugin's reader thread.
@@ -386,10 +386,10 @@ fn stop(plugin: &mut Plugin) {
     plugin.account_labels.clear();
 }
 
-/// Copies a bundled plugin by name, or a plugin directory by path, into ~/.agent/plugins; returns its name.
+/// Copies a bundled plugin by name, or a plugin directory by path, into ~/.agents/plugins; returns its name.
 /// Files already there and not in the source stay, since a plugin may keep state next to its code.
 pub fn install(home: &Path, source: &str) -> Result<String, String> {
-    let plugins = home.join(".agent/plugins");
+    let plugins = home.join(".agents/plugins");
     if source.contains('/') {
         let from = Path::new(source).canonicalize().map_err(|e| format!("Cannot read {source}: {e}"))?;
         let name = from.file_name().unwrap_or_default().to_string_lossy().to_string();
@@ -409,17 +409,17 @@ pub fn install(home: &Path, source: &str) -> Result<String, String> {
     Ok(source.to_string())
 }
 
-/// Deletes ~/.agent/plugins/<name> with everything in it.
+/// Deletes ~/.agents/plugins/<name> with everything in it.
 pub fn remove(home: &Path, name: &str) -> Result<(), String> {
     check_name(name)?;
-    let dir = home.join(".agent/plugins").join(name);
+    let dir = home.join(".agents/plugins").join(name);
     if !dir.is_dir() {
         return Err(format!("{name} is not installed."));
     }
     std::fs::remove_dir_all(&dir).map_err(|e| format!("Cannot remove {}: {e}", dir.display()))
 }
 
-/// Names double as directory names, so nothing that could leave ~/.agent/plugins gets through.
+/// Names double as directory names, so nothing that could leave ~/.agents/plugins gets through.
 fn check_name(name: &str) -> Result<(), String> {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
         return Err(format!("{name} is not a plugin name: use lowercase letters, digits and dashes."));
@@ -540,7 +540,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("agent-plugins-{}-{test}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         for (name, script) in plugins {
-            let dir = home.join(".agent/plugins").join(name);
+            let dir = home.join(".agents/plugins").join(name);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("plugin.json"), r#"{"version": "1.0.0", "command": ["sh", "plugin.sh"]}"#).unwrap();
             std::fs::write(dir.join("plugin.sh"), script).unwrap();
@@ -621,7 +621,7 @@ done"#
 done"#;
         let home = home_with("command", &[("fleet", script)]);
         let manifest = r#"{"command": ["sh", "plugin.sh"], "commands": [{"name": "fleet", "description": "Set the token"}]}"#;
-        std::fs::write(home.join(".agent/plugins/fleet/plugin.json"), manifest).unwrap();
+        std::fs::write(home.join(".agents/plugins/fleet/plugin.json"), manifest).unwrap();
         let plugins = Plugins::new(&home);
         plugins.sync(&[], &json!({}));
         assert_eq!(plugins.commands(), [("fleet".to_string(), "Set the token".to_string())]);
@@ -646,7 +646,7 @@ done"#;
         let manifest = r#"{"command": ["sh", "plugin.sh"], "author": "octocat",
             "tools": [{"name": "hello", "description": "Greets"}],
             "settings": [{"key": "greeting", "default": "hi"}, {"key": "loud", "default": false}]}"#;
-        std::fs::write(home.join(".agent/plugins/fleet/plugin.json"), manifest).unwrap();
+        std::fs::write(home.join(".agents/plugins/fleet/plugin.json"), manifest).unwrap();
         let plugins = Plugins::new(&home);
         plugins.sync(&[], &json!({"fleet": {"greeting": "hey", "loud": "yes"}}));
         assert_eq!(plugins.tools()[0]["name"], "fleet__hello");
@@ -666,10 +666,10 @@ done"#;
     fn install_and_remove_stay_inside_the_plugins_directory() {
         let home = home_with("install", &[]);
         assert_eq!(install(&home, "usagefleet"), Ok("usagefleet".into()));
-        assert!(home.join(".agent/plugins/usagefleet/plugin.json").is_file());
+        assert!(home.join(".agents/plugins/usagefleet/plugin.json").is_file());
         assert!(install(&home, "nope").unwrap_err().starts_with("No bundled plugin named nope."));
         assert!(remove(&home, "..").is_err());
         assert_eq!(remove(&home, "usagefleet"), Ok(()));
-        assert!(!home.join(".agent/plugins/usagefleet").exists());
+        assert!(!home.join(".agents/plugins/usagefleet").exists());
     }
 }

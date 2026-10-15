@@ -1,5 +1,5 @@
 //! Native ponytail and caveman: the host tracks the level in settings and injects the
-//! official rules, downloaded from each project's GitHub repo and cached in ~/.agent/modes.
+//! official rules, downloaded from each project's GitHub repo and cached in ~/.agents/modes.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -75,7 +75,7 @@ fn caveman_skill(level: &str) -> Option<&'static str> {
 }
 
 fn cache_path(home: &Path, skill: &str) -> PathBuf {
-    home.join(".agent/modes").join(format!("{skill}.md"))
+    home.join(".agents/modes").join(format!("{skill}.md"))
 }
 
 fn read(home: &Path, skill: &str) -> Option<String> {
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn prompt_uses_cached_rules_for_active_levels_only() {
         let home = std::env::temp_dir().join(format!("agent-modes-{}", std::process::id()));
-        fs::create_dir_all(home.join(".agent/modes")).unwrap();
+        fs::create_dir_all(home.join(".agents/modes")).unwrap();
         fs::write(cache_path(&home, "ponytail"), "---\nname: ponytail\n---\nBe lazy.").unwrap();
         fs::write(cache_path(&home, "ultracave"), "---\nname: ultracave\n---\nFew word.").unwrap();
         let prompt = prompt(&home, "full", "ultra");

@@ -36,7 +36,7 @@ use hashline::Anchors;
 use permissions::{Decision, Grants, Mode};
 
 const USAGE: &str = "Usage: agent [options] [message...]
-       agent plugin install|update <name|path>   Copy a bundled plugin or a plugin directory into ~/.agent/plugins
+       agent plugin install|update <name|path>   Copy a bundled plugin or a plugin directory into ~/.agents/plugins
        agent plugin remove <name>
        agent plugin list
 
@@ -183,7 +183,7 @@ fn run(options: Options) -> Result<(), String> {
     let catalog = client.catalog().to_vec();
     let model = catalog.iter().find(|m| m.id == settings.model).ok_or(format!("Unknown model {}.", settings.model))?;
     let cwd = std::env::current_dir().map_err(|e| format!("Cannot read the working directory: {e}"))?;
-    let sessions_dir = home.join(".agent/sessions");
+    let sessions_dir = home.join(".agents/sessions");
     let (session, history) = match &options.resume {
         Some(Resume::Id(id)) => Session::resume(&sessions_dir, id)?,
         Some(Resume::Latest) => Session::resume(&sessions_dir, &Session::latest(&sessions_dir, &cwd)?)?,

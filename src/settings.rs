@@ -6,7 +6,7 @@ use crate::accounts::Policy;
 use crate::models::Model;
 use crate::permissions::Mode;
 
-/// Everything /settings edits, saved to ~/.agent/settings.json.
+/// Everything /settings edits, saved to ~/.agents/settings.json.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Settings {
     pub model: String,
@@ -64,7 +64,7 @@ pub fn model_key(model: &Model) -> String {
 }
 
 pub fn path(home: &Path) -> PathBuf {
-    home.join(".agent/settings.json")
+    home.join(".agents/settings.json")
 }
 
 pub fn load(home: &Path) -> Settings {

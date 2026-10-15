@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Trees of one git work tree, kept in a private repo under ~/.agent/snapshots so a rewind can put files back.
+/// Trees of one git work tree, kept in a private repo under ~/.agents/snapshots so a rewind can put files back.
 /// Ignored files are not stored, like in the project's own repo.
 pub struct Snapshots {
     git_dir: PathBuf,
@@ -14,7 +14,7 @@ impl Snapshots {
     pub fn open(home: &Path, cwd: &Path) -> Option<Snapshots> {
         let top = run(Command::new("git").arg("-C").arg(cwd).args(["rev-parse", "--show-toplevel"])).ok()?;
         let work_tree = PathBuf::from(top);
-        let git_dir = home.join(".agent/snapshots").join(work_tree.to_string_lossy().replace('/', "-"));
+        let git_dir = home.join(".agents/snapshots").join(work_tree.to_string_lossy().replace('/', "-"));
         // One index per process, so two agents in the same repo do not fight over index.lock.
         let index = std::env::temp_dir().join(format!("agent-snapshot-{}.index", std::process::id()));
         Some(Snapshots { git_dir, work_tree, index })

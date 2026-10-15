@@ -11,7 +11,7 @@ agent plugin list
 agent plugin remove usagefleet
 ```
 
-Plugins go to `~/.agent/plugins/<name>/`. In the TUI, `/plugins` installs, removes, enables and disables them. Disabled plugins are kept in `disabled_plugins` in `~/.agent/settings.json`.
+Plugins go to `~/.agents/plugins/<name>/`. In the TUI, `/plugins` installs, removes, enables and disables them. Disabled plugins are kept in `disabled_plugins` in `~/.agents/settings.json`.
 
 ## plugin.json
 
@@ -35,7 +35,7 @@ The agent runs `command` in the plugin directory. The directory name is the plug
 
 `tools` is optional. While the plugin runs, the model gets each tool as `<plugin>__<name>`, for example `my-plugin__lookup`. A tool name has letters, digits, `_` and `-`, and no `__`. Without `input_schema`, the tool takes no input. The user approves plugin tools like other tools that change state. Plan mode blocks them.
 
-`settings` is optional. Each entry has a `key`, a `description` and a `default`. The default is a boolean or a string. In `/plugins`, Enter opens the plugin's settings. Space toggles a boolean and Enter edits a string. The values are kept in `plugin_settings` in `~/.agent/settings.json`. A value with a type that is not the type of the default is ignored.
+`settings` is optional. Each entry has a `key`, a `description` and a `default`. The default is a boolean or a string. In `/plugins`, Enter opens the plugin's settings. Space toggles a boolean and Enter edits a string. The values are kept in `plugin_settings` in `~/.agents/settings.json`. A value with a type that is not the type of the default is ignored.
 
 ## Messages from the agent
 

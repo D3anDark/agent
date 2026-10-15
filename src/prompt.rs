@@ -18,7 +18,7 @@ const DEFAULT_PREAMBLE: &str = "You are an expert coding assistant. You help use
 - Be concise in your responses
 - Show file paths clearly when working with files
 </rules>";
-const CONTEXT_FILES: [&str; 5] = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+const CONTEXT_FILES: [&str; 3] = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD"];
 
 /// Preamble, addendum, project context, skills, cwd. ponytail and caveman come from `modes`.
 /// The project's `.agents/` wins over the agent dir (`~/.agents`).

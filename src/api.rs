@@ -100,7 +100,7 @@ enum Choice {
 }
 
 impl Client {
-    /// Loads `~/.agent/accounts.json`; without an Anthropic account, `ANTHROPIC_API_KEY` acts as one named `env`.
+    /// Loads `~/.agents/accounts.json`; without an Anthropic account, `ANTHROPIC_API_KEY` acts as one named `env`.
     /// Then loads the model catalog, asking each logged-in provider when the cached list is a day old.
     pub fn new(home: &Path) -> Result<Client, String> {
         let base = |var: &str, default: &str| std::env::var(var).unwrap_or_else(|_| default.into()).trim_end_matches('/').to_string();
