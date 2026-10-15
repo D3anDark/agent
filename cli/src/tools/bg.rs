@@ -181,7 +181,7 @@ impl Terminals {
     pub fn kill_all(&self) {
         for terminal in &self.list {
             if terminal.status() == Status::Running {
-                let _ = Command::new("kill").args(["-KILL", "--", &format!("-{}", terminal.pid)]).status();
+                let _ = Command::new("kill").args(["-KILL", "--", &format!("-{}", terminal.pid)]).stderr(Stdio::null()).status();
             }
         }
     }
@@ -233,10 +233,10 @@ impl Terminal {
         state.killed = true;
         drop(state);
         let group = format!("-{}", self.pid);
-        let _ = Command::new("kill").args(["-TERM", "--", &group]).status();
+        let _ = Command::new("kill").args(["-TERM", "--", &group]).stderr(Stdio::null()).status();
         std::thread::spawn(move || {
             std::thread::sleep(FORCE_KILL_AFTER);
-            let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
+            let _ = Command::new("kill").args(["-KILL", "--", &group]).stderr(Stdio::null()).status();
         });
         true
     }

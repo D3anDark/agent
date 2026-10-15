@@ -97,7 +97,7 @@ fn bash(input: &Value, cwd: &Path, rtk: &Rtk, abort: &Arc<AtomicBool>) -> Result
                 continue;
             };
             let _ = killed_tx.send(reason);
-            let _ = Command::new("kill").args(["-9", "--", &format!("-{pid}")]).status();
+            let _ = Command::new("kill").args(["-9", "--", &format!("-{pid}")]).stderr(Stdio::null()).status();
             return;
         }
     });
