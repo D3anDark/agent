@@ -9,15 +9,12 @@ pub enum Plan {
 }
 
 pub const PROMPT: &str = "<plan_mode>
-Plan mode is on. Investigate and design, change nothing. Edits, subagents and state-changing commands are blocked; bash runs only read-only commands (ls, cat, rg, fd, git status/log/diff/show, ...). Ask with ask_user_question when a decision cannot be inferred. When the plan is ready, call plan_mode_complete with the whole plan in Markdown as your last action. The user then picks: implement here, implement in a fresh session, export, or keep planning.
+Plan mode is on. Investigate and design, change nothing. Edits, subagents, plugin tools and state-changing commands are blocked; bash and bg_start run only read-only commands (ls, cat, rg, fd, git status/log/diff/show, ...). Ask with ask_user_question when a decision cannot be inferred. When the plan is ready, call plan_mode_complete with the whole plan in Markdown as your last action. The user then picks: implement here, implement in a fresh session, export, or keep planning.
 </plan_mode>";
 
 pub const IMPLEMENT: &str = "Implement the plan.";
 
-const ALLOWED_TOOLS: [&str; 16] = [
-    "read", "rg", "fd", "search_external_files", "bash", "context_tree_query", "ask_user_question", "todo", "get_goal", "load_tools", "bg_status", "bg_list",
-    "web_search", "fetch_content", "get_search_content", "plan_mode_complete",
-];
+const EDITING_TOOLS: [&str; 8] = ["write", "replace", "replace_match", "insert", "copy", "move", "undo_last_change", "subagent"];
 
 const READ_ONLY_COMMANDS: [&str; 18] = ["ls", "cat", "head", "tail", "wc", "rg", "fd", "pwd", "tree", "file", "stat", "which", "echo", "jq", "diff", "du", "cd", "true"];
 const READ_ONLY_GIT: [&str; 7] = ["status", "log", "diff", "show", "blame", "ls-files", "rev-parse"];
@@ -37,12 +34,13 @@ pub fn tool() -> Value {
 
 /// Why plan mode blocks this tool call, or None when it may run.
 pub fn blocked(tool: &str, input: &Value) -> Option<String> {
-    if !ALLOWED_TOOLS.contains(&tool) {
-        return Some(format!("Plan mode blocks {tool}: it can change state. Finish the plan with plan_mode_complete."));
+    // Plugin and MCP tools (`<plugin>__<name>`) may write anything, so they count as editing.
+    if EDITING_TOOLS.contains(&tool) || tool.contains("__") {
+        return Some(format!("Plan mode blocks {tool}: it can change files. Finish the plan with plan_mode_complete."));
     }
     let command = input["command"].as_str().unwrap_or_default();
-    if tool == "bash" && !read_only(command) {
-        return Some("Plan mode allows only read-only commands (ls, cat, rg, fd, git status/log/diff/show, ...) without redirects or $(...).".into());
+    if matches!(tool, "bash" | "bg_start") && !read_only(command) {
+        return Some(format!("Plan mode allows {tool} only read-only commands (ls, cat, rg, fd, git status/log/diff/show, ...) without redirects or $(...)."));
     }
     None
 }
@@ -73,9 +71,14 @@ mod tests {
 
     #[test]
     fn blocks_edits_and_state_changing_commands() {
-        assert!(blocked("write", &json!({"path": "a"})).is_some());
-        assert!(blocked("subagent", &json!({})).is_some());
-        assert!(blocked("read", &json!({"path": "a"})).is_none());
+        for tool in ["write", "replace", "undo_last_change", "subagent", "my-plugin__lookup"] {
+            assert!(blocked(tool, &json!({"path": "a"})).is_some(), "{tool}");
+        }
+        for tool in ["read", "create_goal", "add_directory", "bg_kill", "source_check"] {
+            assert!(blocked(tool, &json!({"path": "a"})).is_none(), "{tool}");
+        }
+        assert!(blocked("bg_start", &json!({"command": "rm -rf x"})).is_some());
+        assert!(blocked("bg_start", &json!({"command": "git log"})).is_none());
         for command in ["rg -n plan src", "git log --oneline | head -5 && git status", "cd . && ls"] {
             assert!(blocked("bash", &json!({ "command": command })).is_none(), "{command}");
         }
