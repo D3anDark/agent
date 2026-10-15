@@ -364,7 +364,7 @@ pub fn run(agent: Agent, setup: Setup) -> Result<(), String> {
     if let Some(path) = &app.session_path {
         let has_messages = std::fs::read_to_string(path).is_ok_and(|text| text.contains(r#""type":"message""#));
         if has_messages {
-            println!("Continue session with: agent --resume {}", app.session_id);
+            println!("\x1b[38;5;245mContinue session with: agent --resume {}\x1b[0m", app.session_id);
         }
     }
     result
