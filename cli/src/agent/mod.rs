@@ -10,6 +10,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 pub mod condense;
+pub mod edit_hooks;
 pub mod modes;
 pub mod permissions;
 pub mod prompt;
@@ -292,6 +293,8 @@ impl Agent {
     }
 
     fn run_turns(&mut self, text: &str, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
+        let mut edited = Vec::new();
+        let mut fix_rounds = 0;
         loop {
             if self.auto_compact && self.last_context_tokens > self.context_window.saturating_sub(self.reserve_tokens) {
                 emit(Event::Notice("Compacting context...".into()));
@@ -341,7 +344,18 @@ impl Agent {
                 }
                 let queued = self.take_queued(emit);
                 if queued.is_empty() {
-                    return Ok(answer);
+                    let failures = self.run_edit_hooks(std::mem::take(&mut edited), text, emit);
+                    if failures.is_empty() || self.abort.load(Ordering::Relaxed) {
+                        return Ok(answer);
+                    }
+                    fix_rounds += 1;
+                    let (message, retry) = edit_hooks::report(&failures, fix_rounds);
+                    emit(Event::Notice(message.clone()));
+                    if !retry {
+                        return Ok(answer);
+                    }
+                    self.push(json!({"role": "user", "content": [{"type": "text", "text": message}]}))?;
+                    continue;
                 }
                 self.push(json!({"role": "user", "content": queued}))?;
                 continue;
@@ -359,7 +373,11 @@ impl Agent {
                 }
                 emit(Event::ToolStart { id: id.clone(), name: name.clone(), input: shown });
                 self.plugins.event(json!({"type": "tool_call", "name": name, "input": input, "context": self.plugin_context()}));
+                let targets = edit_hooks::edited_files(&name, &input, &self.cwd, &self.anchors);
                 let (output, is_error) = self.run_tool_with_checkpoint(&name, &input, text, emit)?;
+                if !is_error {
+                    edited.extend(targets);
+                }
                 self.tool_calls += 1;
                 self.plugins.event(json!({"type": "tool_result", "name": name, "output": output, "isError": is_error, "context": self.plugin_context()}));
                 emit(Event::ToolEnd { id: id.clone(), output: output.clone(), is_error });
@@ -374,6 +392,35 @@ impl Agent {
             }
             self.start_condense(&answer, finished);
         }
+    }
+
+    /// Runs the edit hooks for the files this prompt changed and returns their failures.
+    /// The commands come from a repo file, so each one passes the same permission check as bash.
+    fn run_edit_hooks(&mut self, files: Vec<PathBuf>, user_request: &str, emit: &mut dyn FnMut(Event)) -> Vec<String> {
+        if files.is_empty() {
+            return Vec::new();
+        }
+        let hooks = match edit_hooks::hooks(&files) {
+            Ok(hooks) => hooks,
+            Err(error) => return vec![error],
+        };
+        let mut failures = Vec::new();
+        for hook in hooks {
+            if self.abort.load(Ordering::Relaxed) {
+                break;
+            }
+            let input = json!({"command": hook.command, "timeout": 120});
+            if let Some(refusal) = self.check_permission("bash", &input, user_request, emit) {
+                emit(Event::Notice(format!("[edit-hooks] {} skipped: {refusal}", hook.command)));
+                continue;
+            }
+            emit(Event::Notice(format!("[edit-hooks] {}", hook.command)));
+            let (output, is_error) = tools::run("bash", &input, &hook.dir, &mut self.anchors, &self.rtk, &self.abort);
+            if is_error {
+                failures.push(edit_hooks::failure(&hook.command, &output));
+            }
+        }
+        failures
     }
 
     /// Runs one tool call after the permission check; agent-level tools are handled here, file and shell tools in `tools`.
