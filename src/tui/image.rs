@@ -30,8 +30,12 @@ fn unescape(text: &str) -> String {
 /// Reads an image file into an API image block.
 pub fn block(path: &Path) -> Result<Value, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-    let media_type = sniffed_media_type(&bytes).ok_or_else(|| format!("Not an image: {}", path.display()))?;
-    Ok(json!({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64(&bytes)}}))
+    bytes_block(&bytes).ok_or_else(|| format!("Not an image: {}", path.display()))
+}
+
+fn bytes_block(bytes: &[u8]) -> Option<Value> {
+    let media_type = sniffed_media_type(bytes)?;
+    Some(json!({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64(bytes)}}))
 }
 
 /// The API rejects a media type that disagrees with the bytes, and a `.png` file can hold a JPEG.
@@ -45,8 +49,23 @@ fn sniffed_media_type(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// Saves the clipboard image as PNG and reads it into an API image block. macOS only, like `pbcopy`.
+/// Reads the clipboard image into an API image block: `osascript` on macOS, `wl-paste` on Wayland, `xclip` on X11.
 pub fn from_clipboard() -> Result<Value, String> {
+    if cfg!(target_os = "macos") {
+        return from_macos_clipboard();
+    }
+    let (program, args): (&str, &[&str]) = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        ("wl-paste", &["--type", "image/png"])
+    } else {
+        ("xclip", &["-selection", "clipboard", "-target", "image/png", "-out"])
+    };
+    let output = Command::new(program).args(args).output().map_err(|e| format!("Cannot run {program}: {e}"))?;
+    let block = if output.status.success() { bytes_block(&output.stdout) } else { None };
+    block.ok_or_else(|| "No image in the clipboard".into())
+}
+
+/// Saves the clipboard image as PNG and reads it into an API image block.
+fn from_macos_clipboard() -> Result<Value, String> {
     let path = std::env::temp_dir().join(format!("agent-clipboard-{}.png", std::process::id()));
     let script = format!(
         "set f to open for access (POSIX file \"{}\") with write permission\nset eof f to 0\nwrite (the clipboard as «class PNGf») to f\nclose access f",

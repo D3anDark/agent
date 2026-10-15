@@ -5,7 +5,8 @@ set -eu
 main() {
   case "$(uname -s)" in
     Darwin) os=macos ;;
-    *) echo "agent: only macOS is supported." >&2; exit 1 ;;
+    Linux) os=linux ;;
+    *) echo "agent: only macOS and Linux are supported." >&2; exit 1 ;;
   esac
   case "$(uname -m)" in
     arm64 | aarch64) arch=aarch64 ;;

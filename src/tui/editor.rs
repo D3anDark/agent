@@ -263,6 +263,8 @@ impl Editor {
             KeyCode::Char('a') if ctrl => self.home(),
             KeyCode::Char('e') if ctrl => self.end(),
             KeyCode::Char('w') if ctrl => self.delete_word_back(),
+            // VTE and xterm send Ctrl+Backspace as ^H.
+            KeyCode::Char('h') if ctrl => self.delete_word_back(),
             KeyCode::Char('u') if ctrl => self.kill_to_start(),
             KeyCode::Char('k') if ctrl => self.kill_to_end(),
             KeyCode::Char('b') if alt => self.word_left(),
@@ -424,6 +426,13 @@ mod tests {
         assert_eq!(field.field(None), "one \u{E0001}two ");
         field.edit_key(key(KeyCode::Backspace, KeyModifiers::SUPER));
         assert_eq!(field.field(Some('•')), "\u{E0001}••••");
+    }
+
+    #[test]
+    fn ctrl_h_deletes_a_word_like_ctrl_backspace_in_linux_terminals() {
+        let mut field = Editor::from_text("one two three");
+        field.edit_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        assert_eq!(field.text(), "one two ");
     }
 
     #[test]

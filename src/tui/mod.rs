@@ -2765,13 +2765,36 @@ fn duration(d: Duration) -> String {
 }
 
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
-    let mut child = std::process::Command::new("pbcopy").stdin(std::process::Stdio::piped()).spawn().map_err(|e| format!("Cannot run pbcopy: {e}"))?;
+    let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("pbcopy", &[])
+    } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        ("wl-copy", &[])
+    } else {
+        ("xclip", &["-selection", "clipboard"])
+    };
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Cannot run {program}: {e}"))?;
     child.stdin.take().unwrap().write_all(text.as_bytes()).map_err(|e| e.to_string())?;
     child.wait().map_err(|e| e.to_string())?;
     Ok(())
 }
 
 fn open_in_browser(url: &str) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        // Not waited for: xdg-open runs a browser without a desktop handler in the foreground.
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Cannot run xdg-open: {e}"))?;
+        return Ok(());
+    }
     // output() and not status(): open's stderr would draw over the alternate screen.
     let output = std::process::Command::new("open").arg(url).output().map_err(|e| format!("Cannot run open: {e}"))?;
     if !output.status.success() {

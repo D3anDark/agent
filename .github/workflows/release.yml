@@ -8,24 +8,44 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: macos-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - { runner: macos-latest, target: aarch64-apple-darwin, asset: agent-macos-aarch64 }
+          - { runner: macos-latest, target: x86_64-apple-darwin, asset: agent-macos-x86_64 }
+          - { runner: ubuntu-latest, target: x86_64-unknown-linux-musl, asset: agent-linux-x86_64 }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, asset: agent-linux-aarch64 }
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Tag matches Cargo.toml
         run: test "${GITHUB_REF_NAME#v}" = "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
-      - run: rustup update stable && rustup default stable && rustup target add x86_64-apple-darwin
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup update stable && rustup default stable && rustup target add ${{ matrix.target }}
       - run: cargo test --locked
       - name: Build
         env:
           AGENT_RELEASE: "1"
         run: |
-          for arch in aarch64 x86_64; do
-            cargo build --release --locked --target "$arch-apple-darwin"
-            cp "target/$arch-apple-darwin/release/agent" "agent-macos-$arch"
-          done
-          ./agent-macos-aarch64 --version
+          cargo build --release --locked --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/agent ${{ matrix.asset }}
+      - if: matrix.target != 'x86_64-apple-darwin'
+        run: ./${{ matrix.asset }} --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" agent-macos-aarch64 agent-macos-x86_64 --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" agent-* --repo "$GITHUB_REPOSITORY" --generate-notes
