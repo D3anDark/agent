@@ -6,9 +6,9 @@ const context: Context = { provider: "anthropic", model: "claude-opus-5-5", acco
 
 describe("usagefleet", () => {
 	test("shows fresh account limits and hides stale ones", () => {
-		const limits = { fiveHourPct: 5.4, sevenDayPct: 41, at: "2026-10-15T11:58:00Z" };
+		const limits = { fiveHourPct: 5.4, sevenDayPct: 41, at: "2026-10-15T11:52:00Z" };
 		expect(formatLimits({ limits }, now)).toEqual([{ text: "5h " }, { text: "5%", tone: "ok" }, { text: " · 7d " }, { text: "41%", tone: "ok" }]);
-		expect(formatLimits({ limits: { ...limits, at: "2026-10-15T11:50:00Z" } }, now)).toBeNull();
+		expect(formatLimits({ limits: { ...limits, at: "2026-10-15T11:40:00Z" } }, now)).toBeNull();
 	});
 
 	test("tones percents green below 50, orange below 80, red from 80", () => {

@@ -30,8 +30,10 @@ const COLLECTOR_PATHS = [
 	join(homedir(), ".config", "usagefleet", "pi-claude", ".claude.json"),
 	process.env.CLAUDE_CONFIG_DIR ? join(process.env.CLAUDE_CONFIG_DIR, ".claude.json") : join(homedir(), ".claude.json"),
 ];
-/** Four missed watcher reports: the numbers describe a past that has moved on. */
-const STALE_AFTER_MS = 5 * 60_000;
+/** The watcher rewrites an unchanged reading's `at` only every 10 minutes, so this must outlast that. */
+const STALE_AFTER_MS = 15 * 60_000;
+/** The watcher reports every minute and nothing in the agent fires while it idles, so poll. */
+const REFRESH_MS = 30_000;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 
@@ -224,7 +226,7 @@ async function handle(message: Message): Promise<void> {
 	const type = message.params?.type;
 	if (message.method === "event" && (type === "session_start" || type === "prompt_end" || type === "account_change")) {
 		if (type === "session_start") await refreshAccountLabels();
-		send({ method: "ui.setStatus", params: { text: await status(context).catch(() => null) } });
+		await refreshStatus(context);
 	} else if (message.method === "input") {
 		const reason = await blockedReason(context).catch(() => null);
 		send({ id: message.id, result: reason ? { action: "block", reason } : { action: "continue" } });
@@ -236,8 +238,12 @@ async function handle(message: Message): Promise<void> {
 			return;
 		}
 		await refreshAccountLabels();
-		send({ method: "ui.setStatus", params: { text: await status(context).catch(() => null) } });
+		await refreshStatus(context);
 	}
+}
+
+async function refreshStatus(context: Context): Promise<void> {
+	send({ method: "ui.setStatus", params: { text: await status(context).catch(() => null) } });
 }
 
 async function refreshAccountLabels(): Promise<void> {
@@ -245,10 +251,17 @@ async function refreshAccountLabels(): Promise<void> {
 }
 
 if (import.meta.main) {
+	let latestContext: Context | undefined;
+	const refresh = setInterval(() => {
+		if (latestContext) refreshStatus(latestContext).catch(() => {});
+	}, REFRESH_MS);
 	for await (const line of console) {
 		// Bun yields an empty line when stdin closes.
 		if (!line) continue;
+		const message: Message = JSON.parse(line);
+		latestContext = message.params?.context ?? latestContext;
 		// Not awaited: a slow status refresh must not hold up the next input answer.
-		handle(JSON.parse(line)).catch(() => {});
+		handle(message).catch(() => {});
 	}
+	clearInterval(refresh);
 }
