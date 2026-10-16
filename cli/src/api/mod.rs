@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub mod accounts;
@@ -34,7 +34,8 @@ pub struct Client {
     anthropic_base: String,
     chatgpt_base: String,
     openrouter_base: String,
-    catalog: Arc<Vec<Model>>,
+    /// Set once by load_catalog; clones share it.
+    catalog: Arc<OnceLock<Vec<Model>>>,
     /// Codex prompt_cache_key; one per process, like pi's session id.
     cache_key: String,
     state: Arc<Mutex<State>>,
@@ -113,10 +114,9 @@ enum Choice {
 
 impl Client {
     /// Loads `~/.agents/accounts.json`; a provider without an account uses `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` as one named `env`.
-    /// Then builds the model catalog live from every account's model list; returns it with one error per list that failed.
-    pub fn new(home: &Path) -> Result<(Client, Vec<String>), String> {
+    pub fn new(home: &Path) -> Result<Client, String> {
         let base = |var: &str, default: &str| std::env::var(var).unwrap_or_else(|_| default.into()).trim_end_matches('/').to_string();
-        let mut client = Client {
+        let client = Client {
             http: ureq::Agent::config_builder().http_status_as_error(false).timeout_connect(Some(Duration::from_secs(30))).build().into(),
             home: home.to_path_buf(),
             anthropic_base: base("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
@@ -127,27 +127,39 @@ impl Client {
             state: Arc::new(Mutex::new(State { threshold: 90.0, ..State::default() })),
         };
         client.reload(accounts::load(home)?);
+        Ok(client)
+    }
+
+    /// Builds the model catalog live from every account's model list; returns one error per list that failed.
+    pub fn load_catalog(&self) -> Vec<String> {
+        let accounts: Vec<Account> = self.state.lock().unwrap().accounts.iter().filter(|a| a.provider != "openrouter").cloned().collect();
+        // One request per account, about 0.3-0.7 s each; in parallel the load waits only for the slowest.
+        let (openrouter, listed) = std::thread::scope(|scope| {
+            // Public list, so OpenRouter models show in the picker before /login.
+            let openrouter = scope.spawn(|| fetch_models(models_agent().get(format!("{}/v1/models", self.openrouter_base)), models::parse_openrouter));
+            let lists: Vec<_> = accounts.iter().map(|account| scope.spawn(|| self.list_models(account))).collect();
+            (openrouter.join().expect("model list thread"), lists.into_iter().map(|l| l.join().expect("model list thread")).collect::<Vec<_>>())
+        });
         let mut catalog = Vec::new();
         let mut errors = Vec::new();
-        // Public list, so OpenRouter models show in the picker before /login.
-        match fetch_models(models_agent().get(format!("{}/v1/models", client.openrouter_base)), models::parse_openrouter) {
-            Ok(listed) => catalog.extend(listed),
+        match openrouter {
+            Ok(models) => catalog.extend(models),
             Err(error) => errors.push(format!("openrouter: {error}")),
         }
-        let accounts: Vec<Account> = client.state.lock().unwrap().accounts.iter().filter(|a| a.provider != "openrouter").cloned().collect();
-        for account in accounts {
-            match client.list_models(&account) {
-                Ok(listed) => models::merge(&mut catalog, listed, &account.name),
-                Err(error) => errors.push(format!("{}: {error}", key(&account))),
+        for (account, list) in accounts.iter().zip(listed) {
+            match list {
+                Ok(models) => models::merge(&mut catalog, models, &account.name),
+                Err(error) => errors.push(format!("{}: {error}", key(account))),
             }
         }
         catalog.extend(models::free_routers(&catalog));
-        client.catalog = Arc::new(catalog);
-        Ok((client, errors))
+        assert!(self.catalog.set(catalog).is_ok(), "load_catalog runs once");
+        errors
     }
 
+    /// Empty until load_catalog finishes.
     pub fn catalog(&self) -> &[Model] {
-        &self.catalog
+        self.catalog.get().map_or(&[], Vec::as_slice)
     }
 
     /// The models this account can use right now; see models-endpoints.md.
@@ -238,7 +250,7 @@ impl Client {
 
     fn model_of(&self, request: &Value) -> Result<&Model, String> {
         let id = request["model"].as_str().unwrap_or_default();
-        self.catalog.iter().find(|m| m.id == id).ok_or(format!("Unknown model {id}."))
+        self.catalog().iter().find(|m| m.id == id).ok_or(format!("Unknown model {id}."))
     }
 
     /// Picks the account for this request and reports a change of account as "Switched to <name>: <reason>".
@@ -253,7 +265,7 @@ impl Client {
             };
             return Err(format!("No {provider} account. Use /login{hint}."));
         }
-        let (accounts, without_access): (Vec<Account>, Vec<Account>) = saved.into_iter().partition(|a| models::serves(&self.catalog, model, &a.name));
+        let (accounts, without_access): (Vec<Account>, Vec<Account>) = saved.into_iter().partition(|a| models::serves(self.catalog(), model, &a.name));
         if accounts.is_empty() {
             return Err(format!("No {provider} account has access to {}.", model.id));
         }
@@ -344,9 +356,9 @@ impl Client {
     fn fallback(&self, mut request: Value, provider: &str, on_delta: &mut dyn FnMut(Delta)) -> Result<Value, String> {
         let configured = self.state.lock().unwrap().fallback_model.clone();
         let model = match configured.as_str() {
-            "" if provider == "anthropic" => self.catalog.iter().find(|m| m.provider == "openai-codex"),
-            "" => self.catalog.iter().find(|m| m.id == "claude-opus-5-5"),
-            id => self.catalog.iter().find(|m| m.id == id),
+            "" if provider == "anthropic" => self.catalog().iter().find(|m| m.provider == "openai-codex"),
+            "" => self.catalog().iter().find(|m| m.id == "claude-opus-5-5"),
+            id => self.catalog().iter().find(|m| m.id == id),
         };
         let model = model.filter(|m| m.provider != provider).ok_or(format!("Every {provider} account is over its limit and accounts.fallback_model names no other provider's model."))?;
         on_delta(Delta::Notice(&format!("Switched to {}: every {provider} account is over its limit", model.id)));
@@ -389,7 +401,7 @@ impl Client {
                     .header("authorization", format!("Bearer {key}"));
                 let mut body = request.clone();
                 // A clef router asks for its first free model; OpenRouter moves to the next on a rate limit or outage.
-                if let Some((first, rest)) = models::free_route(&self.catalog, request["model"].as_str().unwrap_or_default()).split_first() {
+                if let Some((first, rest)) = models::free_route(self.catalog(), request["model"].as_str().unwrap_or_default()).split_first() {
                     body["model"] = json!(first.id);
                     body["fallbacks"] = rest.iter().map(|m| json!({"model": m.id})).collect();
                 }
@@ -673,7 +685,7 @@ mod tests {
     #[test]
     fn picking_an_account_reports_it_before_the_next_request() {
         let home = std::env::temp_dir().join(format!("agent-pick-{}", std::process::id()));
-        let (client, _) = Client::new(&home).unwrap();
+        let client = Client::new(&home).unwrap();
         let account = |name: &str| Account { provider: "anthropic".into(), name: name.into(), secret: Secret::ApiKey("sk".into()) };
         client.reload(vec![account("home"), account("work")]);
         client.state.lock().unwrap().current.insert("anthropic".into(), "home".into());

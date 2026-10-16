@@ -51,6 +51,8 @@ Every message has a `context`:
 
 `accountId` is the Claude account uuid or the ChatGPT account id. It is `null` for API keys. `accountName` is the name the user gave the account at `/login`. It is `null` when the provider has no account.
 
+`provider`, `accountId` and `accountName` are `null` when every model list failed at startup.
+
 `event` is a notification. Do not answer it. `params.type` is one of:
 
 | type | when | other params |

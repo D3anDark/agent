@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use agent::permissions::{Decision, Grants, Mode};
 use agent::{Agent, Event, History, Session, Spent, condense, modes, prompt, snapshots, usage};
-use api::{Client, Usage, models};
+use api::{Client, Usage};
 use tools::hashline::Anchors;
 use tools::rtk;
 
@@ -168,18 +168,19 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(mode) = options.permission_mode {
         settings.permission_mode = mode;
     }
-    let (client, mut model_notices) = Client::new(&home)?;
-    let catalog = client.catalog().to_vec();
-    // A model no logged-in account lists gives way to one an account lists, then to OpenRouter's public list.
-    let model = catalog.iter().find(|m| m.id == settings.model).or_else(|| catalog.iter().find(|m| !m.accounts.is_empty())).or_else(|| catalog.first());
-    let Some(model) = model else {
-        return Err(format!("No provider listed any model. {}", model_notices.join(" ")));
-    };
-    if model.id != settings.model {
-        model_notices.push(format!("{} is not on any account's model list; using {}.", settings.model, model.id));
-        settings.model = model.id.clone();
-    }
+    let client = Client::new(&home)?;
     client.configure(&settings);
+    // About 0.5 s of network; the TUI opens meanwhile and settle_model waits for it.
+    let model_lists = std::thread::spawn({
+        let client = client.clone();
+        move || client.load_catalog()
+    });
+    // Downloads only a missing file; the refresh of cached ones runs behind it, so startup never waits on it.
+    let modes_error = modes::fetch(&home, &settings.ponytail, &settings.caveman, false).err();
+    std::thread::spawn({
+        let (home, ponytail, caveman) = (home.clone(), settings.ponytail.clone(), settings.caveman.clone());
+        move || modes::fetch(&home, &ponytail, &caveman, true)
+    });
     let cwd = std::env::current_dir().map_err(|e| format!("Cannot read the working directory: {e}"))?;
     let sessions_dir = home.join(".agents/sessions");
     let (session, history) = match &options.resume {
@@ -193,8 +194,6 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(parent) = &options.parent {
         session.append(&serde_json::json!({"type": "parent", "session": parent}))?;
     }
-    let cheap_model = models::small_model(&catalog, model);
-    let modes_error = modes::fetch(&home, &settings.ponytail, &settings.caveman, true).err();
     // Before agent.plugins.sync starts the processes, so they run the updated code.
     let plugin_updates = plugins::update_bundled(&home);
     let mut agent = Agent {
@@ -210,14 +209,15 @@ fn run(options: Options) -> Result<(), String> {
         images: Vec::new(),
         model: settings.model.clone(),
         effort: settings.thinking.clone(),
-        context_window: settings.context_window(model),
-        max_tokens: model.max_tokens,
-        cheap_model: cheap_model.id.clone(),
+        // settle_model fills these three and condense once the model lists arrive.
+        context_window: 0,
+        max_tokens: 0,
+        cheap_model: String::new(),
         auto_compact: settings.auto_compact,
         reserve_tokens: settings.reserve_tokens,
         keep_recent_tokens: settings.keep_recent_tokens,
         last_context_tokens: 0,
-        condense: condense::Config::new(&settings, &cheap_model.id),
+        condense: condense::Config::new(&settings, ""),
         condensed: Vec::new(),
         next_ref: 1,
         pending_condense: Vec::new(),
@@ -257,10 +257,6 @@ fn run(options: Options) -> Result<(), String> {
     agent.plugins.sync(&settings.disabled_plugins, &settings.plugin_settings);
     agent.mcp.sync(&settings.disabled_mcp);
     agent.load(history);
-    // After load, which resets the tools to the session's loaded groups. Only the root spawns, and a child has no UI to ask in.
-    if options.parent.is_some() {
-        agent.tools = Value::Array(agent.tools.as_array().into_iter().flatten().filter(|tool| !matches!(tool["name"].as_str(), Some("load_tools" | "ask_user_question"))).cloned().collect());
-    }
     let mut prompt = options.prompt;
     if !std::io::stdin().is_terminal() {
         let mut piped = String::new();
@@ -282,8 +278,16 @@ fn run(options: Options) -> Result<(), String> {
         for notice in &plugin_updates {
             eprintln!("{notice}");
         }
-        for notice in &model_notices {
+        for notice in model_lists.join().expect("the model lists thread") {
             eprintln!("{notice}");
+        }
+        if let Some(notice) = agent.settle_model(&mut settings)? {
+            eprintln!("{notice}");
+        }
+        agent.announce_session();
+        // After settle_model, which resets the tools to the session's loaded groups. Only the root spawns, and a child has no UI to ask in.
+        if options.parent.is_some() {
+            agent.tools = Value::Array(agent.tools.as_array().into_iter().flatten().filter(|tool| !matches!(tool["name"].as_str(), Some("load_tools" | "ask_user_question"))).cloned().collect());
         }
         let result = if options.headless {
             headless_mode(&mut agent, prompt.as_deref().unwrap_or_default())
@@ -299,7 +303,7 @@ fn run(options: Options) -> Result<(), String> {
     let templates = prompt::load_templates(&agent_dir, &agent.cwd);
     agent.interactive = true;
     agent.snapshots = snapshots::Snapshots::open(&home, &agent.cwd);
-    tui::run(agent, tui::Setup { home, settings, catalog, skills, templates, prompt, modes_error, plugin_updates, model_notices })
+    tui::run(agent, tui::Setup { home, settings, skills, templates, prompt, modes_error, plugin_updates }, model_lists)
 }
 
 /// Non-interactive run: streams text to stdout (or nothing with --json) and progress to stderr.

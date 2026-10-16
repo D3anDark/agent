@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::agent::{self, Agent, Event, FileChange, RestoredFiles, RewindPoint, Session, SessionInfo, Spent};
@@ -52,6 +53,8 @@ use selection::{Point, Selection};
 
 const WORKING: &str = "Working";
 const TRANSCRIBING: &str = "Transcribing";
+const LOADING_MODELS: &str = "loading models";
+const MODELS_STILL_LOADING: &str = "The model lists are still loading.";
 pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const TOOL_OUTPUT_LINES: usize = 20;
 /// One line per tick while a selection drag rests on the transcript edge.
@@ -71,6 +74,8 @@ enum Msg {
     Input(Input),
     Agent(Event),
     Done(Result<String, String>),
+    /// The model the worker settled on, with the failed model lists and a swapped model.
+    ModelSettled { model: Result<String, String>, notices: Vec<String> },
     Resumed { id: String, path: Option<String>, messages: Vec<Value>, spent: Spent, notice: Option<String> },
     BtwDelta(String),
     BtwDone(Result<(), String>),
@@ -144,8 +149,8 @@ enum Command {
     /// `!cmd` typed by the user; `keep` adds its output to the next prompt.
     Bash { command: String, keep: bool },
     Compact,
-    /// New settings, the catalog entry of their model and that provider's cheapest model.
-    Apply(Box<Settings>, Model, String),
+    /// New settings; the worker settles their model and answers with Msg::ModelSettled.
+    Apply(Box<Settings>),
     Clear,
     /// Starts a fresh conversation with this prompt.
     Fresh(String),
@@ -340,7 +345,6 @@ struct App {
     scroll: usize,
     home: PathBuf,
     settings: Settings,
-    catalog: Vec<Model>,
     context_tokens: u64,
     /// The last request's usage, for /context's cache line.
     last_usage: Usage,
@@ -400,7 +404,6 @@ struct App {
 pub struct Setup {
     pub home: PathBuf,
     pub settings: Settings,
-    pub catalog: Vec<Model>,
     pub skills: Vec<Skill>,
     pub templates: Vec<Template>,
     pub prompt: Option<String>,
@@ -408,11 +411,10 @@ pub struct Setup {
     pub modes_error: Option<String>,
     /// One line per bundled plugin updated, or failed to update, at startup.
     pub plugin_updates: Vec<String>,
-    /// Model lists that failed at startup, and a configured model no account lists.
-    pub model_notices: Vec<String>,
 }
 
-pub fn run(agent: Agent, setup: Setup) -> Result<(), String> {
+/// `model_lists` is the startup load of the account model lists; the worker settles the model on it before its first command.
+pub fn run(agent: Agent, setup: Setup, model_lists: JoinHandle<Vec<String>>) -> Result<(), String> {
     let prompt = setup.prompt.clone();
     let (events, inbox) = mpsc::channel();
     let (commands, command_inbox) = mpsc::channel();
@@ -425,7 +427,7 @@ pub fn run(agent: Agent, setup: Setup) -> Result<(), String> {
     app.mcp.on_change(move || {
         let _ = wake.send(Msg::McpChanged);
     });
-    spawn_worker(agent, command_inbox, events.clone());
+    spawn_worker(agent, app.settings.clone(), model_lists, command_inbox, events.clone());
     if crate::update::enabled() {
         spawn_update(app.settings.update_channel.clone(), events.clone());
     }
@@ -475,8 +477,11 @@ fn leave(out: &mut Stdout) {
     let _ = terminal::disable_raw_mode();
 }
 
-fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Msg>) {
+fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandle<Vec<String>>, commands: Receiver<Command>, events: Sender<Msg>) {
     std::thread::spawn(move || {
+        let notices = model_lists.join().expect("the model lists thread");
+        let _ = events.send(settle_model(&mut agent, &mut settings, notices));
+        agent.announce_session();
         loop {
             agent.lsp.stop_idle();
             let command = match commands.recv_timeout(Duration::from_secs(60)) {
@@ -505,8 +510,8 @@ fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Ms
                     Ok(None) => Err("Nothing to compact yet.".into()),
                     Err(error) => Err(error),
                 },
-                Command::Apply(settings, model, cheap_model) => {
-                    agent.apply(&settings, &model, &cheap_model);
+                Command::Apply(mut settings) => {
+                    let _ = events.send(settle_model(&mut agent, &mut settings, Vec::new()));
                     continue;
                 }
                 Command::Clear => agent.new_session().map(|()| {
@@ -642,6 +647,14 @@ fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Ms
     });
 }
 
+fn settle_model(agent: &mut Agent, settings: &mut Settings, mut notices: Vec<String>) -> Msg {
+    let model = agent.settle_model(settings).map(|swapped| {
+        notices.extend(swapped);
+        settings.model.clone()
+    });
+    Msg::ModelSettled { model, notices }
+}
+
 fn spawn_update(channel: String, events: Sender<Msg>) {
     std::thread::spawn(move || {
         let notice = match crate::update::install_latest(&channel) {
@@ -733,7 +746,7 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
 
 impl App {
     fn new(agent: &Agent, setup: Setup, commands: Sender<Command>, events: Sender<Msg>) -> App {
-        let Setup { home, settings, catalog, skills, templates, modes_error, plugin_updates, model_notices, .. } = setup;
+        let Setup { home, settings, skills, templates, modes_error, plugin_updates, .. } = setup;
         let mut recent_prompts: Vec<String> = history::load(&home.join(".agents")).into_iter().map(|entry| entry.prompt).collect();
         recent_prompts.drain(..recent_prompts.len().saturating_sub(100));
         let mut slash_commands: Vec<(String, String)> = BUILTIN_COMMANDS.iter().map(|(name, description)| (name.to_string(), description.to_string())).collect();
@@ -754,7 +767,6 @@ impl App {
             scroll: 0,
             home,
             settings,
-            catalog,
             context_tokens: 0,
             last_usage: Usage::default(),
             git: git_info(&agent.cwd),
@@ -808,9 +820,6 @@ impl App {
         }
         for notice in plugin_updates {
             app.system("plugins", notice);
-        }
-        for notice in model_notices {
-            app.system("models", notice);
         }
         app.header_len = app.entries.len();
         app.push_history(&agent.messages);
@@ -995,6 +1004,15 @@ impl App {
             Msg::Input(_) => {}
             Msg::Agent(event) => self.agent_event(event),
             Msg::Done(result) => self.done(result),
+            Msg::ModelSettled { model, notices } => {
+                for notice in notices {
+                    self.system("models", notice);
+                }
+                match model {
+                    Ok(model) => self.settings.model = model,
+                    Err(error) => self.push(Item::Error(error)),
+                }
+            }
             Msg::Resumed { id, path, messages, spent, notice } => {
                 self.working = None;
                 self.spent = spent;
@@ -1074,7 +1092,7 @@ impl App {
             Msg::Changes(Ok(Some(files))) => self.panel = Some(Panel::Changes { files, index: 0 }),
             Msg::Changes(Err(error)) => self.push(Item::Error(error)),
             Msg::Context { split, session } => {
-                let window = self.settings.context_window(self.model());
+                let window = self.context_window();
                 self.push(Item::Lines(context_lines(split, window, session, self.last_usage)));
             }
             Msg::Rewound { messages, files, entry } => {
@@ -1353,16 +1371,28 @@ impl App {
         if let Err(error) = modes::fetch(&self.home, &self.settings.ponytail, &self.settings.caveman, false) {
             self.push(Item::Error(error));
         }
-        let model = self.model().clone();
-        let cheap_model = models::small_model(&self.catalog, &model).id.clone();
-        let _ = self.commands.send(Command::Apply(Box::new(self.settings.clone()), model, cheap_model));
+        let _ = self.commands.send(Command::Apply(Box::new(self.settings.clone())));
         if let Err(error) = settings::save(&self.home, &self.settings) {
             self.push(Item::Error(error));
         }
     }
 
-    fn model(&self) -> &Model {
-        self.catalog.iter().find(|m| m.id == self.settings.model).expect("settings.model comes from the catalog")
+    /// None until the model lists load.
+    fn model(&self) -> Option<&Model> {
+        self.client.catalog().iter().find(|m| m.id == self.settings.model)
+    }
+
+    /// The settings key of the current model; says so when the model lists are still loading.
+    fn loaded_model_key(&mut self) -> Option<String> {
+        let key = self.model().map(model_key);
+        if key.is_none() {
+            self.system("models", MODELS_STILL_LOADING);
+        }
+        key
+    }
+
+    fn context_window(&self) -> u64 {
+        self.model().map_or(0, |model| self.settings.context_window(model))
     }
 
     fn enabled_skills(&self) -> impl Iterator<Item = &Skill> {
@@ -1545,18 +1575,18 @@ impl App {
             }
             "thinking" => self.push(Item::Error(format!("Unknown thinking level {args}. Levels: {}", THINKING_LEVELS.join(", ")))),
             "context-window" if args.is_empty() => {
-                self.system("context-window", format!("{}. Set 100k to 1M or auto for this model, per provider in /settings", tokens(self.settings.context_window(self.model()))))
+                self.system("context-window", format!("{}. Set 100k to 1M or auto for this model, per provider in /settings", tokens(self.context_window())))
             }
             "context-window" if args == "auto" => {
-                let key = model_key(self.model());
+                let Some(key) = self.loaded_model_key() else { return };
                 self.update_settings(|s| {
                     s.context_windows.remove(&key);
                 });
-                self.system("context-window", format!("Back to {}", tokens(self.settings.context_window(self.model()))));
+                self.system("context-window", format!("Back to {}", tokens(self.context_window())));
             }
             "context-window" => match parse_context_window(args) {
                 Some(window) => {
-                    let key = model_key(self.model());
+                    let Some(key) = self.loaded_model_key() else { return };
                     self.system("context-window", format!("Set {key} to {}", tokens(window)));
                     self.update_settings(|s| {
                         s.context_windows.insert(key, window);
@@ -1570,7 +1600,7 @@ impl App {
             },
             "session" => {
                 let file = self.session_path.clone().unwrap_or_else(|| "not saved".into());
-                let window = self.settings.context_window(self.model());
+                let window = self.context_window();
                 let percent = (self.context_tokens * 100).checked_div(window).unwrap_or(0);
                 let info = format!("{}\nFile: {file}\nContext: {} of {} ({percent}%)", self.session_id, tokens(self.context_tokens), tokens(window));
                 self.system("session", info);
@@ -2184,7 +2214,7 @@ impl App {
     fn models_key(&mut self, key: KeyEvent) {
         let Some(Panel::Models { row, query, index, from_settings }) = self.panel.as_mut() else { return };
         let (row, back) = (*row, from_settings.then_some(Panel::Settings { row: *row, query: Editor::new() }));
-        let matches = matching_models(&self.catalog, row, &query.text());
+        let matches = matching_models(self.client.catalog(), row, &query.text());
         match key.code {
             KeyCode::Esc => self.panel = back,
             KeyCode::Up => *index = index.saturating_sub(1),
@@ -2204,14 +2234,14 @@ impl App {
     }
 
     fn open_context_windows(&mut self) {
-        let current = model_key(self.model());
-        let index = context_window_targets(&self.catalog, 1, "").iter().position(|(key, _)| *key == current).unwrap_or(0);
+        let Some(current) = self.loaded_model_key() else { return };
+        let index = context_window_targets(self.client.catalog(), 1, "").iter().position(|(key, _)| *key == current).unwrap_or(0);
         self.panel = Some(Panel::ContextWindows { tab: 1, query: Editor::new(), index });
     }
 
     fn context_windows_key(&mut self, key: KeyEvent) {
         let Some(Panel::ContextWindows { tab, query, index }) = self.panel.as_mut() else { return };
-        let targets = context_window_targets(&self.catalog, *tab, &query.text());
+        let targets = context_window_targets(self.client.catalog(), *tab, &query.text());
         match key.code {
             KeyCode::Esc => self.panel = Some(Panel::Settings { row: CONTEXT_WINDOW_ROW, query: Editor::new() }),
             KeyCode::Tab | KeyCode::BackTab => {
@@ -2261,7 +2291,11 @@ impl App {
 
     /// Streams the answer on its own thread with the current model and thinking level, no tools.
     fn ask_btw(&mut self, question: String) {
-        let (model, max_tokens, thinking) = (self.settings.model.clone(), self.model().max_tokens, self.settings.thinking.clone());
+        let Some(max_tokens) = self.model().map(|m| m.max_tokens) else {
+            self.system("btw", MODELS_STILL_LOADING);
+            return;
+        };
+        let (model, thinking) = (self.settings.model.clone(), self.settings.thinking.clone());
         let btw = self.btw.as_mut().expect("asked from an open btw thread");
         btw.turns.push((question, String::new()));
         btw.streaming = true;
@@ -2316,7 +2350,7 @@ impl App {
     /// The model picker for settings `row`, on the current model when it matches `query`.
     fn open_models(&mut self, row: usize, query: &str, from_settings: bool) {
         let current = model_setting(&mut self.settings, row).clone();
-        let index = matching_models(&self.catalog, row, query).iter().position(|m| m.map_or("", |m| &m.id) == current).unwrap_or(0);
+        let index = matching_models(self.client.catalog(), row, query).iter().position(|m| m.map_or("", |m| &m.id) == current).unwrap_or(0);
         self.panel = Some(Panel::Models { row, query: Editor::from_text(query), index, from_settings });
     }
 
@@ -2368,7 +2402,7 @@ impl App {
         let fallback_model = if s.fallback_model.is_empty() { "auto" } else { &s.fallback_model };
         let model = self.model();
         [
-            vec![span(s.model.clone(), BRIGHT.bold())],
+            vec![span(model.map_or(LOADING_MODELS.into(), |m| format!("{} · {}", m.provider, m.id)), BRIGHT.bold())],
             choices(THINKING_LEVELS.map(String::from), &s.thinking),
             choices(MODES.map(|m| m.label().to_string()), s.permission_mode.label()),
             choices(["off", "on"].map(String::from), on_off(s.auto_compact)),
@@ -2381,7 +2415,10 @@ impl App {
             choices(SWITCH_AT_PERCENT.map(switch_label), &switch_label(s.switch_at_percent)),
             choices(Policy::ALL.map(|p| p.label().to_string()), s.when_all_over_limit.label()),
             vec![span(fallback_model, BRIGHT.bold())],
-            vec![span(tokens(s.context_window(model)), BRIGHT.bold()), span(format!("  {}", window_source(s, model)), MUTED)],
+            match model {
+                Some(model) => vec![span(tokens(s.context_window(model)), BRIGHT.bold()), span(format!("  {}", window_source(s, model)), MUTED)],
+                None => vec![span(LOADING_MODELS, MUTED)],
+            },
             choices(PONYTAIL_LEVELS.map(String::from), &s.ponytail),
             choices(CAVEMAN_LEVELS.map(String::from), &s.caveman),
             optional_tool(on_off(s.rtk), "rtk"),
@@ -2441,7 +2478,7 @@ impl App {
                 view.render(width, PANEL_ROWS)
             }
             Panel::ContextWindows { tab, query, index } => {
-                let rows: Vec<panel::Row> = context_window_targets(&self.catalog, *tab, &query.text())
+                let rows: Vec<panel::Row> = context_window_targets(self.client.catalog(), *tab, &query.text())
                     .into_iter()
                     .map(|(target, model)| {
                         let mut right = choices(CONTEXT_WINDOWS.map(context_window_label), &context_window_label(self.settings.context_windows.get(&target).copied()));
@@ -2463,7 +2500,7 @@ impl App {
                 view.render(width, PANEL_ROWS)
             }
             Panel::Models { row, query, index, .. } => {
-                let rows: Vec<panel::Row> = matching_models(&self.catalog, *row, &query.text())
+                let rows: Vec<panel::Row> = matching_models(self.client.catalog(), *row, &query.text())
                     .into_iter()
                     .map(|m| match m {
                         Some(m) => panel::Row { left: m.id.clone(), right: vec![span(model_owners(m), MUTED)] },
@@ -3290,8 +3327,7 @@ impl App {
             Plan::Drafting => left.push(span(" plan", WARN)),
             Plan::Ready(_) => left.push(span(" plan ready", WARN)),
         }
-        let model = self.model();
-        let percent = (self.context_tokens * 100).checked_div(self.settings.context_window(model)).unwrap_or(0);
+        let percent = (self.context_tokens * 100).checked_div(self.context_window()).unwrap_or(0);
         let mut right = Line::default();
         for status in self.plugins.statuses() {
             for (text, tone) in status {
@@ -3305,7 +3341,7 @@ impl App {
             }
             right.push(span("  ", MUTED));
         }
-        right.push(span(models::short_label(model), MUTED));
+        right.push(span(self.model().map_or(LOADING_MODELS.into(), models::short_label), MUTED));
         right.push(span(" ", PLAIN));
         right.push(span(&self.settings.thinking, thinking_style(&self.settings.thinking)));
         if self.context_tokens > 0 {

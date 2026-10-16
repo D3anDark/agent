@@ -307,8 +307,9 @@ impl Agent {
 
     /// Sent with every plugin message; see plugins/README.md.
     pub fn plugin_context(&self) -> Value {
-        let provider = &self.client.catalog().iter().find(|m| m.id == self.model).expect("the model comes from the catalog").provider;
-        let (account_name, account_id) = self.client.account(provider).unzip();
+        // None when every model list failed at startup.
+        let provider = self.client.catalog().iter().find(|m| m.id == self.model).map(|m| m.provider.as_str());
+        let (account_name, account_id) = provider.and_then(|provider| self.client.account(provider)).unzip();
         json!({
             "provider": provider,
             "model": self.model,
@@ -928,7 +929,7 @@ impl Agent {
     }
 
     /// Applies settings changed in /settings; `model` is the catalog entry for `settings.model`, `cheap_model` its provider's cheapest.
-    pub fn apply(&mut self, settings: &Settings, model: &Model, cheap_model: &str) {
+    fn apply(&mut self, settings: &Settings, model: &Model, cheap_model: &str) {
         self.model = settings.model.clone();
         self.effort = settings.thinking.clone();
         self.context_window = settings.context_window(model);
@@ -947,10 +948,29 @@ impl Agent {
         self.system = prompt::system_prompt(&self.agent_dir, &self.cwd, &settings.disabled_skills);
     }
 
+    /// Applies `settings`, swapping a model no account lists for one an account lists, then for OpenRouter's public list.
+    /// Returns the notice for a swapped model.
+    pub fn settle_model(&mut self, settings: &mut Settings) -> Result<Option<String>, String> {
+        let catalog = self.client.catalog();
+        let model = catalog.iter().find(|m| m.id == settings.model).or_else(|| catalog.iter().find(|m| !m.accounts.is_empty())).or_else(|| catalog.first());
+        let Some(model) = model.cloned() else {
+            return Err("No provider listed any model.".into());
+        };
+        let mut notice = None;
+        if model.id != settings.model {
+            notice = Some(format!("{} is not on any account's model list; using {}.", settings.model, model.id));
+            settings.model = model.id.clone();
+        }
+        let cheap_model = api::models::small_model(catalog, &model).id.clone();
+        self.apply(settings, &model, &cheap_model);
+        Ok(notice)
+    }
+
     /// Starts an empty session (unsaved if the current one is unsaved).
     pub fn new_session(&mut self) -> Result<(), String> {
         self.session = Session::start(&self.sessions_dir, self.session.path.is_some(), &self.cwd, &self.model)?;
         self.load(History::default());
+        self.announce_session();
         Ok(())
     }
 
@@ -960,6 +980,7 @@ impl Agent {
         self.session = session;
         let messages = history.messages.clone();
         self.load(history);
+        self.announce_session();
         Ok(messages)
     }
 
@@ -1058,6 +1079,10 @@ impl Agent {
         self.last_context_tokens = 0;
         self.nested_instructions.clear();
         self.checkpoints = history.checkpoints;
+    }
+
+    /// Tells plugins the session started; needs the settled model for the context's provider.
+    pub fn announce_session(&self) {
         self.plugins.event(json!({"type": "session_start", "context": self.plugin_context()}));
     }
 

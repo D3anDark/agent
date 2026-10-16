@@ -31,7 +31,10 @@ pub fn fetch(home: &Path, ponytail: &str, caveman: &str, refresh: bool) -> Resul
         match download(&url) {
             Ok(rules) => {
                 fs::create_dir_all(path.parent().expect("cache_path has a parent")).map_err(|e| format!("Cannot create {}: {e}", path.display()))?;
-                fs::write(&path, rules).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+                // The startup refresh runs while the agent reads the rules; a rename never shows a half-written file.
+                let partial = path.with_extension("partial");
+                fs::write(&partial, rules).map_err(|e| format!("Cannot write {}: {e}", partial.display()))?;
+                fs::rename(&partial, &path).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
             }
             Err(e) if !cached => return Err(format!("Cannot download the {skill} rules from {url}: {e}")),
             Err(_) => {} // offline: the cached copy still works
