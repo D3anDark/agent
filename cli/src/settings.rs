@@ -160,9 +160,13 @@ fn default_lsp_servers() -> BTreeMap<String, LspServer> {
     servers.into_iter().map(|(language, command, extensions, roots)| (language.to_string(), LspServer { command: command.to_string(), extensions: owned(extensions), roots: owned(roots) })).collect()
 }
 
+/// Editors fetch it for completion; `settings_schema_matches_what_save_writes` keeps it in step with `save`.
+const SCHEMA_URL: &str = "https://raw.githubusercontent.com/rokartur/agent/main/cli/src/settings.schema.json";
+
 pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
     let path = path(home);
     let value = json!({
+        "$schema": SCHEMA_URL,
         "model": settings.model,
         "thinking": settings.thinking,
         "permission_mode": settings.permission_mode.label(),
@@ -225,6 +229,39 @@ mod tests {
         save(&home, &settings).unwrap();
         assert_eq!(load(&home), settings);
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn settings_schema_matches_what_save_writes() {
+        let home = std::env::temp_dir().join(format!("agent-settings-schema-{}", std::process::id()));
+        save(&home, &load(&home)).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(path(&home)).unwrap()).unwrap();
+        std::fs::remove_dir_all(&home).unwrap();
+        let schema: Value = serde_json::from_str(include_str!("settings.schema.json")).unwrap();
+        assert_eq!(written["$schema"], SCHEMA_URL);
+        assert_same_keys(&written, &schema, "settings");
+        assert_same_keys(&written["lsp"]["rust"], &schema["properties"]["lsp"]["additionalProperties"], "lsp.rust");
+        let properties = &schema["properties"];
+        assert_eq!(properties["thinking"]["enum"], json!(crate::tui::THINKING_LEVELS));
+        assert_eq!(properties["subagents"]["properties"]["implementation_effort"]["enum"], json!(crate::tui::THINKING_LEVELS));
+        assert_eq!(properties["permission_mode"]["enum"], json!(crate::agent::permissions::MODES.map(|mode| mode.label())));
+        assert_eq!(properties["accounts"]["properties"]["when_all_over_limit"]["enum"], json!(Policy::ALL.map(|policy| policy.label())));
+        assert_eq!(properties["ponytail"]["enum"], json!(crate::agent::modes::PONYTAIL_LEVELS));
+        assert_eq!(properties["caveman"]["enum"], json!(crate::agent::modes::CAVEMAN_LEVELS));
+        assert_eq!(properties["update_channel"]["enum"], json!(crate::update::CHANNELS));
+    }
+
+    /// Every object `save` writes has exactly the properties its schema lists, nested objects included.
+    fn assert_same_keys(written: &Value, schema: &Value, at: &str) {
+        let properties = schema["properties"].as_object().unwrap();
+        let written_keys: Vec<&String> = written.as_object().unwrap().keys().collect();
+        let schema_keys: Vec<&String> = properties.keys().collect();
+        assert_eq!(written_keys, schema_keys, "{at}");
+        for (key, property) in properties {
+            if property["properties"].is_object() {
+                assert_same_keys(&written[key], property, &format!("{at}.{key}"));
+            }
+        }
     }
 
     #[test]

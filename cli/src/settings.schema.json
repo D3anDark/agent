@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "agent settings",
+  "description": "~/.agents/settings.json, edited by /settings. A missing or invalid value falls back to its default.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "model": { "type": "string", "default": "claude-opus-5-5" },
+    "thinking": { "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"], "default": "high" },
+    "permission_mode": { "enum": ["ask", "auto", "full access"], "default": "ask" },
+    "auto_compact": { "type": "boolean", "default": true },
+    "reserve_tokens": { "type": "integer", "minimum": 0, "default": 16384, "description": "Context tokens kept free for the answer; compaction starts before they run out." },
+    "keep_recent_tokens": { "type": "integer", "minimum": 0, "default": 20000, "description": "Recent tokens compaction keeps verbatim." },
+    "expand_tools": { "type": "boolean", "default": false },
+    "context_windows": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 1 },
+      "default": {},
+      "description": "Keyed by provider (\"anthropic\") or model (\"anthropic/claude-opus-5-5\"); the model key wins."
+    },
+    "disabled_skills": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "disabled_plugins": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "plugin_settings": { "type": "object", "default": {} },
+    "ponytail": { "enum": ["off", "lite", "full", "ultra"], "default": "full" },
+    "caveman": { "enum": ["off", "full", "ultra", "wenyan"], "default": "off" },
+    "rtk": { "type": "boolean", "default": true },
+    "headroom": { "type": "boolean", "default": false, "description": "Route model requests through a local headroom proxy." },
+    "notifications": { "type": "boolean", "default": true },
+    "scroll_lines": { "type": "integer", "minimum": 1, "default": 3 },
+    "copy_on_select": { "type": "boolean", "default": true },
+    "update_channel": { "enum": ["latest", "pre-release"], "default": "latest" },
+    "on_start": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Shell commands the TUI runs in the background at start." },
+    "lsp": {
+      "type": "object",
+      "description": "Language name to the server that checks a file after each edit. Built in: typescript, rust, swift, go, python, cpp, php. A field you leave out keeps its built-in value; a new name adds a language.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string", "description": "Program and arguments, split on spaces. An empty string turns the language off." },
+          "extensions": { "type": "array", "items": { "type": "string" }, "description": "File extensions without the dot." },
+          "roots": { "type": "array", "items": { "type": "string" }, "description": "Files that mark a project root; the server starts in the nearest directory above the file that has one." }
+        }
+      }
+    },
+    "condense": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "model": { "type": "string", "default": "", "description": "Empty means the default summarizer for the provider." },
+        "min_batch_chars": { "type": "integer", "minimum": 0, "default": 1000 }
+      }
+    },
+    "subagents": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "concurrency": { "type": "integer", "minimum": 1, "default": 4 },
+        "implementation_effort": { "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"], "default": "medium" }
+      }
+    },
+    "accounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "switch_at_percent": { "type": "integer", "minimum": 0, "maximum": 100, "default": 90 },
+        "when_all_over_limit": { "enum": ["least-used", "block", "other-provider"], "default": "least-used" },
+        "fallback_model": { "type": "string", "default": "", "description": "Empty means the other provider's default model." },
+        "default": { "type": "object", "additionalProperties": { "type": "string" }, "default": {}, "description": "Provider to account name, used first while under the limit." }
+      }
+    }
+  }
+}

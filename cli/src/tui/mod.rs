@@ -52,7 +52,7 @@ use selection::{Point, Selection};
 
 const WORKING: &str = "Working";
 const TRANSCRIBING: &str = "Transcribing";
-const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const TOOL_OUTPUT_LINES: usize = 20;
 
 const DIM: Style = Style::fg(241);
