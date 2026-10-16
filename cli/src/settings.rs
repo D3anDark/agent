@@ -74,6 +74,8 @@ pub struct LspServer {
 }
 
 pub const PRUNE_SESSIONS: [&str; 6] = ["never", "24h", "3d", "7d", "14d", "30d"];
+/// Below this a condensed batch costs more in cache rewrites than its summary saves on later cache reads.
+pub const CONDENSE_MIN_BATCH_CHARS: u64 = 10_000;
 
 impl Settings {
     pub fn context_window(&self, model: &Model) -> u64 {
@@ -115,7 +117,7 @@ pub fn load(home: &Path) -> Settings {
         expand_tools: own["expand_tools"].as_bool().unwrap_or(false),
         condense: own["condense"]["enabled"].as_bool().unwrap_or(true),
         condense_model: own["condense"]["model"].as_str().unwrap_or_default().to_string(),
-        condense_min_batch_chars: own["condense"]["min_batch_chars"].as_u64().unwrap_or(1000),
+        condense_min_batch_chars: own["condense"]["min_batch_chars"].as_u64().unwrap_or(CONDENSE_MIN_BATCH_CHARS).max(CONDENSE_MIN_BATCH_CHARS),
         subagent_concurrency: own["subagents"]["concurrency"].as_u64().unwrap_or(4) as usize,
         subagent_effort: own["subagents"]["implementation_effort"].as_str().unwrap_or("medium").to_string(),
         switch_at_percent: own["accounts"]["switch_at_percent"].as_u64().unwrap_or(90),
@@ -227,6 +229,17 @@ pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn condense_batches_below_the_floor_are_raised_to_it() {
+        let home = std::env::temp_dir().join(format!("agent-condense-floor-{}", std::process::id()));
+        std::fs::create_dir_all(path(&home).parent().unwrap()).unwrap();
+        for (written, loaded) in [(1000, CONDENSE_MIN_BATCH_CHARS), (40_000, 40_000)] {
+            std::fs::write(path(&home), json!({"condense": {"min_batch_chars": written}}).to_string()).unwrap();
+            assert_eq!(load(&home).condense_min_batch_chars, loaded);
+        }
+        std::fs::remove_dir_all(&home).unwrap();
+    }
 
     #[test]
     fn settings_survive_a_save() {

@@ -1033,7 +1033,9 @@ impl Agent {
     }
 
     fn tool_schemas(&self, loaded: &[String]) -> Value {
-        tools::schemas(loaded, &subagent::swarm_prompt(&self.agent_dir, &self.cwd, &self.subagent_effort))
+        // Condensed batches of a resumed session keep their originals reachable after condense is turned off.
+        let context_tree_query = self.condense.enabled || !self.condensed.is_empty();
+        tools::schemas(loaded, &subagent::swarm_prompt(&self.agent_dir, &self.cwd, &self.subagent_effort), context_tree_query)
     }
 
     /// Replaces the conversation state with a saved (or empty) session's.

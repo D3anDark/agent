@@ -53,7 +53,7 @@
       "properties": {
         "enabled": { "type": "boolean", "default": true },
         "model": { "type": "string", "default": "", "description": "Empty means the default summarizer for the provider." },
-        "min_batch_chars": { "type": "integer", "minimum": 0, "default": 1000 }
+        "min_batch_chars": { "type": "integer", "minimum": 10000, "default": 10000 }
       }
     },
     "subagents": {

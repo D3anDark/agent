@@ -35,9 +35,11 @@ pub const GROUPS: [(&str, &[&str]); 3] = [
 ];
 
 /// The base tools plus those of the `loaded` groups, in tools.json order; `subagent` carries the swarm prompt like jcode's `swarm`.
-pub fn schemas(loaded: &[String], swarm_prompt: &str) -> Value {
+pub fn schemas(loaded: &[String], swarm_prompt: &str, context_tree_query: bool) -> Value {
     let all: Vec<Value> = serde_json::from_str(SCHEMAS).expect("tools.json is valid JSON");
-    let hidden = |name: &str| GROUPS.iter().any(|(group, names)| names.contains(&name) && !loaded.iter().any(|l| l == group));
+    let hidden = |name: &str| {
+        (name == "context_tree_query" && !context_tree_query) || GROUPS.iter().any(|(group, names)| names.contains(&name) && !loaded.iter().any(|l| l == group))
+    };
     let mut tools: Vec<Value> = all.into_iter().filter(|tool| !hidden(tool["name"].as_str().unwrap_or_default())).collect();
     if let Some(tool) = tools.iter_mut().find(|tool| tool["name"] == "subagent") {
         let base = tool["description"].as_str().unwrap_or_default();
@@ -361,6 +363,13 @@ mod tests {
 
     fn run_bash(input: Value, abort: &Arc<AtomicBool>) -> (String, bool) {
         run("bash", &input, Path::new("/tmp"), &mut Anchors::new("t"), &Rtk::OFF, abort)
+    }
+
+    #[test]
+    fn context_tree_query_is_offered_only_when_asked() {
+        let offers = |query: bool| schemas(&[], "", query).as_array().unwrap().iter().any(|tool| tool["name"] == "context_tree_query");
+        assert!(offers(true));
+        assert!(!offers(false));
     }
 
     #[test]

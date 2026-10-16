@@ -262,7 +262,7 @@ const CONTEXT_WINDOWS: [Option<u64>; 5] = [
 ];
 const RESERVE_TOKENS: [u64; 5] = [16_384, 32_768, 65_536, 100_000, 150_000];
 const KEEP_RECENT_TOKENS: [u64; 4] = [10_000, 20_000, 40_000, 80_000];
-const CONDENSE_MIN_CHARS: [u64; 4] = [500, 1000, 2000, 5000];
+const CONDENSE_MIN_CHARS: [u64; 4] = [10_000, 20_000, 40_000, 80_000];
 // 0 = never switch accounts.
 const SWITCH_AT_PERCENT: [u64; 6] = [70, 80, 90, 95, 100, 0];
 
