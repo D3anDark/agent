@@ -162,6 +162,8 @@ enum Command {
     AccountPicked,
     /// Writes the goal the UI changed to the session.
     SaveGoal,
+    /// Writes the plan mode the UI changed to the session.
+    SavePlan,
     SaveSpent(Spent),
     /// Starts a turn from follow-ups that arrived while idle.
     FollowUps,
@@ -207,7 +209,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("ps", "Show background terminals"),
     ("subagents", "Show subagent runs"),
     ("goal", "[objective | pause | resume | stop | done] — Set a goal the agent keeps working toward, or manage it"),
-    ("plan", "[prompt] — Plan mode: read-only until you pick what to do with the plan; /plan again turns it off"),
+    ("plan", "[prompt | export [file] | implement | exit] — Plan mode: read-only until you pick what to do with the plan; /plan again turns it off"),
     ("btw", "<question> — Ask a side question without touching the session"),
     ("worktree", "[name] — Move this session to a git worktree: pick one, or name a branch to open or create"),
     ("worktree-remove", "Remove a git worktree, keeping its branch"),
@@ -602,6 +604,12 @@ fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Ms
                 }
                 Command::SaveGoal => {
                     if let Err(error) = agent.save_goal() {
+                        let _ = events.send(Msg::Agent(Event::Notice(error)));
+                    }
+                    continue;
+                }
+                Command::SavePlan => {
+                    if let Err(error) = agent.save_plan() {
                         let _ = events.send(Msg::Agent(Event::Notice(error)));
                     }
                     continue;
@@ -1988,26 +1996,36 @@ impl App {
     }
 
     /// /plan: no argument turns plan mode on, or off when it is on; a ready plan reopens its menu. Text starts planning on it.
+    /// A ready plan also takes `export [file]`, `implement` and `exit`.
     fn plan_command(&mut self, args: &str) {
-        let mut plan = self.plan.lock().unwrap();
+        if matches!(*self.plan.lock().unwrap(), Plan::Ready(_)) {
+            match args.split_once(' ').map_or((args, ""), |(word, rest)| (word, rest.trim())) {
+                ("export", "") => return self.export_plan("PLAN.md"),
+                ("export", file) => return self.export_plan(file),
+                ("implement", "") => return self.plan_action(0),
+                ("exit", "") => {
+                    self.set_plan(Plan::Off);
+                    return self.system("plan", "Plan mode off.");
+                }
+                _ => {}
+            }
+        }
         if args.is_empty() {
-            match *plan {
+            let current = self.plan.lock().unwrap().clone();
+            match current {
                 Plan::Off => {
-                    *plan = Plan::Drafting;
-                    drop(plan);
+                    self.set_plan(Plan::Drafting);
                     self.system("plan", "Plan mode on: read-only until you pick what to do with the plan.");
                 }
                 Plan::Drafting => {
-                    *plan = Plan::Off;
-                    drop(plan);
+                    self.set_plan(Plan::Off);
                     self.system("plan", "Plan mode off.");
                 }
                 Plan::Ready(_) => self.panel = Some(Panel::Plan { index: 0 }),
             }
             return;
         }
-        *plan = Plan::Drafting;
-        drop(plan);
+        self.set_plan(Plan::Drafting);
         self.push(Item::User(args.to_string()));
         self.start(Command::Prompt(args.to_string(), Vec::new()));
     }
@@ -2017,34 +2035,44 @@ impl App {
         let Plan::Ready(text) = self.plan.lock().unwrap().clone() else { return };
         match choice {
             0 => {
-                *self.plan.lock().unwrap() = Plan::Off;
+                self.set_plan(Plan::Off);
                 self.push(Item::User(plan::IMPLEMENT.into()));
                 self.start(Command::Prompt(plan::IMPLEMENT.into(), Vec::new()));
             }
             1 => {
-                *self.plan.lock().unwrap() = Plan::Off;
+                self.set_plan(Plan::Off);
                 self.entries.truncate(self.header_len);
                 self.context_tokens = 0;
                 let prompt = format!("Implement this plan:\n\n{text}");
                 self.push(Item::User(prompt.clone()));
                 self.start(Command::Fresh(prompt));
             }
-            2 => {
-                let path = self.cwd.join("PLAN.md");
-                // create_new: an existing PLAN.md is the user's, never overwrite it.
-                let written = std::fs::File::create_new(&path).and_then(|mut file| std::io::Write::write_all(&mut file, format!("{text}\n").as_bytes()));
-                match written {
-                    Ok(()) => {
-                        *self.plan.lock().unwrap() = Plan::Off;
-                        self.system("plan", format!("Exported to {}", path.display()));
-                    }
-                    Err(error) => self.push(Item::Error(format!("Cannot export to {}: {error}", path.display()))),
-                }
-            }
+            2 => self.export_plan("PLAN.md"),
             _ => {
-                *self.plan.lock().unwrap() = Plan::Drafting;
+                self.set_plan(Plan::Drafting);
                 self.system("plan", "Still planning. Say what to change.");
             }
+        }
+    }
+
+    /// Sets plan mode and writes it to the session, so resuming it comes back in the same mode.
+    fn set_plan(&mut self, plan: Plan) {
+        *self.plan.lock().unwrap() = plan;
+        let _ = self.commands.send(Command::SavePlan);
+    }
+
+    /// Writes the ready plan to `file` under the cwd. A failure keeps the plan ready so `/plan export <file>` can retry.
+    fn export_plan(&mut self, file: &str) {
+        let Plan::Ready(text) = self.plan.lock().unwrap().clone() else { return };
+        let path = self.cwd.join(file);
+        // create_new: an existing file is the user's, never overwrite it.
+        let written = std::fs::File::create_new(&path).and_then(|mut file| std::io::Write::write_all(&mut file, format!("{text}\n").as_bytes()));
+        match written {
+            Ok(()) => {
+                self.set_plan(Plan::Off);
+                self.system("plan", format!("Exported to {}", path.display()));
+            }
+            Err(error) => self.push(Item::Error(format!("Cannot export to {}: {error}. /plan export <file> writes it elsewhere.", path.display()))),
         }
     }
 
@@ -3591,6 +3619,7 @@ fn matching_args(name: &str, arg: &str) -> Vec<(String, String)> {
         "caveman" => CAVEMAN_LEVELS.iter().map(|level| (*level, "")).collect(),
         "permissions" => MODES.iter().map(|mode| (mode.label(), mode.description())).collect(),
         "goal" => vec![("pause", "Pause the goal"), ("resume", "Resume the goal"), ("stop", "Stop the goal"), ("done", "Mark the goal done")],
+        "plan" => vec![("export", "Write the ready plan to PLAN.md or the file named after it"), ("implement", "Implement the ready plan here"), ("exit", "Drop the ready plan and leave plan mode")],
         "context-window" => vec![("auto", "Drop this model's override")],
         _ => return Vec::new(),
     };
@@ -4197,6 +4226,7 @@ mod tests {
         let names = |text: &str| matching_commands(&[], text).into_iter().map(|c| c.0).collect::<Vec<_>>();
         assert_eq!(names("/thinking m"), ["thinking minimal", "thinking medium", "thinking max"]);
         assert_eq!(names("/permissions "), ["permissions ask", "permissions auto", "permissions full access"]);
+        assert_eq!(names("/plan e"), ["plan export", "plan exit"]);
         assert!(names("/thinking medium ").is_empty());
     }
 

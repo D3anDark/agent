@@ -220,6 +220,7 @@ pub struct History {
     pub condensed: Vec<Condensed>,
     pub todos: Todos,
     pub goal: Option<Goal>,
+    pub plan: Plan,
     pub loaded_groups: Vec<String>,
     pub extra_dirs: Vec<PathBuf>,
     pub spent: Spent,
@@ -656,6 +657,7 @@ impl Agent {
             return Err("Error: plan required".into());
         }
         *self.plan.lock().unwrap() = Plan::Ready(plan.to_string());
+        self.save_plan()?;
         Ok("Plan submitted. End your turn now; the user picks what happens next.".into())
     }
 
@@ -713,6 +715,11 @@ impl Agent {
 
     pub fn save_goal(&mut self) -> Result<(), String> {
         let entry = Goal::entry(self.goal.lock().unwrap().as_ref());
+        self.session.append(&entry)
+    }
+
+    pub fn save_plan(&mut self) -> Result<(), String> {
+        let entry = self.plan.lock().unwrap().entry();
         self.session.append(&entry)
     }
 
@@ -1037,6 +1044,7 @@ impl Agent {
         self.condensed = history.condensed;
         *self.todos.lock().unwrap() = history.todos;
         *self.goal.lock().unwrap() = history.goal;
+        *self.plan.lock().unwrap() = history.plan;
         self.tools = self.tool_schemas(&history.loaded_groups);
         self.loaded_groups = history.loaded_groups;
         self.extra_dirs = history.extra_dirs;
@@ -1129,6 +1137,7 @@ impl Session {
                 }
                 Some("condense") => history.condensed.push(condense::from_entry(&entry)),
                 Some("goal") => history.goal = Goal::from_entry(&entry),
+                Some("plan") => history.plan = Plan::from_entry(&entry),
                 Some("tools_loaded") => history.loaded_groups = entry["groups"].as_array().into_iter().flatten().filter_map(|g| g.as_str().map(String::from)).collect(),
                 Some("directory_added") => history.extra_dirs.extend(entry["path"].as_str().map(PathBuf::from)),
                 Some("todo") => history.todos = Todos::from_entry(&entry),
@@ -1490,6 +1499,17 @@ mod tests {
         let (_, history) = Session::resume(&dir, &session.id).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(history.extra_dirs, [PathBuf::from("/a"), PathBuf::from("/b")]);
+    }
+
+    #[test]
+    fn resumed_session_keeps_the_last_plan_mode() {
+        let dir = std::env::temp_dir().join(format!("agent-plan-{}", std::process::id()));
+        let session = Session::start(&dir, true, Path::new("/w"), "m").unwrap();
+        session.append(&Plan::Drafting.entry()).unwrap();
+        session.append(&Plan::Ready("# Plan".into()).entry()).unwrap();
+        let (_, history) = Session::resume(&dir, &session.id).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(history.plan, Plan::Ready("# Plan".into()));
     }
 
     #[test]

@@ -8,6 +8,24 @@ pub enum Plan {
     Ready(String),
 }
 
+impl Plan {
+    pub fn entry(&self) -> Value {
+        match self {
+            Plan::Off => json!({"type": "plan", "mode": "off"}),
+            Plan::Drafting => json!({"type": "plan", "mode": "drafting"}),
+            Plan::Ready(plan) => json!({"type": "plan", "mode": "ready", "plan": plan}),
+        }
+    }
+
+    pub fn from_entry(entry: &Value) -> Plan {
+        match (entry["mode"].as_str(), entry["plan"].as_str()) {
+            (Some("drafting"), _) => Plan::Drafting,
+            (Some("ready"), Some(plan)) => Plan::Ready(plan.to_string()),
+            _ => Plan::Off,
+        }
+    }
+}
+
 pub const PROMPT: &str = "<plan_mode>
 Plan mode is on. Investigate and design, change nothing. Edits, subagents, plugin tools and state-changing commands are blocked; bash and bg_start run only read-only commands (ls, cat, rg, fd, git status/log/diff/show, ...). Ask with ask_user_question when a decision cannot be inferred. When the plan is ready, call plan_mode_complete with the whole plan in Markdown as your last action. The user then picks: implement here, implement in a fresh session, export, or keep planning.
 </plan_mode>";
@@ -84,6 +102,13 @@ mod tests {
         }
         for command in ["rm -rf x", "cat a > b", "git commit -m x", "fd -x rm", "ls; touch x", "echo $(rm x)", ""] {
             assert!(blocked("bash", &json!({ "command": command })).is_some(), "{command}");
+        }
+    }
+
+    #[test]
+    fn entry_round_trips() {
+        for plan in [Plan::Off, Plan::Drafting, Plan::Ready("# Plan".into())] {
+            assert_eq!(Plan::from_entry(&plan.entry()), plan);
         }
     }
 }
