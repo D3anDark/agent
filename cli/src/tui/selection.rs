@@ -1,5 +1,5 @@
 use std::time::{Duration, Instant};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
@@ -11,29 +11,52 @@ pub struct Point {
 }
 
 /// pj's mouse selection: drag to select, copy on release, the highlight stays until the next click.
-/// A double-click selects a word and a drag that follows it grows by whole words.
+/// A double-click selects a word, a triple-click the line, and a drag that follows grows by whole words or lines.
 #[derive(Default)]
 pub struct Selection {
     anchor: Option<Point>,
     cursor: Option<Point>,
     pressed: Option<Point>,
     pub dragging: bool,
-    word: Option<(Point, Point)>,
-    last_click: Option<(Instant, Point)>,
+    unit: Option<(Unit, Point, Point)>,
+    last_click: Option<(Instant, Point, u8)>,
+}
+
+#[derive(Clone, Copy)]
+enum Unit {
+    Word,
+    Line,
+}
+
+impl Unit {
+    fn span(self, point: Point, text: &str) -> Option<(Point, Point)> {
+        match self {
+            Unit::Word => word_at(point, text),
+            Unit::Line => Some(line_at(point, text)),
+        }
+    }
 }
 
 impl Selection {
     /// Left button down at `point`, whose line reads `text`.
     pub fn press(&mut self, point: Point, text: &str) {
-        let double = self.last_click.is_some_and(|(at, last)| last == point && at.elapsed() < DOUBLE_CLICK);
-        if double && let Some(word) = word_at(point, text) {
-            self.last_click = None;
-            self.word = Some(word);
-            (self.anchor, self.cursor) = (Some(word.0), Some(word.1));
-            self.dragging = true;
+        let clicks = match self.last_click {
+            Some((at, last, clicks)) if last == point && at.elapsed() < DOUBLE_CLICK => clicks % 3 + 1,
+            _ => 1,
+        };
+        let unit = match clicks {
+            2 => Some(Unit::Word),
+            3 => Some(Unit::Line),
+            _ => None,
+        };
+        let last_click = Some((Instant::now(), point, clicks));
+        if let Some(unit) = unit
+            && let Some((start, end)) = unit.span(point, text)
+        {
+            *self = Selection { anchor: Some(start), cursor: Some(end), dragging: true, unit: Some((unit, start, end)), last_click, ..Selection::default() };
             return;
         }
-        *self = Selection { last_click: Some((Instant::now(), point)), pressed: Some(point), ..Selection::default() };
+        *self = Selection { last_click, pressed: Some(point), ..Selection::default() };
     }
 
     /// Mouse moved to `point` with the button held.
@@ -44,18 +67,18 @@ impl Selection {
             self.dragging = true;
             self.anchor = Some(pressed);
         }
-        let Some((word_start, word_end)) = self.word else {
+        let Some((unit, unit_start, unit_end)) = self.unit else {
             self.cursor = Some(point);
             return;
         };
-        let (start, end) = word_at(point, text).unwrap_or((point, point));
-        (self.anchor, self.cursor) = if before(point, word_start) { (Some(word_end), Some(start)) } else { (Some(word_start), Some(end)) };
+        let (start, end) = unit.span(point, text).unwrap_or((point, point));
+        (self.anchor, self.cursor) = if before(point, unit_start) { (Some(unit_end), Some(start)) } else { (Some(unit_start), Some(end)) };
     }
 
     /// Button released; true when a drag just finished and its text should be copied.
     pub fn release(&mut self) -> bool {
         self.pressed = None;
-        self.word = None;
+        self.unit = None;
         std::mem::take(&mut self.dragging)
     }
 
@@ -85,6 +108,11 @@ fn before(a: Point, b: Point) -> bool {
 fn word_at(point: Point, text: &str) -> Option<(Point, Point)> {
     let (start, end) = word_bounds(text, point.column)?;
     Some((Point { column: start, ..point }, Point { column: end - 1, ..point }))
+}
+
+/// First and last cell of the line under `point`.
+fn line_at(point: Point, text: &str) -> (Point, Point) {
+    (Point { column: 0, ..point }, Point { column: text.width().saturating_sub(1), ..point })
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -174,5 +202,19 @@ mod tests {
         assert!(selection.release());
         assert_eq!(selection.columns(0), Some((4, 18)));
         assert_eq!(word_bounds(text, 3), None);
+    }
+
+    #[test]
+    fn triple_click_selects_the_line_and_drags_grow_by_lines() {
+        let mut selection = Selection::default();
+        for _ in 0..3 {
+            selection.release();
+            selection.press(at(1, 6), "let foo = 1;");
+        }
+        assert_eq!(selection.columns(1), Some((0, 12)));
+        selection.drag(at(0, 2), "bar");
+        assert!(selection.release());
+        assert_eq!(selection.columns(1), Some((0, usize::MAX)));
+        assert_eq!(selection.columns(0), Some((0, 3)));
     }
 }
