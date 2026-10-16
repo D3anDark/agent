@@ -119,13 +119,12 @@ fn is_small(model: &Model) -> bool {
     model.id.contains("haiku") || model.id.contains("luna")
 }
 
-/// pi's footer label: "Claude Opus 5.5" becomes "opus 5.5". OpenRouter shows the id, since names like "Auto Router" hide whose model it is.
+/// Footer label: "Claude Opus 5.5" becomes "anthropic · opus 5.5", since one model can come from several providers.
+/// OpenRouter shows the id, since names like "Auto Router" hide whose model it is.
 pub fn short_label(model: &Model) -> String {
-    if model.provider == "openrouter" {
-        return model.id.clone();
-    }
     let lower = model.name.to_lowercase();
-    lower.strip_prefix("claude ").unwrap_or(&lower).to_string()
+    let name = if model.provider == "openrouter" { &model.id } else { lower.strip_prefix("claude ").unwrap_or(&lower) };
+    format!("{} · {name}", model.provider)
 }
 
 #[cfg(test)]
@@ -142,11 +141,11 @@ mod tests {
         let opus = Model { name: "Claude Opus 5.5".into(), ..model("anthropic", "claude-opus-5-5") };
         let terra = model("openai-codex", "gpt-5.6-terra");
         let models = [opus.clone(), model("anthropic", "claude-haiku-5-5"), terra.clone()];
-        assert_eq!(short_label(&opus), "opus 5.5");
+        assert_eq!(short_label(&opus), "anthropic · opus 5.5");
         assert_eq!(small_model(&models, &opus).id, "claude-haiku-5-5");
         assert_eq!(small_model(&models, &terra).id, "gpt-5.6-terra");
         let router = Model { name: "Auto Router".into(), ..model("openrouter", "openrouter/auto") };
-        assert_eq!(short_label(&router), "openrouter/auto");
+        assert_eq!(short_label(&router), "openrouter · openrouter/auto");
     }
 
     #[test]
