@@ -169,6 +169,8 @@ pub struct Agent {
     pub subagent_effort: String,
     /// Tool groups load_tools added; the base set is always on.
     pub loaded_groups: Vec<String>,
+    /// Stored web_search, fetch_content and source_check responses for get_search_content.
+    pub web: tools::web::Web,
     /// Directories add_directory opened to search_external_files.
     pub extra_dirs: Vec<PathBuf>,
     pub spent: Spent,
@@ -488,6 +490,7 @@ impl Agent {
             }
             "subagent" => self.subagent(input, emit),
             "bg_wait" => self.bg_wait(input),
+            "web_search" | "fetch_content" | "get_search_content" | "source_check" => self.web.run(name, input),
             "ask_user_question" => self.ask_user(input, emit),
             _ => match self.plugins.tool(name, input, &self.plugin_context(), &self.abort).or_else(|| self.mcp.tool(name, input, &self.abort)) {
                 Some(answer) => return answer,

@@ -221,6 +221,7 @@ fn run(options: Options) -> Result<(), String> {
         plan: Arc::default(),
         follow_ups: Arc::default(),
         terminals: Arc::default(),
+        web: tools::web::Web::new(&home, std::env::temp_dir().join(format!("agent-web-{}", std::process::id()))),
         subagents: Arc::default(),
         subagent_concurrency: settings.subagent_concurrency,
         subagent_effort: settings.subagent_effort.clone(),
