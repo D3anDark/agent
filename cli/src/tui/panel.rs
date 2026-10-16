@@ -3,6 +3,7 @@ use super::render::{Line, PLAIN, Style, span, truncate, width};
 
 const BRIGHT: Style = Style::fg(255).bold();
 const MUTED: Style = Style::fg(245);
+const COUNT: Style = Style::fg(241);
 
 pub struct Row {
     pub left: String,
@@ -46,7 +47,7 @@ impl Panel<'_> {
             lines.push(truncate(&line, columns));
         }
         if self.rows.len() > max_rows {
-            lines.push(vec![span(format!("  {}/{}", self.selected + 1, self.rows.len()), MUTED)]);
+            lines.extend([Vec::new(), vec![span(format!("  {}/{}", self.selected + 1, self.rows.len()), COUNT)]]);
         }
         lines.push(vec![span(self.hint, MUTED)]);
         lines
@@ -79,7 +80,8 @@ mod tests {
         let rows: Vec<Row> = (0..5).map(|i| Row { left: i.to_string(), right: Vec::new() }).collect();
         let panel = |selected| Panel { title: "Settings".into(), tabs: &[], tab: 0, search: None, rows: &rows, selected, empty: "", hint: "" };
         let lines: Vec<String> = panel(3).render(40, 2).iter().map(text).collect();
-        assert_eq!(lines[..5], ["", "Settings", "  2    ", "→ 3    ", "  4/5"]);
+        assert_eq!(lines[..6], ["", "Settings", "  2    ", "→ 3    ", "", "  4/5"]);
+        assert_eq!(panel(3).render(40, 2)[5][0].style, COUNT);
         assert_eq!(panel(3).render(40, 5).len(), 8);
     }
 

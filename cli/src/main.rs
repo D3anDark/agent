@@ -257,6 +257,9 @@ fn run(options: Options) -> Result<(), String> {
         if let Some(error) = &modes_error {
             eprintln!("{error}");
         }
+        if let Some(notice) = agent.session.fork_notice() {
+            eprintln!("{notice}");
+        }
         let result = if options.headless {
             headless_mode(&mut agent, prompt.as_deref().unwrap_or_default())
         } else {

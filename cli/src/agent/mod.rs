@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -211,6 +211,10 @@ pub struct RewindPoint {
 pub struct Session {
     pub id: String,
     pub path: Option<PathBuf>,
+    /// The session this one copies because another process had it open.
+    pub forked_from: Option<String>,
+    /// Held while the session is open, so a second process copies the session instead of interleaving its entries.
+    lock: Option<Arc<File>>,
 }
 
 /// What a saved session restores besides its id.
@@ -991,15 +995,10 @@ impl Agent {
 
     /// A new session in `cwd` holding this session's entries.
     fn copy_session(&self, cwd: &Path) -> Result<Session, String> {
-        let session = Session::start(&self.sessions_dir, self.session.path.is_some(), cwd, &self.model)?;
-        if let Some(path) = &self.session.path {
-            let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-            for line in text.lines().skip(1) {
-                let entry: Value = serde_json::from_str(line).map_err(|e| format!("{}: {e}", path.display()))?;
-                session.append(&entry)?;
-            }
+        match &self.session.path {
+            Some(path) => Session::copy(&self.sessions_dir, path, cwd, &self.model),
+            None => Session::start(&self.sessions_dir, false, cwd, &self.model),
         }
-        Ok(session)
     }
 
     /// /export: the session file as is, or for a `.md` path the conversation as plain text.
@@ -1095,19 +1094,63 @@ impl Session {
         // 8 hex chars from the clock and pid: short enough to type after `--resume`.
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() ^ ((std::process::id() as u128) << 64);
         let id = format!("{:08x}", (seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 64) as u32);
-        let session = Session { path: save.then(|| dir.join(format!("{id}.jsonl"))), id };
+        let mut session = Session { path: save.then(|| dir.join(format!("{id}.jsonl"))), id, forked_from: None, lock: None };
         if save {
             std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
         }
         session.append(&json!({"type": "session", "id": session.id, "cwd": cwd, "model": model, "timestamp": now_ms()}))?;
+        if let Some(path) = &session.path {
+            let file = File::open(path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
+            file.try_lock().map_err(|e| format!("Cannot lock {}: {e}", path.display()))?;
+            session.lock = Some(Arc::new(file));
+        }
         Ok(session)
     }
 
     /// Opens session `id`, or the one saved session whose id starts with `id`.
+    /// When another process has it open, continues in a copy so the two conversations do not interleave in one file.
     pub fn resume(dir: &Path, id: &str) -> Result<(Session, History), String> {
         let id = resolve_id(dir, id)?;
         let path = dir.join(format!("{id}.jsonl"));
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("Cannot read session {}: {e}", path.display()))?;
+        let history = Session::history(&path)?;
+        let file = File::open(&path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
+        match file.try_lock() {
+            Ok(()) => Ok((Session { id, path: Some(path), forked_from: None, lock: Some(Arc::new(file)) }, history)),
+            Err(TryLockError::WouldBlock) => Ok((Session::fork(dir, &path, id)?, history)),
+            Err(TryLockError::Error(e)) => Err(format!("Cannot lock {}: {e}", path.display())),
+        }
+    }
+
+    pub fn fork_notice(&self) -> Option<String> {
+        let from = self.forked_from.as_ref()?;
+        Some(format!("Session {from} is open in another process, continuing in copy {}", self.id))
+    }
+
+    fn fork(dir: &Path, path: &Path, id: String) -> Result<Session, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read session {}: {e}", path.display()))?;
+        let header: Value = serde_json::from_str(text.lines().next().unwrap_or_default()).map_err(|e| format!("{}:1: {e}", path.display()))?;
+        let (Some(cwd), Some(model)) = (header["cwd"].as_str(), header["model"].as_str()) else {
+            return Err(format!("{}:1: session header without cwd or model", path.display()));
+        };
+        let mut copy = Session::copy(dir, path, Path::new(cwd), model)?;
+        copy.forked_from = Some(id);
+        Ok(copy)
+    }
+
+    /// A new saved session holding every entry of `from` after its header.
+    fn copy(dir: &Path, from: &Path, cwd: &Path, model: &str) -> Result<Session, String> {
+        let session = Session::start(dir, true, cwd, model)?;
+        let text = std::fs::read_to_string(from).map_err(|e| format!("Cannot read {}: {e}", from.display()))?;
+        for line in text.lines().skip(1) {
+            let entry: Value = serde_json::from_str(line).map_err(|e| format!("{}: {e}", from.display()))?;
+            session.append(&entry)?;
+        }
+        Ok(session)
+    }
+
+    /// Replays a session file without opening the session, e.g. to show a subagent's transcript.
+    pub fn history(path: &Path) -> Result<History, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read session {}: {e}", path.display()))?;
         let mut history = History::default();
         for (number, line) in text.lines().enumerate() {
             let entry: Value = serde_json::from_str(line).map_err(|e| format!("{}:{}: {e}", path.display(), number + 1))?;
@@ -1132,6 +1175,10 @@ impl Session {
                 Some("checkpoints_reset") => history.checkpoints.clear(),
                 Some("compaction") => {
                     let first_kept = entry["first_kept"].as_u64().ok_or(format!("{}:{}: compaction without first_kept", path.display(), number + 1))?;
+                    // Two processes appending to one session file interleave their messages, so first_kept can point past them.
+                    if first_kept as usize > history.messages.len() {
+                        return Err(format!("{}:{}: compaction keeps from message {first_kept} of {}", path.display(), number + 1, history.messages.len()));
+                    }
                     history.messages = compacted(&history.messages, entry["summary"].as_str().unwrap_or_default(), first_kept as usize);
                     shift_checkpoints(&mut history.checkpoints, first_kept as usize);
                 }
@@ -1145,7 +1192,7 @@ impl Session {
                 _ => {}
             }
         }
-        Ok((Session { id: id.to_string(), path: Some(path) }, history))
+        Ok(history)
     }
 
     /// Saved sessions in `dir`, newest first. Unreadable files are skipped.
@@ -1528,6 +1575,34 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(history.messages, [user("hi"), assistant("hello")]);
         assert_eq!(history.checkpoints, [Checkpoint { at: 1, before: "t0".into(), after: "t1".into(), paths: vec!["a.txt".into()] }]);
+    }
+
+    #[test]
+    fn resuming_a_compaction_past_the_saved_messages_fails_instead_of_panicking() {
+        let dir = std::env::temp_dir().join(format!("agent-bad-compaction-{}", std::process::id()));
+        let session = Session::start(&dir, true, Path::new("/w"), "m").unwrap();
+        session.append(&json!({"type": "message", "message": user("hi")})).unwrap();
+        session.append(&json!({"type": "compaction", "summary": "S", "first_kept": 2})).unwrap();
+        let error = Session::resume(&dir, &session.id).err().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(error.ends_with(":3: compaction keeps from message 2 of 1"), "{error}");
+    }
+
+    #[test]
+    fn resuming_a_session_open_in_another_process_continues_in_a_copy() {
+        let dir = std::env::temp_dir().join(format!("agent-open-elsewhere-{}", std::process::id()));
+        let open = Session::start(&dir, true, Path::new("/w"), "m").unwrap();
+        open.append(&json!({"type": "message", "message": user("hi")})).unwrap();
+        let (copy, history) = Session::resume(&dir, &open.id).unwrap();
+        let copied = Session::history(copy.path.as_ref().unwrap()).unwrap();
+        let id = open.id.clone();
+        drop(open);
+        let (again, _) = Session::resume(&dir, &id).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_ne!(copy.id, id);
+        assert_eq!(copy.forked_from.as_deref(), Some(id.as_str()));
+        assert_eq!((history.messages, copied.messages), (vec![user("hi")], vec![user("hi")]));
+        assert_eq!((again.id, again.forked_from), (id, None));
     }
 
     #[test]

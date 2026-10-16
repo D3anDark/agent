@@ -69,7 +69,7 @@ enum Msg {
     Input(Input),
     Agent(Event),
     Done(Result<String, String>),
-    Resumed { id: String, path: Option<String>, messages: Vec<Value>, spent: Spent },
+    Resumed { id: String, path: Option<String>, messages: Vec<Value>, spent: Spent, notice: Option<String> },
     BtwDelta(String),
     BtwDone(Result<(), String>),
     Moved { id: String, path: Option<String>, cwd: PathBuf },
@@ -520,7 +520,7 @@ fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Ms
                 Command::Resume(id) => match agent.open_session(&id) {
                     Ok(messages) => {
                         let path = agent.session.path.as_ref().map(|p| p.display().to_string());
-                        let _ = events.send(Msg::Resumed { id, path, messages, spent: agent.spent });
+                        let _ = events.send(Msg::Resumed { id: agent.session.id.clone(), path, messages, spent: agent.spent, notice: agent.session.fork_notice() });
                         continue;
                     }
                     Err(error) => Err(error),
@@ -563,7 +563,7 @@ fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Ms
                 Command::Import(file) => match agent.import_session(&file) {
                     Ok(messages) => {
                         let path = agent.session.path.as_ref().map(|p| p.display().to_string());
-                        let _ = events.send(Msg::Resumed { id: agent.session.id.clone(), path, messages, spent: agent.spent });
+                        let _ = events.send(Msg::Resumed { id: agent.session.id.clone(), path, messages, spent: agent.spent, notice: agent.session.fork_notice() });
                         continue;
                     }
                     Err(error) => Err(error),
@@ -774,6 +774,9 @@ impl App {
         }
         app.header_len = app.entries.len();
         app.push_history(&agent.messages);
+        if let Some(notice) = agent.session.fork_notice() {
+            app.system("session", notice);
+        }
         app
     }
 
@@ -945,12 +948,15 @@ impl App {
             Msg::Input(_) => {}
             Msg::Agent(event) => self.agent_event(event),
             Msg::Done(result) => self.done(result),
-            Msg::Resumed { id, path, messages, spent } => {
+            Msg::Resumed { id, path, messages, spent, notice } => {
                 self.working = None;
                 self.spent = spent;
                 self.entries.truncate(self.header_len);
                 self.push_history(&messages);
                 self.system("session", format!("Resumed {}", self.session_title(&id)));
+                if let Some(notice) = notice {
+                    self.system("session", notice);
+                }
                 self.session_id = id;
                 self.session_path = path;
                 self.context_tokens = 0;
@@ -1426,7 +1432,7 @@ impl App {
             "ponytail" => self.push(Item::Error(format!("Unknown ponytail level {args}. Levels: {}", PONYTAIL_LEVELS.join(", ")))),
             "caveman" => self.push(Item::Error(format!("Unknown caveman level {args}. Levels: {}", CAVEMAN_LEVELS.join(", ")))),
             "permissions" if args.is_empty() => {
-                let modes: Vec<String> = MODES.iter().map(|m| format!("{:<12} {}", m.label(), m.description())).collect();
+                let modes: Vec<String> = MODES.iter().map(|m| format!("{:<12}\t{}", m.label(), m.description())).collect();
                 self.system("permissions", format!("mode {}\n{}\nChange with /permissions <mode> or /settings", self.settings.permission_mode.label(), modes.join("\n")));
             }
             "permissions" => match Mode::parse(args) {
@@ -1511,8 +1517,8 @@ impl App {
             }
             "hotkeys" => self.push(Item::Lines(hotkeys_lines())),
             "help" => {
-                let mut lines: Vec<String> = self.slash_commands.iter().map(|(name, description)| format!("/{name:<14} {description}")).collect();
-                lines.push(format!("/{:<14} run a skill ({} loaded)", "skill:<name>", self.enabled_skills().count()));
+                let mut lines: Vec<String> = self.slash_commands.iter().map(|(name, description)| format!("/{name:<14}\t{description}")).collect();
+                lines.push(format!("/{:<14}\trun a skill ({} loaded)", "skill:<name>", self.enabled_skills().count()));
                 self.system("help", format!("{} commands\n{}", lines.len(), lines.join("\n")));
             }
             "resume" => {
@@ -2801,13 +2807,13 @@ impl App {
         for (index, (name, description)) in matches.iter().enumerate().skip(first).take(MENU_ROWS) {
             let label = format!("{name:<31} {description}");
             if index == selected {
-                rows.push(vec![span("  ", PLAIN), span("→", OK), span(format!(" {label}"), TOOL_NAME)]);
+                rows.push(vec![span("→", OK), span(format!(" {label}"), TOOL_NAME)]);
             } else {
-                rows.push(vec![span(format!("    {label}"), TOOL_ARGS)]);
+                rows.push(vec![span(format!("  {label}"), TOOL_ARGS)]);
             }
         }
         if matches.len() > MENU_ROWS {
-            rows.push(vec![span(format!("    {}/{}", selected + 1, matches.len()), TOOL_ARGS)]);
+            rows.extend([Vec::new(), vec![span(format!("  {}/{}", selected + 1, matches.len()), DIM)]]);
         }
         rows
     }
@@ -3468,6 +3474,13 @@ fn system_lines(icon: &str, source: &str, text: &str, style: Style, width: usize
     for (index, line) in text.lines().enumerate() {
         let spans = if index == 0 {
             vec![span(icon, style), span(" ", PLAIN), span(source, style), span(" ", PLAIN), span(line, TOOL_ARGS)]
+        } else if let Some((label, description)) = line.split_once('\t') {
+            // A `label\tdescription` row wraps its description under the description column.
+            let column = vec![span(" ".repeat(3 + render::width(label)), PLAIN)];
+            let mut rows = wrap(&[span(description, TOOL_ARGS)], width, &column);
+            rows[0][0] = span(format!("  {label} "), TOOL_ARGS);
+            lines.extend(rows);
+            continue;
         } else {
             vec![span(line, TOOL_ARGS)]
         };
@@ -3831,10 +3844,7 @@ fn log_lines(text: &str, width: usize) -> Vec<Line> {
 
 /// A subagent's session rendered like the main transcript, one blank line between items.
 fn subagent_lines(path: &Path, width: usize) -> Result<Vec<Line>, String> {
-    let (Some(dir), Some(id)) = (path.parent(), path.file_stem().and_then(|stem| stem.to_str())) else {
-        return Err(format!("Not a session file: {}", path.display()));
-    };
-    let (_, history) = Session::resume(dir, id)?;
+    let history = Session::history(path)?;
     let mut lines = Vec::new();
     for item in history_items(&history.messages) {
         lines.push(Vec::new());
@@ -4200,6 +4210,13 @@ mod tests {
         let lines = system_lines("✗", "error", "aaa bbb ccc\nddd", ERROR, 13);
         let rows: Vec<String> = lines.iter().map(text).collect();
         assert_eq!(rows, ["✗ error aaa", "  bbb ccc", "  ddd"]);
+    }
+
+    #[test]
+    fn a_tabbed_log_row_wraps_its_description_under_the_description_column() {
+        let lines = system_lines("⚙", "help", "2 commands\n/plan\taaa bbb ccc\n/btw\t", SYSTEM, 16);
+        let rows: Vec<String> = lines.iter().map(text).collect();
+        assert_eq!(rows, ["⚙ help 2 ", "  commands", "  /plan aaa bbb ", "        ccc", "  /btw "]);
     }
 
     #[test]
