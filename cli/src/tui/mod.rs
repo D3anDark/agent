@@ -333,6 +333,8 @@ struct App {
     /// The last request's usage, for /context's cache line.
     last_usage: Usage,
     cwd: std::path::PathBuf,
+    /// The `@` menu's last listing and the cwd-joined query it answers.
+    path_matches: std::cell::RefCell<(PathBuf, Vec<(String, String)>)>,
     git: Git,
     plugins: crate::plugins::Plugins,
     steering: Arc<Mutex<Vec<String>>>,
@@ -709,6 +711,7 @@ impl App {
             git: git_info(&agent.cwd),
             plugins: agent.plugins.clone(),
             cwd: agent.cwd.clone(),
+            path_matches: Default::default(),
             steering: agent.steering.clone(),
             abort: agent.abort.clone(),
             permission_mode: agent.permission_mode.clone(),
@@ -2635,8 +2638,17 @@ impl App {
 
     fn menu_matches(&self) -> Vec<(String, String)> {
         match self.file_query() {
-            Some(query) => matching_paths(&self.cwd, query),
+            Some(query) => {
+                // Redraws repeat every 80 ms while the agent works, so the listing runs once per typed query.
+                let mut cached = self.path_matches.borrow_mut();
+                if cached.0 != self.cwd.join(query) {
+                    *cached = (self.cwd.join(query), matching_paths(&self.cwd, query));
+                }
+                cached.1.clone()
+            }
             None => {
+                // A closed menu forgets its listing, so typing `@` again sees files created since.
+                self.path_matches.take();
                 let mut commands = self.slash_commands.clone();
                 commands.extend(self.enabled_skills().map(|skill| (format!("skill:{}", skill.name), skill.description.split_whitespace().collect::<Vec<_>>().join(" "))));
                 commands.extend(self.plugins.commands());
@@ -3518,6 +3530,7 @@ fn matching_args(name: &str, arg: &str) -> Vec<(String, String)> {
 
 /// Entries of the query's directory whose names start with its last part, directories first with a trailing `/`.
 /// Dotfiles show only once the last part starts with a dot.
+/// A query without a `/` also lists deeper paths whose names start with it, after the top-level ones.
 fn matching_paths(cwd: &Path, query: &str) -> Vec<(String, String)> {
     let (dir, prefix) = query.split_at(query.rfind('/').map_or(0, |slash| slash + 1));
     let Ok(entries) = std::fs::read_dir(cwd.join(dir)) else { return Vec::new() };
@@ -3532,7 +3545,37 @@ fn matching_paths(cwd: &Path, query: &str) -> Vec<(String, String)> {
         paths.push((!is_dir, format!("{dir}{name}{}", if is_dir { "/" } else { "" })));
     }
     paths.sort();
+    if dir.is_empty() && !prefix.is_empty() {
+        paths.extend(nested_paths(cwd, &prefix));
+    }
     paths.into_iter().map(|(_, path)| (path, String::new())).collect()
+}
+
+/// Paths below the top level whose names start with `prefix`, from `fd` so ignored trees like target/ stay out.
+/// fd is killed after 150 ms, so a huge tree (a home directory takes 7 s) lists nothing deeper instead of freezing typing.
+fn nested_paths(cwd: &Path, prefix: &str) -> Vec<(bool, String)> {
+    let mut fd = std::process::Command::new("fd");
+    fd.args(["--color=never", "--ignore-case", "--glob", "--min-depth=2", "--max-results=50"]).current_dir(cwd);
+    fd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    if prefix.starts_with('.') {
+        fd.arg("--hidden");
+    }
+    let Ok(mut child) = fd.arg(format!("{prefix}*")).spawn() else { return Vec::new() };
+    let started = Instant::now();
+    while child.try_wait().is_ok_and(|status| status.is_none()) {
+        if started.elapsed() > Duration::from_millis(150) {
+            let _ = child.kill();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let Ok(output) = child.wait_with_output() else { return Vec::new() };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let mut paths: Vec<(bool, String)> = String::from_utf8_lossy(&output.stdout).lines().map(|path| (!path.ends_with('/'), path.to_string())).collect();
+    paths.sort();
+    paths
 }
 
 /// pj's position-only scrollbar for `visible` rows of a `total`-line transcript scrolled `scroll` lines up from the end.
@@ -4082,7 +4125,7 @@ mod tests {
     }
 
     #[test]
-    fn at_menu_lists_a_directory_with_folders_first_and_dotfiles_on_request() {
+    fn at_menu_lists_a_directory_then_nested_names_with_folders_first_and_dotfiles_on_request() {
         let root = std::env::temp_dir().join(format!("agent-at-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src/tui")).unwrap();
         for file in ["b.md", ".env", "src/main.rs"] {
@@ -4093,6 +4136,8 @@ mod tests {
         assert_eq!(paths("."), [".env"]);
         assert_eq!(paths("src/"), ["src/tui/", "src/main.rs"]);
         assert_eq!(paths("src/M"), ["src/main.rs"]);
+        assert_eq!(paths("tu"), ["src/tui/"]);
+        assert_eq!(paths("m"), ["src/main.rs"]);
         assert!(paths("nope/").is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
