@@ -2984,8 +2984,7 @@ impl App {
         self.git = git_info(&self.cwd);
     }
 
-    /// The whole screen: transcript, then status, open panel or slash menu, editor and footer right below it.
-    /// The bottom block only reaches the last row once the transcript fills the screen.
+    /// The whole screen: transcript, then status, open panel or slash menu, editor and footer pinned to the last rows.
     fn frame(&mut self, width: usize, height: usize) -> (Vec<Line>, (u16, u16)) {
         if matches!(self.panel, Some(Panel::Diff { .. })) {
             return (self.diff_view(width, height), (0, height.saturating_sub(1) as u16));
@@ -3106,6 +3105,7 @@ impl App {
             let pad = content_width.saturating_sub(line_width(&rows[row]));
             rows[row].push(span(format!("{}{glyph}", " ".repeat(pad)), MUTED));
         }
+        rows.resize(room, Vec::new());
         self.input_view = (rows.len() + editor_top, editor_height);
         let cursor_y = rows.len() + cursor.1;
         rows.extend(bottom);
