@@ -29,6 +29,7 @@
     "headroom": { "type": "boolean", "default": false, "description": "Route model requests through a local headroom proxy." },
     "notifications": { "type": "boolean", "default": true },
     "scroll_lines": { "type": "integer", "minimum": 1, "default": 3 },
+    "menu_rows": { "type": "integer", "minimum": 1, "default": 6 },
     "copy_on_select": { "type": "boolean", "default": true },
     "update_channel": { "enum": ["latest", "pre-release"], "default": "latest" },
     "on_start": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Shell commands the TUI runs in the background at start." },

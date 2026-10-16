@@ -218,11 +218,11 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("account", "Show accounts and their usage; pick one to use until it hits the limit"),
     ("quit", "Quit agent"),
 ];
-const MENU_ROWS: usize = 5;
+const MENU_ROWS: [usize; 5] = [4, 6, 8, 10, 12];
 const PANEL_ROWS: usize = 8;
 const PLAN_OPTIONS: [&str; 4] = ["Implement here", "Start fresh and implement", "Export to PLAN.md", "Keep planning"];
 const SCROLL_LINES: [usize; 5] = [1, 2, 3, 5, 10];
-const SETTING_NAMES: [&str; 23] = [
+const SETTING_NAMES: [&str; 24] = [
     "Model",
     "Thinking level",
     "Permission mode",
@@ -246,9 +246,10 @@ const SETTING_NAMES: [&str; 23] = [
     "Scroll lines",
     "Copy on select",
     "Update channel",
+    "Menu rows",
 ];
 /// Rows of `SETTING_NAMES` in the order the settings panel lists them.
-const SETTING_ORDER: [usize; 23] = [0, 1, 18, 13, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22];
+const SETTING_ORDER: [usize; 24] = [0, 1, 18, 13, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 23, 21, 22];
 const MODEL_ROWS: [usize; 3] = [0, 8, 12];
 const CONTEXT_WINDOW_ROW: usize = 13;
 const CONTEXT_WINDOWS: [Option<u64>; 5] = [
@@ -2294,11 +2295,12 @@ impl App {
             20 => s.scroll_lines = step(&SCROLL_LINES, &s.scroll_lines, forward),
             21 => s.copy_on_select = !s.copy_on_select,
             22 => s.update_channel = step(&channels, &s.update_channel, forward),
+            23 => s.menu_rows = step(&MENU_ROWS, &s.menu_rows, forward),
             _ => unreachable!("rows 0, 8, 12 and 13 open their own panels"),
         });
     }
 
-    fn setting_values(&self) -> [Line; 23] {
+    fn setting_values(&self) -> [Line; 24] {
         let s = &self.settings;
         let on_off = |value: bool| if value { "on" } else { "off" };
         let condense_model = if s.condense_model.is_empty() { "auto" } else { &s.condense_model };
@@ -2328,6 +2330,7 @@ impl App {
             choices(SCROLL_LINES.map(|n| n.to_string()), &s.scroll_lines.to_string()),
             choices(["off", "on"].map(String::from), on_off(s.copy_on_select)),
             choices(crate::update::CHANNELS.map(String::from), &s.update_channel),
+            choices(MENU_ROWS.map(|n| n.to_string()), &s.menu_rows.to_string()),
         ]
     }
 
@@ -2802,9 +2805,10 @@ impl App {
             return Vec::new();
         }
         let selected = self.menu_index.min(matches.len() - 1);
-        let first = (selected + 1).saturating_sub(MENU_ROWS);
+        let menu_rows = self.settings.menu_rows;
+        let first = (selected + 1).saturating_sub(menu_rows);
         let mut rows = vec![Vec::new()];
-        for (index, (name, description)) in matches.iter().enumerate().skip(first).take(MENU_ROWS) {
+        for (index, (name, description)) in matches.iter().enumerate().skip(first).take(menu_rows) {
             let label = format!("{name:<31} {description}");
             if index == selected {
                 rows.push(vec![span("→", OK), span(format!(" {label}"), TOOL_NAME)]);
@@ -2812,7 +2816,7 @@ impl App {
                 rows.push(vec![span(format!("  {label}"), TOOL_ARGS)]);
             }
         }
-        if matches.len() > MENU_ROWS {
+        if matches.len() > menu_rows {
             rows.extend([Vec::new(), vec![span(format!("  {}/{}", selected + 1, matches.len()), DIM)]]);
         }
         rows

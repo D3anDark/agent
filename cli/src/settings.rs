@@ -50,6 +50,8 @@ pub struct Settings {
     pub notifications: bool,
     /// Transcript lines moved per mouse wheel step.
     pub scroll_lines: usize,
+    /// Slash menu entries shown before it scrolls.
+    pub menu_rows: usize,
     /// Copy a mouse selection on release; when off, Ctrl+C copies it.
     pub copy_on_select: bool,
     /// One of `update::CHANNELS`.
@@ -73,6 +75,7 @@ impl Settings {
         let overrides = &self.context_windows;
         overrides.get(&model_key(model)).or(overrides.get(&model.provider)).copied().unwrap_or(model.context_window)
     }
+
 }
 
 pub fn model_key(model: &Model) -> String {
@@ -123,6 +126,7 @@ pub fn load(home: &Path) -> Settings {
         headroom: own["headroom"].as_bool().unwrap_or(false),
         notifications: own["notifications"].as_bool().unwrap_or(true),
         scroll_lines: own["scroll_lines"].as_u64().unwrap_or(3) as usize,
+        menu_rows: own["menu_rows"].as_u64().unwrap_or(6) as usize,
         copy_on_select: own["copy_on_select"].as_bool().unwrap_or(true),
         update_channel: own["update_channel"].as_str().unwrap_or("latest").to_string(),
         on_start: own["on_start"].as_array().into_iter().flatten().filter_map(|command| Some(command.as_str()?.to_string())).collect(),
@@ -188,6 +192,7 @@ pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
         "headroom": settings.headroom,
         "notifications": settings.notifications,
         "scroll_lines": settings.scroll_lines,
+        "menu_rows": settings.menu_rows,
         "copy_on_select": settings.copy_on_select,
         "update_channel": settings.update_channel,
         "on_start": settings.on_start,
@@ -227,6 +232,7 @@ mod tests {
         settings.headroom = true;
         settings.notifications = false;
         settings.scroll_lines = 10;
+        settings.menu_rows = 10;
         settings.copy_on_select = false;
         settings.update_channel = "pre-release".into();
         settings.on_start = vec!["echo started".into()];
