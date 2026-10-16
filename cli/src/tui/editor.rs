@@ -2,7 +2,8 @@ use super::render::{CURSOR, Line, Style, span};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_width::UnicodeWidthChar;
 
-const BAR: Style = Style::fg(255);
+const PROMPT: Style = Style::rgb(0x79c0ff).bold();
+const SHELL_PROMPT: Style = Style::rgb(0xf778ba).bold();
 
 /// Multi-line prompt editor. `col` counts chars, not bytes.
 #[derive(Default)]
@@ -301,13 +302,13 @@ impl Editor {
         self.lines[self.row].char_indices().nth(col).map_or(self.lines[self.row].len(), |(i, _)| i)
     }
 
-    /// Rows for `width` columns behind a "> " prompt, plus the cursor as (x, row index).
+    /// Rows for `width` columns behind a "❯ " prompt, plus the cursor as (x, row index).
     /// A leading `!` (shell command) shows as a "$ " prompt instead.
     pub fn render(&self, width: usize) -> (Vec<Line>, (usize, usize)) {
         let (rows, spots) = self.wrap(width);
         let cursor = self.cursor_spot(&spots);
-        let first = if self.lines[0].starts_with('!') { "$ " } else { "> " };
-        let lines = rows.into_iter().enumerate().map(|(index, row)| vec![span(if index == 0 { first } else { "  " }, BAR), span(row, super::render::PLAIN)]).collect();
+        let (first, style) = if self.lines[0].starts_with('!') { ("$ ", SHELL_PROMPT) } else { ("❯ ", PROMPT) };
+        let lines = rows.into_iter().enumerate().map(|(index, row)| vec![span(if index == 0 { first } else { "  " }, style), span(row, super::render::PLAIN)]).collect();
         (lines, (cursor.x, cursor.row))
     }
 
@@ -462,7 +463,7 @@ mod tests {
         editor.insert("aa bbb cccc");
         let (lines, cursor) = editor.render(10);
         let rows: Vec<String> = lines.iter().map(|line| line.iter().map(|s| s.text.as_str()).collect()).collect();
-        assert_eq!((rows, cursor), (vec!["> aa bbb ".to_string(), "  cccc".to_string()], (6, 1)));
+        assert_eq!((rows, cursor), (vec!["❯ aa bbb ".to_string(), "  cccc".to_string()], (6, 1)));
     }
 
     #[test]
@@ -470,10 +471,11 @@ mod tests {
         let mut editor = Editor::new();
         let rows = |editor: &Editor| editor.render(20).0.iter().map(|line| line.iter().map(|s| s.text.as_str()).collect::<String>()).collect::<Vec<_>>();
         editor.insert("hi\nthere");
-        assert_eq!(rows(&editor), ["> hi", "  there"]);
+        assert_eq!(rows(&editor), ["❯ hi", "  there"]);
         editor.set("!ls");
         assert_eq!(rows(&editor), ["$ ls"]);
         assert_eq!(editor.render(20).1, (4, 0));
+        assert_eq!(editor.render(20).0[0][0].style, SHELL_PROMPT);
     }
 
     #[test]

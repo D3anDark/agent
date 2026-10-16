@@ -876,7 +876,7 @@ impl App {
         let mut lines = Vec::new();
         for line in (end.line..=start.line).rev() {
             let (from, to) = self.input_selection.columns(line).expect("line is inside the range");
-            // Every editor row starts with a 2-column prompt ("> ", "$ " or "  ").
+            // Every editor row starts with a 2-column prompt ("❯ ", "$ " or "  ").
             lines.push(text_in(&self.input_line(line), from.max(2), to).trim_end().to_string());
         }
         lines.join("\n")
