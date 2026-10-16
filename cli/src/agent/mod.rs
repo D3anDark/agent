@@ -1690,6 +1690,30 @@ mod tests {
     }
 
     #[test]
+    fn opening_snapshots_drops_trees_older_than_the_kept_days() {
+        let _index = SNAPSHOT_INDEX.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("agent-expire-{}", std::process::id()));
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        assert!(std::process::Command::new("git").arg("-C").arg(&work).args(["init", "-q"]).status().unwrap().success());
+        std::fs::write(work.join("a.txt"), "v1").unwrap();
+        let recent = Snapshots::open(&root, &work).unwrap().take().unwrap();
+        let git_dir = std::fs::read_dir(root.join(".agents/snapshots")).unwrap().next().unwrap().unwrap().path();
+        let refs = || {
+            let output = std::process::Command::new("git").arg("--git-dir").arg(&git_dir).args(["for-each-ref", "--format=%(refname)"]).output().unwrap();
+            String::from_utf8(output.stdout).unwrap().lines().map(String::from).collect::<Vec<_>>()
+        };
+        let recent_ref = refs().pop().unwrap();
+        let old_ref = format!("refs/snapshots/1/{recent}");
+        assert!(std::process::Command::new("git").arg("--git-dir").arg(&git_dir).args(["update-ref", &old_ref, &recent]).status().unwrap().success());
+
+        Snapshots::open(&root, &work).unwrap();
+        let kept = refs();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(kept, [recent_ref]);
+    }
+
+    #[test]
     fn session_title_prefixes_the_project_and_cuts_at_80_code_points() {
         assert_eq!(session_title(Path::new("/src/agent"), "Fix /changes diff view"), "agent｜Fix /changes diff view");
         let title = session_title(Path::new("/src/zażółć"), &"ę".repeat(100));
