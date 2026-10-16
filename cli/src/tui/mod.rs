@@ -319,6 +319,8 @@ struct Git {
     changed: usize,
     /// The main checkout, set only when the session runs in a linked worktree.
     main: Option<Worktree>,
+    /// Worktrees of this repository besides the one the session runs in.
+    others: usize,
 }
 
 struct App {
@@ -3210,6 +3212,9 @@ impl App {
         if let Some(main) = &self.git.main {
             left.push(span(format!(" → {} {}", main.branch, tilde(&main.path)), WARN));
         }
+        if self.git.others > 0 {
+            left.push(span(format!(" +{} wt", self.git.others), MUTED));
+        }
         if let Some(goal) = self.goal.lock().unwrap().as_ref() {
             left.push(span(format!(" goal {}", goal.status.as_str()), MUTED));
         }
@@ -3902,8 +3907,10 @@ fn git_info(cwd: &Path) -> Git {
     };
     let branch = run(&["branch", "--show-current"]).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).map(|b| if b.is_empty() { "detached".to_string() } else { b });
     let changed = run(&["status", "--porcelain", "--untracked-files=all"]).map_or(0, |o| o.stdout.split(|b| *b == b'\n').filter(|l| !l.is_empty()).count());
-    let main = worktree::list(cwd).ok().and_then(|(worktrees, current)| worktrees.into_iter().next().filter(|main| main.path != current));
-    Git { branch, changed, main }
+    let (worktrees, current) = worktree::list(cwd).unwrap_or_default();
+    let others = worktrees.len().saturating_sub(1);
+    let main = worktrees.into_iter().next().filter(|main| main.path != current);
+    Git { branch, changed, main, others }
 }
 
 fn context_window_label(window: Option<u64>) -> String {
