@@ -83,6 +83,7 @@ pub fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut
     let mut slots: Vec<Option<Value>> = Vec::new();
     let mut arguments: Vec<String> = Vec::new();
     let mut usage = Usage::default();
+    let mut id = String::new();
     let mut stop_reason: String;
     let mut line = String::new();
     loop {
@@ -136,6 +137,7 @@ pub fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut
             },
             "response.completed" | "response.incomplete" => {
                 let response = &event["response"];
+                id = response["id"].as_str().unwrap_or_default().to_string();
                 let cached = response["usage"]["input_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0);
                 usage.input = response["usage"]["input_tokens"].as_u64().unwrap_or(0).saturating_sub(cached);
                 usage.cache_read = cached;
@@ -159,7 +161,7 @@ pub fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut
     if stop_reason == "end_turn" && blocks.iter().any(|b| b["type"] == "tool_use") {
         stop_reason = "tool_use".into();
     }
-    Ok(Reply { message: json!({"role": "assistant", "content": blocks}), stop_reason, usage })
+    Ok(Reply { message: json!({"role": "assistant", "content": blocks}), stop_reason, usage, id, ..Reply::default() })
 }
 
 #[cfg(test)]

@@ -331,7 +331,7 @@ impl Agent {
             })?;
             self.turns += 1;
             self.usage.add(reply.usage);
-            self.session.append(&usage::entry(&self.model, reply.usage, now_ms()))?;
+            self.session.append(&usage::reply_entry(&reply, now_ms()))?;
             if let Some(goal) = self.goal.lock().unwrap().as_mut().filter(|g| g.status == GoalStatus::Active) {
                 // Cache reads are left out: they re-read context an earlier request already paid for.
                 goal.tokens_used += reply.usage.input + reply.usage.cache_write + reply.usage.output;

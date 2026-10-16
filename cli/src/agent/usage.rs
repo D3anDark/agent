@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use std::path::Path;
 
-use crate::api::Usage;
+use crate::api::{Reply, Usage};
 
 /// /usage tabs that sum session records, in this order.
 pub const SCOPES: [&str; 4] = ["Session", "24 hours", "7 days", "All"];
@@ -11,6 +11,15 @@ const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 /// The session record for one model request; `totals` sums them.
 pub fn entry(model: &str, usage: Usage, timestamp: u64) -> Value {
     json!({"type": "usage", "model": model, "timestamp": timestamp, "input": usage.input, "output": usage.output, "cache_read": usage.cache_read, "cache_write": usage.cache_write})
+}
+
+/// `entry` for a reply, naming who served it: usagefleet books Claude subscription requests on `account` and dedups on `id`.
+pub fn reply_entry(reply: &Reply, timestamp: u64) -> Value {
+    let mut entry = entry(&reply.model, reply.usage, timestamp);
+    entry["id"] = json!(reply.id);
+    entry["provider"] = json!(reply.provider);
+    entry["account"] = json!(reply.account_id);
+    entry
 }
 
 pub fn from_entry(entry: &Value) -> Usage {

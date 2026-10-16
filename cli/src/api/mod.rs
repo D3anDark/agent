@@ -52,10 +52,17 @@ struct State {
     headroom: bool,
 }
 
+#[derive(Default)]
 pub struct Reply {
     pub message: Value,
     pub stop_reason: String,
     pub usage: Usage,
+    /// The API's id for this response: Anthropic's `msg_…`, Codex's `resp_…`.
+    pub id: String,
+    /// Who served it, set by `Client::send`: an account switch or fallback can move a request off the asked-for account and model.
+    pub provider: String,
+    pub account_id: Option<String>,
+    pub model: String,
 }
 
 pub enum Delta<'a> {
@@ -199,7 +206,10 @@ impl Client {
                 }
             };
             let error = match self.try_send(&account, &request, abort, on_delta) {
-                Ok(reply) => return Ok(reply),
+                Ok(reply) => {
+                    let model = request["model"].as_str().unwrap_or_default().to_string();
+                    return Ok(Reply { provider: account.provider.clone(), account_id: account.account_id().map(String::from), model, ..reply });
+                }
                 Err(error) => error,
             };
             let key = key(&account);
@@ -508,6 +518,7 @@ fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn
     let mut tool_json: Vec<String> = Vec::new();
     let mut usage = Usage::default();
     let mut stop_reason = String::new();
+    let mut id = String::new();
     let mut line = String::new();
     let cut_off = |what: &str| ApiError::retryable(format!("Stream ended {what}."));
     loop {
@@ -523,7 +534,10 @@ fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn
         let Some(data) = line.strip_prefix("data:") else { continue };
         let event: Value = serde_json::from_str(data.trim()).map_err(|e| ApiError::fatal(format!("Bad stream event: {e}.")))?;
         match event["type"].as_str().unwrap_or_default() {
-            "message_start" => read_usage(&event["message"]["usage"], &mut usage),
+            "message_start" => {
+                id = event["message"]["id"].as_str().unwrap_or_default().to_string();
+                read_usage(&event["message"]["usage"], &mut usage);
+            }
             "content_block_start" => {
                 blocks.push(event["content_block"].clone());
                 tool_json.push(String::new());
@@ -573,7 +587,7 @@ fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn
             _ => {}
         }
     }
-    Ok(Reply { message: json!({"role": "assistant", "content": blocks}), stop_reason, usage })
+    Ok(Reply { message: json!({"role": "assistant", "content": blocks}), stop_reason, usage, id, ..Reply::default() })
 }
 
 fn append(field: &mut Value, text: &str) {
@@ -620,7 +634,7 @@ mod tests {
     #[test]
     fn stream_builds_text_thinking_and_tool_blocks() {
         let events = [
-            r#"{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":5,"output_tokens":1}}}"#,
+            r#"{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":10,"cache_read_input_tokens":5,"output_tokens":1}}}"#,
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hm"}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}"#,
@@ -644,6 +658,7 @@ mod tests {
         assert_eq!(streamed, "[hm]Hi");
         assert_eq!(reply.stop_reason, "tool_use");
         assert_eq!((reply.usage.input, reply.usage.output, reply.usage.cache_read), (10, 7, 5));
+        assert_eq!(reply.id, "msg_1");
         let content = &reply.message["content"];
         assert_eq!(content[0], json!({"type": "thinking", "thinking": "hm", "signature": "sig"}));
         assert_eq!(content[2]["input"], json!({"command": "ls"}));
