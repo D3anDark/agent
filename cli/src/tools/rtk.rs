@@ -4,13 +4,14 @@ use std::process::Stdio;
 /// shortcut: pi's build/test/git/linter output filters are not ported; `rtk rewrite` already routes those commands through rtk.
 pub struct Rtk {
     enabled: bool,
-    max_chars: usize,
+    /// The bash output tail the model sees; the rest goes to a temp file.
+    pub max_bytes: usize,
 }
 
 impl Rtk {
-    pub const ON: Rtk = Rtk { enabled: true, max_chars: 12_000 };
+    pub const ON: Rtk = Rtk { enabled: true, max_bytes: 12_000 };
     /// For commands the user typed with `!`: only the model's bash calls are rewritten.
-    pub const OFF: Rtk = Rtk { enabled: false, max_chars: 0 };
+    pub const OFF: Rtk = Rtk { enabled: false, max_bytes: super::MAX_BYTES };
 
     /// The command bash runs: rtk's rewrite of `command`, or `command` itself when rtk has none or is not installed.
     pub fn rewrite(&self, command: &str) -> String {
@@ -25,16 +26,9 @@ impl Rtk {
         }
     }
 
-    /// The bash output the model sees: ANSI codes stripped, then cut at `max_chars` like pi.
-    pub fn compact(&self, output: String) -> String {
-        if !self.enabled {
-            return output;
-        }
-        let output = strip_ansi(&output);
-        if output.chars().count() <= self.max_chars {
-            return output;
-        }
-        format!("{}...", output.chars().take(self.max_chars.saturating_sub(3)).collect::<String>())
+    /// The bash output without ANSI codes, so they spend none of `max_bytes`.
+    pub fn strip(&self, output: String) -> String {
+        if self.enabled { strip_ansi(&output) } else { output }
     }
 }
 
@@ -91,10 +85,8 @@ mod tests {
     }
 
     #[test]
-    fn output_loses_ansi_and_is_cut_like_pi() {
-        let rtk = Rtk { max_chars: 8, ..Rtk::ON };
-        assert_eq!(rtk.compact("\x1b[31mred\x1b[0m \x1b]8;;http://x\x07link\x1b]8;;\x1b\\".into()), "red link");
-        assert_eq!(rtk.compact("abcdéfghij".into()), "abcdé...");
-        assert_eq!(Rtk::OFF.compact("\x1b[1mx".into()), "\x1b[1mx");
+    fn output_loses_ansi_only_when_enabled() {
+        assert_eq!(Rtk::ON.strip("\x1b[31mred\x1b[0m \x1b]8;;http://x\x07link\x1b]8;;\x1b\\".into()), "red link");
+        assert_eq!(Rtk::OFF.strip("\x1b[1mx".into()), "\x1b[1mx");
     }
 }

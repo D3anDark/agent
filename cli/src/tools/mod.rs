@@ -110,7 +110,7 @@ fn bash(input: &Value, cwd: &Path, rtk: &Rtk, abort: &Arc<AtomicBool>) -> Result
     child.stdout.take().unwrap().read_to_end(&mut raw).map_err(|e| e.to_string())?;
     let status = child.wait().map_err(|e| e.to_string())?;
     let _ = done.send(());
-    let output = rtk.compact(truncate_tail(String::from_utf8_lossy(&raw).into_owned()));
+    let output = truncate_tail(rtk.strip(String::from_utf8_lossy(&raw).into_owned()), rtk.max_bytes);
     match killed.try_recv() {
         Ok(Killed::Timeout) => return Err(append_status(&output, &format!("Command timed out after {} seconds", timeout.unwrap()))),
         Ok(Killed::Aborted) => return Err(append_status(&output, "Command aborted")),
@@ -319,16 +319,16 @@ fn cut_head(text: &str, label: &str) -> Option<Head> {
     Some(Head { bytes: bytes.saturating_sub(1), lines, total, path: spill(text, label) })
 }
 
-/// Keeps the last MAX_LINES / MAX_BYTES of `text`, like pi's bash tool.
-fn truncate_tail(text: String) -> String {
+/// Keeps the last MAX_LINES / `max_bytes` of `text`, like pi's bash tool.
+fn truncate_tail(text: String, max_bytes: usize) -> String {
     let total = text.lines().count();
-    if total <= MAX_LINES && text.len() <= MAX_BYTES {
+    if total <= MAX_LINES && text.len() <= max_bytes {
         return text;
     }
     let mut kept = 0;
     let mut bytes = 0;
     for line in text.lines().rev().take(MAX_LINES) {
-        if bytes + line.len() + 1 > MAX_BYTES {
+        if bytes + line.len() + 1 > max_bytes {
             break;
         }
         bytes += line.len() + 1;
@@ -336,6 +336,13 @@ fn truncate_tail(text: String) -> String {
     }
     let path = spill(&text, "bash");
     let tail = text.trim_end_matches('\n');
+    if kept == 0 {
+        let mut start = tail.len() - max_bytes;
+        while !tail.is_char_boundary(start) {
+            start += 1;
+        }
+        return format!("{}\n\n[Showing the last {} of line {total}. Full output: {path}]", &tail[start..], format_size(tail.len() - start));
+    }
     let tail = &tail[tail.len() - bytes.saturating_sub(1).min(tail.len())..];
     format!("{tail}\n\n[Showing lines {}-{total} of {total}. Full output: {path}]", total - kept + 1)
 }
@@ -410,9 +417,24 @@ mod tests {
     #[test]
     fn tail_truncation_keeps_the_end() {
         let text: String = (1..=2500).map(|i| format!("{i}\n")).collect();
-        let out = truncate_tail(text);
+        let out = truncate_tail(text, MAX_BYTES);
         assert!(out.starts_with("501\n"));
         assert!(out.contains("[Showing lines 501-2500 of 2500."));
+    }
+
+    #[test]
+    fn tail_truncation_cuts_one_long_line_on_a_char_boundary() {
+        let out = truncate_tail(format!("{}x", "é".repeat(10)), 6);
+        assert!(out.starts_with("ééx\n\n[Showing the last 5B of line 1."), "{out}");
+    }
+
+    #[test]
+    fn long_bash_output_keeps_its_end_and_saves_the_full_log() {
+        // 19 KB in 2000 lines: under the line and byte caps, over rtk's 12 KB.
+        let (out, _) = run("bash", &json!({"command": "awk 'BEGIN { for (i = 1; i <= 2000; i++) print \"line\", i }'"}), Path::new("/tmp"), &mut Anchors::new("t"), &Rtk::ON, &Arc::default());
+        assert!(out.contains("\nline 2000\n"), "{}", &out[out.len().saturating_sub(300)..]);
+        let path = out.rsplit("Full output: ").next().unwrap().trim_end_matches(']');
+        assert_eq!(std::fs::read_to_string(path).unwrap(), (1..=2000).map(|i| format!("line {i}\n")).collect::<String>());
     }
 
     #[test]
