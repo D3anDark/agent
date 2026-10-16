@@ -35,6 +35,8 @@ pub struct Settings {
     pub disabled_skills: Vec<String>,
     /// Installed plugins that are not started.
     pub disabled_plugins: Vec<String>,
+    /// MCP servers from `mcp.json` that are not connected.
+    pub disabled_mcp: Vec<String>,
     /// The user's plugin settings, `{ "<plugin>": { "<key>": value } }`; see plugins/README.md.
     pub plugin_settings: serde_json::Value,
     /// One of `modes::PONYTAIL_LEVELS`.
@@ -113,6 +115,7 @@ pub fn load(home: &Path) -> Settings {
             .collect(),
         disabled_skills: own["disabled_skills"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
         disabled_plugins: own["disabled_plugins"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
+        disabled_mcp: own["disabled_mcp"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
         plugin_settings: if own["plugin_settings"].is_object() { own["plugin_settings"].clone() } else { serde_json::json!({}) },
         ponytail: own["ponytail"].as_str().unwrap_or("full").to_string(),
         caveman: own["caveman"].as_str().unwrap_or("off").to_string(),
@@ -177,6 +180,7 @@ pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
         "context_windows": settings.context_windows,
         "disabled_skills": settings.disabled_skills,
         "disabled_plugins": settings.disabled_plugins,
+        "disabled_mcp": settings.disabled_mcp,
         "plugin_settings": settings.plugin_settings,
         "ponytail": settings.ponytail,
         "caveman": settings.caveman,
@@ -214,6 +218,7 @@ mod tests {
         settings.default_accounts.insert("anthropic".into(), "work".into());
         settings.disabled_skills = vec!["remotion-render".into()];
         settings.disabled_plugins = vec!["usagefleet".into()];
+        settings.disabled_mcp = vec!["github".into()];
         settings.plugin_settings = serde_json::json!({"usagefleet": {"token": "x"}});
         settings.ponytail = "ultra".into();
         settings.caveman = "wenyan".into();

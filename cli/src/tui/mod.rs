@@ -79,6 +79,8 @@ enum Msg {
     UsageFetched,
     /// A plugin set its status or exited: redraw the footer and /plugins.
     PluginsChanged,
+    /// An MCP server connected, failed or exited: redraw /mcp.
+    McpChanged,
     Transcribed(Result<String, String>),
     RewindPoints(Vec<RewindPoint>),
     /// `entry` is where the rewound prompt sits on screen; None redraws from `messages`.
@@ -103,6 +105,7 @@ enum Panel {
     Plugins { index: usize },
     /// Every skill, including the ones `Settings.disabled_skills` leaves out of the prompt.
     Skills { index: usize },
+    Mcp { index: usize },
     /// Token totals per `usage::SCOPES`, read when /usage opens; the last tab shows subscription limits.
     Usage { tab: usize, totals: [Vec<ModelTotal>; 4] },
     /// The settings a plugin declares in plugin.json; `edit` holds a string being typed.
@@ -195,6 +198,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("todos", "Show and edit the todo list"),
     ("plugins", "Install, enable and disable plugins"),
     ("skills", "Enable and disable skills"),
+    ("mcp", "Show MCP servers: reconnect, log in, enable and disable"),
     ("usage", "Show token usage and subscription limits"),
     ("history", "Search previous prompts"),
     ("changes", "List files changed in this session and show their diffs"),
@@ -337,6 +341,7 @@ struct App {
     path_matches: std::cell::RefCell<(PathBuf, Vec<(String, String)>)>,
     git: Git,
     plugins: crate::plugins::Plugins,
+    mcp: crate::mcp::Mcp,
     steering: Arc<Mutex<Vec<String>>>,
     abort: Arc<AtomicBool>,
     permission_mode: Arc<Mutex<Mode>>,
@@ -399,6 +404,10 @@ pub fn run(agent: Agent, setup: Setup) -> Result<(), String> {
     let wake = events.clone();
     app.plugins.on_change(move || {
         let _ = wake.send(Msg::PluginsChanged);
+    });
+    let wake = events.clone();
+    app.mcp.on_change(move || {
+        let _ = wake.send(Msg::McpChanged);
     });
     spawn_worker(agent, command_inbox, events.clone());
     if crate::update::enabled() {
@@ -710,6 +719,7 @@ impl App {
             last_usage: Usage::default(),
             git: git_info(&agent.cwd),
             plugins: agent.plugins.clone(),
+            mcp: agent.mcp.clone(),
             cwd: agent.cwd.clone(),
             path_matches: Default::default(),
             steering: agent.steering.clone(),
@@ -965,6 +975,7 @@ impl App {
                 }
             }
             Msg::UsageFetched => {}
+            Msg::McpChanged => {}
             Msg::PluginsChanged => match self.plugins.take_panel() {
                 // A plugin closes only its own panel, and never replaces one the user is in.
                 Some((plugin, data)) if data.is_null() => {
@@ -1417,6 +1428,7 @@ impl App {
             "todos" => self.panel = Some(Panel::Todos { index: 0 }),
             "plugins" => self.panel = Some(Panel::Plugins { index: 0 }),
             "skills" => self.panel = Some(Panel::Skills { index: 0 }),
+            "mcp" => self.panel = Some(Panel::Mcp { index: 0 }),
             "changes" => _ = self.commands.send(Command::Changes),
             "context" => _ = self.commands.send(Command::Context),
             "history" => self.open_history(),
@@ -1714,6 +1726,29 @@ impl App {
                 }
                 _ => {}
             },
+            Some(Panel::Mcp { index }) => {
+                let (views, _) = self.mcp.list();
+                *index = (*index).min(views.len().saturating_sub(1));
+                let Some(view) = views.get(*index) else { return };
+                match code {
+                    KeyCode::Up => *index = index.saturating_sub(1),
+                    KeyCode::Down => *index = (*index + 1).min(views.len() - 1),
+                    KeyCode::Char('r') => self.mcp.reconnect(&view.name),
+                    KeyCode::Char('l') if view.http => self.mcp.login(&view.name),
+                    KeyCode::Char(' ') => {
+                        let name = view.name.clone();
+                        self.update_settings(|s| {
+                            if s.disabled_mcp.contains(&name) {
+                                s.disabled_mcp.retain(|disabled| *disabled != name);
+                            } else {
+                                s.disabled_mcp.push(name);
+                            }
+                        });
+                        self.mcp.sync(&self.settings.disabled_mcp);
+                    }
+                    _ => {}
+                }
+            }
             Some(Panel::Plugins { index }) => {
                 let views = self.plugins.list();
                 *index = (*index).min(views.len().saturating_sub(1));
@@ -2453,6 +2488,41 @@ impl App {
                     selected: *index,
                     empty: "No skills. Add one under ~/.agents/skills/<name>/SKILL.md.",
                     hint: "↑↓ navigate     space enable/disable     esc close",
+                };
+                view.render(width, PANEL_ROWS)
+            }
+            Panel::Mcp { index } => {
+                let (views, error) = self.mcp.list();
+                let name_width = views.iter().map(|view| view.name.chars().count()).max().unwrap_or(0);
+                let mut rows = Vec::new();
+                for view in &views {
+                    let disabled = self.settings.disabled_mcp.contains(&view.name);
+                    let mut right = vec![match &view.status {
+                        crate::mcp::Status::Off => span("disabled", MUTED),
+                        crate::mcp::Status::Connecting => span("connecting", MUTED),
+                        crate::mcp::Status::LoggingIn => span("logging in (browser)", WARN),
+                        crate::mcp::Status::Ready { tools } => span(format!("{tools} tools"), PLAIN),
+                        crate::mcp::Status::Failed(error) => span(error, ERROR),
+                    }];
+                    if view.logged_in {
+                        right.push(span("  logged in", MUTED));
+                    }
+                    let mark = if disabled { "[ ]" } else { "[x]" };
+                    rows.push(panel::Row { left: format!("{mark} {:<name_width$}  {}", view.name, view.target), right });
+                }
+                let empty = match &error {
+                    Some(error) => error.as_str(),
+                    None => "No MCP servers. Add one to ~/.agents/mcp.json or .mcp.json under \"mcpServers\".",
+                };
+                let view = panel::Panel {
+                    title: "MCP".into(),
+                    tabs: &[],
+                    tab: 0,
+                    search: None,
+                    rows: &rows,
+                    selected: *index,
+                    empty,
+                    hint: "↑↓ navigate     space enable/disable     r reconnect     l log in     esc close",
                 };
                 view.render(width, PANEL_ROWS)
             }

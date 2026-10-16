@@ -179,6 +179,8 @@ pub struct Agent {
     pub home: PathBuf,
     /// Shared with the UI for the footer and /plugins.
     pub plugins: crate::plugins::Plugins,
+    /// Shared with the UI for /mcp.
+    pub mcp: crate::mcp::Mcp,
     /// None outside a git repo and in print mode; then a rewind leaves files alone.
     pub snapshots: Option<Snapshots>,
     pub lsp: lsp::Lsp,
@@ -482,7 +484,7 @@ impl Agent {
             "subagent" => self.subagent(input, emit),
             "bg_wait" => self.bg_wait(input),
             "ask_user_question" => self.ask_user(input, emit),
-            _ => match self.plugins.tool(name, input, &self.plugin_context(), &self.abort) {
+            _ => match self.plugins.tool(name, input, &self.plugin_context(), &self.abort).or_else(|| self.mcp.tool(name, input, &self.abort)) {
                 Some(answer) => return answer,
                 None => return self.run_file_tool(name, input),
             },
@@ -1009,6 +1011,7 @@ impl Agent {
         let mut system = if self.modes.is_empty() { self.system.clone() } else { format!("{}\n\n{}", self.system, self.modes) };
         let mut tools = self.tools.clone();
         tools.as_array_mut().expect("tool schemas are an array").extend(self.plugins.tools());
+        tools.as_array_mut().expect("tool schemas are an array").extend(self.mcp.tools());
         if *self.plan.lock().unwrap() != Plan::Off {
             system = format!("{system}\n\n{}", plan::PROMPT);
             tools.as_array_mut().expect("tool schemas are an array").push(plan::tool());

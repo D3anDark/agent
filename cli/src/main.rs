@@ -1,5 +1,6 @@
 mod agent;
 mod api;
+mod mcp;
 mod plugins;
 mod settings;
 mod tools;
@@ -225,6 +226,7 @@ fn run(options: Options) -> Result<(), String> {
         agent_dir: agent_dir.clone(),
         home: home.clone(),
         plugins: plugins::Plugins::new(&home),
+        mcp: mcp::Mcp::new(&home, &cwd),
         snapshots: None,
         lsp: agent::lsp::Lsp::new(settings.lsp.clone()),
         checkpoints: Vec::new(),
@@ -234,6 +236,7 @@ fn run(options: Options) -> Result<(), String> {
         sessions_dir,
     };
     agent.plugins.sync(&settings.disabled_plugins, &settings.plugin_settings);
+    agent.mcp.sync(&settings.disabled_mcp);
     agent.load(history);
     // After load, which resets the tools to the session's loaded groups. Only the root spawns, and a child has no UI to ask in.
     if options.parent.is_some() {

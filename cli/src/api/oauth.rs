@@ -103,9 +103,21 @@ pub fn start_codex() -> Pending {
 /// Waits for the browser to reach the local callback, then exchanges its code. `abort` (Esc) gives up.
 pub fn finish_codex(pending: &Pending, abort: &AtomicBool) -> Result<Tokens, String> {
     let listener = TcpListener::bind(CODEX_CALLBACK_ADDRESS).map_err(|e| format!("Cannot listen on {CODEX_CALLBACK_ADDRESS} ({e}). Close the Codex CLI login and try again."))?;
+    let code = callback_code(&listener, "/auth/callback?", &pending.state, abort)?;
+    let body = form(&[("grant_type", "authorization_code"), ("client_id", CODEX_CLIENT_ID), ("code", &code), ("code_verifier", &pending.verifier), ("redirect_uri", CODEX_REDIRECT_URI)]);
+    codex_tokens(post(CODEX_TOKEN_URL, "application/x-www-form-urlencoded", &body)?)
+}
+
+pub fn refresh_codex(refresh: &str) -> Result<Tokens, String> {
+    let body = form(&[("grant_type", "refresh_token"), ("refresh_token", refresh), ("client_id", CODEX_CLIENT_ID)]);
+    codex_tokens(post(CODEX_TOKEN_URL, "application/x-www-form-urlencoded", &body)?)
+}
+
+/// Waits on `listener` for the browser's redirect to `path` (ending in `?`) and returns its `code`.
+pub fn callback_code(listener: &TcpListener, path: &str, state: &str, abort: &AtomicBool) -> Result<String, String> {
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let deadline = Instant::now() + LOGIN_TIMEOUT;
-    let code = loop {
+    loop {
         if abort.load(Ordering::Relaxed) {
             return Err("Login cancelled.".into());
         }
@@ -121,7 +133,7 @@ pub fn finish_codex(pending: &Pending, abort: &AtomicBool) -> Result<Tokens, Str
         let mut line = String::new();
         BufReader::new(&stream).read_line(&mut line).map_err(|e| e.to_string())?;
         let target = line.split_whitespace().nth(1).unwrap_or_default();
-        let Some(query) = target.strip_prefix("/auth/callback?") else {
+        let Some(query) = target.strip_prefix(path) else {
             let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n");
             continue;
         };
@@ -129,18 +141,11 @@ pub fn finish_codex(pending: &Pending, abort: &AtomicBool) -> Result<Tokens, Str
         let param = |key: &str| params.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
         let page = "<!doctype html><p>Login finished. You can close this tab.</p>";
         let _ = write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\n\r\n{page}", page.len());
-        if param("state").as_deref() != Some(pending.state.as_str()) {
+        if param("state").as_deref() != Some(state) {
             return Err("OAuth state mismatch. Start /login again.".into());
         }
-        break param("code").ok_or("Missing authorization code.")?;
-    };
-    let body = form(&[("grant_type", "authorization_code"), ("client_id", CODEX_CLIENT_ID), ("code", &code), ("code_verifier", &pending.verifier), ("redirect_uri", CODEX_REDIRECT_URI)]);
-    codex_tokens(post(CODEX_TOKEN_URL, "application/x-www-form-urlencoded", &body)?)
-}
-
-pub fn refresh_codex(refresh: &str) -> Result<Tokens, String> {
-    let body = form(&[("grant_type", "refresh_token"), ("refresh_token", refresh), ("client_id", CODEX_CLIENT_ID)]);
-    codex_tokens(post(CODEX_TOKEN_URL, "application/x-www-form-urlencoded", &body)?)
+        return param("code").ok_or_else(|| "Missing authorization code.".into());
+    }
 }
 
 fn codex_tokens(data: Value) -> Result<Tokens, String> {
@@ -165,7 +170,7 @@ pub fn open_browser(url: &str) {
 }
 
 /// POSTs to a token endpoint. The error carries the status and body, never the request, which holds the secrets.
-fn post(url: &str, content_type: &str, body: &str) -> Result<Value, String> {
+pub fn post(url: &str, content_type: &str, body: &str) -> Result<Value, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(30))).build().into();
     let response = agent.post(url).header("content-type", content_type).header("accept", "application/json").send(body).map_err(|e| format!("Token request failed: {e}."))?;
     let status = response.status().as_u16();
@@ -178,7 +183,7 @@ fn post(url: &str, content_type: &str, body: &str) -> Result<Value, String> {
 }
 
 /// RFC 7636 S256: a random 32-byte verifier and the base64url SHA-256 of it.
-fn pkce() -> (String, String) {
+pub fn pkce() -> (String, String) {
     let verifier = base64url_encode(&random_bytes::<32>());
     let challenge = challenge(&verifier);
     (verifier, challenge)
@@ -194,7 +199,7 @@ fn random_bytes<const N: usize>() -> [u8; N] {
     bytes
 }
 
-fn random_hex(len: usize) -> String {
+pub fn random_hex(len: usize) -> String {
     random_bytes::<32>()[..len].iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -232,7 +237,7 @@ fn base64url_decode(text: &str) -> Option<Vec<u8>> {
 }
 
 /// `application/x-www-form-urlencoded`, also used for query strings.
-fn form(pairs: &[(&str, &str)]) -> String {
+pub fn form(pairs: &[(&str, &str)]) -> String {
     let encode = |text: &str| -> String {
         let mut out = String::new();
         for byte in text.bytes() {
