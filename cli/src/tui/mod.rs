@@ -300,8 +300,8 @@ enum Item {
     User(String),
     Assistant { text: String, thinking: String },
     Tool { id: String, name: String, input: Value, result: Option<(String, bool)> },
-    /// fx's line after each answer: elapsed time and the prompt's uncached input and output tokens.
-    Done { took: Duration, usage: Usage },
+    /// fx's line after each answer: elapsed time, the prompt's uncached input and output tokens, and the session's total time.
+    Done { took: Duration, usage: Usage, total: Duration },
 }
 
 /// A transcript item with its rendered lines cached for one (width, expanded) pair.
@@ -765,10 +765,18 @@ impl App {
             app.push(Item::Error(error));
         }
         app.header_len = app.entries.len();
-        for item in history_items(&agent.messages) {
-            app.push(item);
-        }
+        app.push_history(&agent.messages);
         app
+    }
+
+    /// A resumed transcript has no per-answer lines, since those are not messages, so the session's total time follows it.
+    fn push_history(&mut self, messages: &[Value]) {
+        for item in history_items(messages) {
+            self.push(item);
+        }
+        if !self.spent.time.is_zero() {
+            self.push(Item::Lines(vec![vec![span(format!(" total {}", duration(self.spent.time)), MUTED)]]));
+        }
     }
 
     fn push(&mut self, item: Item) {
@@ -933,9 +941,7 @@ impl App {
                 self.working = None;
                 self.spent = spent;
                 self.entries.truncate(self.header_len);
-                for item in history_items(&messages) {
-                    self.push(item);
-                }
+                self.push_history(&messages);
                 self.system("session", format!("Resumed {}", self.session_title(&id)));
                 self.session_id = id;
                 self.session_path = path;
@@ -1015,9 +1021,7 @@ impl App {
                     Some(entry) => self.entries.truncate(entry),
                     None => {
                         self.entries.truncate(self.header_len);
-                        for item in history_items(&messages) {
-                            self.push(item);
-                        }
+                        self.push_history(&messages);
                     }
                 }
                 self.context_tokens = 0;
@@ -2874,7 +2878,7 @@ impl App {
                 let spent = Spent { input: usage.input, output: usage.output, time: took };
                 self.spent.add(spent);
                 let _ = self.commands.send(Command::SaveSpent(spent));
-                self.push(Item::Done { took, usage });
+                self.push(Item::Done { took, usage, total: self.spent.time });
             }
         }
         if matches!(*self.plan.lock().unwrap(), Plan::Ready(_)) && self.panel.is_none() {
@@ -3423,7 +3427,9 @@ fn render_item(item: &Item, width: usize, expanded: bool) -> Vec<Line> {
             lines
         }
         Item::Tool { name, input, result, .. } => render_tool(name, input, result.as_ref(), width, expanded),
-        Item::Done { took, usage } => vec![vec![span(format!(" {} (↑{} ↓{})", duration(*took), tokens(usage.input), tokens(usage.output)), MUTED)]],
+        Item::Done { took, usage, total } => {
+            vec![vec![span(format!(" {} (↑{} ↓{}) total {}", duration(*took), tokens(usage.input), tokens(usage.output), duration(*total)), MUTED)]]
+        }
     }
 }
 
