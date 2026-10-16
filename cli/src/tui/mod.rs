@@ -54,6 +54,8 @@ const WORKING: &str = "Working";
 const TRANSCRIBING: &str = "Transcribing";
 pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const TOOL_OUTPUT_LINES: usize = 20;
+/// One line per tick while a selection drag rests on the transcript edge.
+const EDGE_SCROLL: Duration = Duration::from_millis(40);
 
 const DIM: Style = Style::fg(241);
 const MUTED: Style = Style::fg(245);
@@ -367,6 +369,8 @@ struct App {
     sessions_dir: PathBuf,
     panel: Option<Panel>,
     selection: Selection,
+    /// A selection drag held on the transcript's top row or below it, replayed on a timer so the view keeps scrolling without mouse motion.
+    edge_drag: Option<(MouseEvent, Instant)>,
     /// Transcript rows on screen and the screen width, from the last frame.
     transcript_view: (usize, usize),
     /// Transcript line count and the width it was wrapped to, from the last frame.
@@ -673,7 +677,9 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
         let (width, height) = terminal::size().map_err(|e| e.to_string())?;
         let (rows, cursor) = app.frame(width as usize, height as usize);
         screen.draw(out, rows, Some(cursor)).map_err(|e| e.to_string())?;
-        let wait = if app.working.is_some() || app.hint.is_some() || app.transcribing.is_some() {
+        let wait = if app.edge_drag.is_some() {
+            EDGE_SCROLL
+        } else if app.working.is_some() || app.hint.is_some() || app.transcribing.is_some() {
             Duration::from_millis(80)
         } else if app.recording.is_some() {
             Duration::from_secs(1)
@@ -692,6 +698,11 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("The agent thread stopped.".into()),
+        }
+        if let Some((mouse, at)) = app.edge_drag
+            && at.elapsed() >= EDGE_SCROLL
+        {
+            app.mouse(mouse);
         }
         if app.hint.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_millis(1500)) {
             app.hint = None;
@@ -752,6 +763,7 @@ impl App {
             sessions_dir: agent.sessions_dir.clone(),
             panel: None,
             selection: Selection::default(),
+            edge_drag: None,
             transcript_view: (0, 0),
             transcript_size: (0, 0),
             editor_width: 0,
@@ -811,6 +823,7 @@ impl App {
     fn mouse(&mut self, mouse: MouseEvent) {
         let (visible, _) = self.transcript_view;
         let row = mouse.row as usize;
+        self.edge_drag = None;
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             self.input_selection = Selection::default();
             let (top, rows) = self.input_view;
@@ -831,10 +844,14 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => self.selection = Selection::default(),
             MouseEventKind::Drag(MouseButton::Left) if visible > 0 => {
-                if self.selection.dragging && row == 0 {
+                // Edge scroll stops at either end, so a drag whose button-up never arrives cannot scroll forever.
+                let max_scroll = self.transcript_size.0.saturating_sub(visible);
+                if self.selection.dragging && row == 0 && self.scroll < max_scroll {
                     self.scroll += 1;
-                } else if self.selection.dragging && row >= visible {
-                    self.scroll = self.scroll.saturating_sub(1);
+                    self.edge_drag = Some((mouse, Instant::now()));
+                } else if self.selection.dragging && row >= visible && self.scroll > 0 {
+                    self.scroll -= 1;
+                    self.edge_drag = Some((mouse, Instant::now()));
                 }
                 let point = self.point_at(row.min(visible - 1), mouse.column);
                 let text = self.transcript_text(point.line);
@@ -947,6 +964,8 @@ impl App {
             Msg::Input(Input::Key(key)) if key.kind != KeyEventKind::Release => {
                 // Typing proves focus, also in terminals that never report it.
                 self.focused = Some(true);
+                // A drag released outside the window sends no button-up, so a key stops its edge scroll.
+                self.edge_drag = None;
                 self.key(key, screen);
             }
             Msg::Input(Input::Paste(text)) => self.paste(&text),
@@ -3018,11 +3037,19 @@ impl App {
         // The last column is kept for the scrollbar so text does not rewrap when it appears.
         let content_width = width.saturating_sub(1);
         let (mut transcript, mut total, mut prompts) = self.transcript_tail(content_width, room + self.scroll);
-        // Scroll counts lines up from the bottom, so a scrolled-up view moves up by what streamed in below it.
+        // Scroll counts lines up from the bottom, so a scrolled-up view or a selection moves up by what streamed in below it.
         let (last_total, last_width) = self.transcript_size;
-        if self.scroll > 0 && content_width == last_width && total > last_total {
-            self.scroll += total - last_total;
-            (transcript, total, prompts) = self.transcript_tail(content_width, room + self.scroll);
+        // A new width rewraps every line, so the selected lines no longer hold the selected text.
+        if content_width != last_width {
+            self.selection = Selection::default();
+            self.edge_drag = None;
+        }
+        if content_width == last_width && total > last_total {
+            self.selection.shift(total - last_total);
+            if self.scroll > 0 || self.selection.range().is_some() {
+                self.scroll += total - last_total;
+                (transcript, total, prompts) = self.transcript_tail(content_width, room + self.scroll);
+            }
         }
         self.transcript_size = (total, content_width);
         self.scroll = self.scroll.min(transcript.len().saturating_sub(room));

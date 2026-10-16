@@ -82,6 +82,20 @@ impl Selection {
         std::mem::take(&mut self.dragging)
     }
 
+    /// `lines` new lines landed below the transcript, so every line counted from the bottom moves up by that many.
+    pub fn shift(&mut self, lines: usize) {
+        for point in [&mut self.anchor, &mut self.cursor, &mut self.pressed].into_iter().flatten() {
+            point.line += lines;
+        }
+        if let Some((_, start, end)) = &mut self.unit {
+            start.line += lines;
+            end.line += lines;
+        }
+        if let Some((_, point, _)) = &mut self.last_click {
+            point.line += lines;
+        }
+    }
+
     /// First and last selected cell, top to bottom.
     pub fn range(&self) -> Option<(Point, Point)> {
         let (anchor, cursor) = (self.anchor?, self.cursor?);
@@ -216,5 +230,18 @@ mod tests {
         assert!(selection.release());
         assert_eq!(selection.columns(1), Some((0, usize::MAX)));
         assert_eq!(selection.columns(0), Some((0, 3)));
+    }
+
+    #[test]
+    fn a_shift_mid_drag_keeps_the_selection_on_the_same_text() {
+        let mut selection = Selection::default();
+        selection.press(at(1, 4), "");
+        selection.drag(at(0, 6), "");
+        selection.shift(2);
+        selection.drag(at(1, 2), "");
+        assert!(selection.release());
+        assert_eq!(selection.columns(3), Some((4, usize::MAX)));
+        assert_eq!(selection.columns(2), Some((0, usize::MAX)));
+        assert_eq!(selection.columns(1), Some((0, 3)));
     }
 }
