@@ -226,6 +226,7 @@ fn run(options: Options) -> Result<(), String> {
         home: home.clone(),
         plugins: plugins::Plugins::new(&home),
         snapshots: None,
+        lsp: agent::lsp::Lsp::new(settings.lsp.clone()),
         checkpoints: Vec::new(),
         cwd,
         messages: Vec::new(),

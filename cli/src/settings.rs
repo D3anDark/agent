@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use crate::agent::permissions::Mode;
@@ -54,6 +54,16 @@ pub struct Settings {
     pub update_channel: String,
     /// Shell commands the TUI runs in the background at start, e.g. a global tool update.
     pub on_start: Vec<String>,
+    /// Language name to the server that checks a file after each edit; an empty command turns the language off.
+    pub lsp: BTreeMap<String, LspServer>,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct LspServer {
+    pub command: String,
+    pub extensions: Vec<String>,
+    /// Files that mark a project root; the server starts in the nearest directory above the file that has one.
+    pub roots: Vec<String>,
 }
 
 impl Settings {
@@ -113,7 +123,41 @@ pub fn load(home: &Path) -> Settings {
         copy_on_select: own["copy_on_select"].as_bool().unwrap_or(true),
         update_channel: own["update_channel"].as_str().unwrap_or("latest").to_string(),
         on_start: own["on_start"].as_array().into_iter().flatten().filter_map(|command| Some(command.as_str()?.to_string())).collect(),
+        lsp: lsp_servers(&own["lsp"]),
     }
+}
+
+/// The built-in servers, each field replaced by the user's value where one is set; unknown names add a language.
+fn lsp_servers(own: &Value) -> BTreeMap<String, LspServer> {
+    let strings = |value: &Value| -> Option<Vec<String>> { value.as_array()?.iter().map(|item| Some(item.as_str()?.to_string())).collect() };
+    let mut servers = default_lsp_servers();
+    for (language, value) in own.as_object().into_iter().flatten() {
+        let server = servers.entry(language.clone()).or_insert(LspServer { command: String::new(), extensions: Vec::new(), roots: Vec::new() });
+        if let Some(command) = value["command"].as_str() {
+            server.command = command.to_string();
+        }
+        if let Some(extensions) = strings(&value["extensions"]) {
+            server.extensions = extensions;
+        }
+        if let Some(roots) = strings(&value["roots"]) {
+            server.roots = roots;
+        }
+    }
+    servers
+}
+
+fn default_lsp_servers() -> BTreeMap<String, LspServer> {
+    let servers = [
+        ("typescript", "tsc-rs --lsp --stdio", &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"][..], &["tsconfig.json", "jsconfig.json", "package.json"][..]),
+        ("rust", "rust-analyzer", &["rs"], &["Cargo.toml"]),
+        ("swift", "sourcekit-lsp", &["swift"], &["buildServer.json", "Package.swift"]),
+        ("go", "gopls serve", &["go"], &["go.work", "go.mod"]),
+        ("python", "pyright-langserver --stdio", &["py"], &["pyrightconfig.json", "pyproject.toml", "setup.py", "requirements.txt"]),
+        ("cpp", "clangd --log=error", &["c", "h", "cc", "cpp", "cxx", "hpp", "hxx"], &["compile_commands.json", "CMakeLists.txt", ".clangd"]),
+        ("php", "intelephense --stdio", &["php"], &["composer.json"]),
+    ];
+    let owned = |items: &[&str]| items.iter().map(|item| item.to_string()).collect();
+    servers.into_iter().map(|(language, command, extensions, roots)| (language.to_string(), LspServer { command: command.to_string(), extensions: owned(extensions), roots: owned(roots) })).collect()
 }
 
 pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
@@ -139,6 +183,7 @@ pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
         "copy_on_select": settings.copy_on_select,
         "update_channel": settings.update_channel,
         "on_start": settings.on_start,
+        "lsp": settings.lsp.iter().map(|(language, server)| (language.clone(), json!({"command": server.command, "extensions": server.extensions, "roots": server.roots}))).collect::<serde_json::Map<_, _>>(),
         "condense": {"enabled": settings.condense, "model": settings.condense_model, "min_batch_chars": settings.condense_min_batch_chars},
         "subagents": {"concurrency": settings.subagent_concurrency, "implementation_effort": settings.subagent_effort},
         "accounts": {"switch_at_percent": settings.switch_at_percent, "when_all_over_limit": settings.when_all_over_limit.label(), "fallback_model": settings.fallback_model, "default": settings.default_accounts},
@@ -176,6 +221,7 @@ mod tests {
         settings.copy_on_select = false;
         settings.update_channel = "pre-release".into();
         settings.on_start = vec!["echo started".into()];
+        settings.lsp.get_mut("rust").unwrap().command = "ra-multiplex".into();
         save(&home, &settings).unwrap();
         assert_eq!(load(&home), settings);
         std::fs::remove_dir_all(&home).unwrap();
@@ -191,5 +237,14 @@ mod tests {
         settings.context_windows.insert("anthropic".into(), 400_000);
         settings.context_windows.insert("anthropic/claude-opus-4-6".into(), 200_000);
         assert_eq!((settings.context_window(opus), settings.context_window(sonnet)), (200_000, 400_000));
+    }
+
+    #[test]
+    fn lsp_entries_override_single_fields_and_add_languages() {
+        let servers = lsp_servers(&json!({"rust": {"command": "ra-multiplex"}, "zig": {"command": "zls", "extensions": ["zig"]}, "go": {"command": ""}}));
+        assert_eq!(servers["rust"], LspServer { command: "ra-multiplex".into(), extensions: vec!["rs".into()], roots: vec!["Cargo.toml".into()] });
+        assert_eq!(servers["zig"], LspServer { command: "zls".into(), extensions: vec!["zig".into()], roots: Vec::new() });
+        assert_eq!(servers["go"].command, "");
+        assert_eq!(servers["typescript"].command, "tsc-rs --lsp --stdio");
     }
 }

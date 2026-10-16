@@ -12,6 +12,7 @@ use std::time::Duration;
 pub mod condense;
 pub mod context;
 pub mod edit_hooks;
+pub mod lsp;
 pub mod modes;
 pub mod permissions;
 pub mod prompt;
@@ -180,6 +181,7 @@ pub struct Agent {
     pub plugins: crate::plugins::Plugins,
     /// None outside a git repo and in print mode; then a rewind leaves files alone.
     pub snapshots: Option<Snapshots>,
+    pub lsp: lsp::Lsp,
     /// Files changed by this session's own tool calls, oldest first.
     pub checkpoints: Vec<Checkpoint>,
 }
@@ -385,8 +387,20 @@ impl Agent {
                 emit(Event::ToolStart { id: id.clone(), name: name.clone(), input: shown });
                 self.plugins.event(json!({"type": "tool_call", "name": name, "input": input, "context": self.plugin_context()}));
                 let targets = edit_hooks::edited_files(&name, &input, &self.cwd, &self.anchors);
-                let (output, is_error) = self.run_tool_with_checkpoint(&name, &input, text, emit)?;
+                for file in &targets {
+                    if let Err(notice) = self.lsp.before_edit(file, &self.abort) {
+                        emit(Event::Notice(notice));
+                    }
+                }
+                let (mut output, is_error) = self.run_tool_with_checkpoint(&name, &input, text, emit)?;
                 if !is_error {
+                    for file in &targets {
+                        match self.lsp.after_edit(file, &self.cwd, &self.abort) {
+                            Ok(Some(report)) => output = format!("{output}\n\n{report}"),
+                            Ok(None) => {}
+                            Err(notice) => emit(Event::Notice(notice)),
+                        }
+                    }
                     edited.extend(targets);
                 }
                 self.tool_calls += 1;
