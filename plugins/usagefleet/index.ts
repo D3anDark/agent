@@ -35,8 +35,11 @@ const STALE_AFTER_MS = 5 * 60_000;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 
-/** "5h 12% · 7d 8%", or null when the config has no fresh reading. */
-export function formatLimits(config: unknown, now: number): string | null {
+/** A `ui.setStatus` part; the footer colors it by tone. */
+export type StatusPart = { text: string; tone?: "ok" | "warn" | "error" };
+
+/** "5h 12% · 7d 8%" with toned percents, or null when the config has no fresh reading. */
+export function formatLimits(config: unknown, now: number): StatusPart[] | null {
 	const limits = isRecord(config) ? config.limits : undefined;
 	if (!isRecord(limits)) return null;
 	const { fiveHourPct, sevenDayPct, at } = limits;
@@ -47,18 +50,30 @@ export function formatLimits(config: unknown, now: number): string | null {
 }
 
 /** "Artur: 5h 30% · 7d 17%", or null when the device is in no group or the group repeats the account's numbers. */
-export function formatGroupLimits(view: unknown, accountLimits: string | null): string | null {
+export function formatGroupLimits(view: unknown, accountLimits: StatusPart[] | null): StatusPart[] | null {
 	if (!isRecord(view)) return null;
 	const { group, sessionPct, weeklyPct } = view;
 	if (typeof group !== "string" || typeof sessionPct !== "number" || typeof weeklyPct !== "number") return null;
 	const windows = formatWindows(sessionPct, weeklyPct);
 	// The server does not say how many groups there are; a sole group's budget slice is the whole account.
-	if (windows === accountLimits) return null;
-	return `${group}: ${windows}`;
+	if (Bun.deepEquals(windows, accountLimits)) return null;
+	return [{ text: `${group}: ` }, ...windows];
 }
 
-const formatWindows = (fiveHourPct: number, sevenDayPct: number) =>
-	`5h ${Math.round(fiveHourPct)}% · 7d ${Math.round(sevenDayPct)}%`;
+const formatWindows = (fiveHourPct: number, sevenDayPct: number): StatusPart[] => [
+	{ text: "5h " },
+	percentPart(fiveHourPct),
+	{ text: " · 7d " },
+	percentPart(sevenDayPct),
+];
+
+function percentPart(pct: number): StatusPart {
+	const rounded = Math.round(pct);
+	const text = `${rounded}%`;
+	if (rounded < 50) return { text, tone: "ok" };
+	if (rounded < 80) return { text, tone: "warn" };
+	return { text, tone: "error" };
+}
 
 export function detectAccountUuid(raw: unknown): string | null {
 	if (!isRecord(raw)) return null;
@@ -176,7 +191,7 @@ async function fetchServerLimits(token: string): Promise<unknown> {
 	return response.ok ? response.json() : null;
 }
 
-async function status(context: Context): Promise<string | null> {
+async function status(context: Context): Promise<StatusPart[] | null> {
 	const account = claudeAccount(context);
 	if (!account) return null;
 	const config = await readJson(CONFIG_PATH);
@@ -185,8 +200,9 @@ async function status(context: Context): Promise<string | null> {
 	const token = resolveToken(config, account);
 	// Offline or rejected hides the group numbers rather than freezing old ones.
 	const view = token ? await fetchServerLimits(token).catch(() => null) : null;
-	const parts = [limits, formatGroupLimits(view, limits)].filter(Boolean);
-	return parts.length ? parts.join("  ") : null;
+	const group = formatGroupLimits(view, limits);
+	if (limits && group) return [...limits, { text: "  " }, ...group];
+	return limits ?? group;
 }
 
 /** Fails open on every error, the same guarantee `usagefleet guard` makes. */

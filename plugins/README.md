@@ -76,7 +76,7 @@ The agent asks plugins in name order. Each plugin gets the text that the plugins
 
 ## Messages to the agent
 
-`ui.setStatus` is a notification with `params.text`. The agent shows the text in the footer. Send `null` to remove it.
+`ui.setStatus` is a notification with `params.text`. The agent shows the text in the footer. Send `null` to remove it. To color parts of the text, send an array of parts, for example `[{ "text": "5h " }, { "text": "92%", "tone": "error" }]`. `tone` is `ok` (green), `warn` (orange) or `error` (red). A part without a tone is muted.
 
 `ui.setAccountLabels` is a notification with `params.labels`, an object from `accountId` to text. The `/account` panel shows the text in a column named after the plugin, on the row of the account with that id. Each message replaces the plugin's earlier labels.
 

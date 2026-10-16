@@ -45,7 +45,8 @@ struct Plugin {
     process: Option<Process>,
     /// Slash commands from the manifest the process was started with.
     commands: Vec<(String, String)>,
-    status: Option<String>,
+    /// Footer text set with `ui.setStatus`, as (text, tone) parts.
+    status: Option<Vec<(String, Option<String>)>>,
     /// Text for the `/account` panel by provider account id, set with `ui.setAccountLabels`.
     account_labels: HashMap<String, String>,
     /// Why the plugin is not running: a bad manifest, a failed start, or how it exited.
@@ -200,8 +201,8 @@ impl Plugins {
         Ok(text)
     }
 
-    /// The footer lines set with `ui.setStatus`, in name order.
-    pub fn statuses(&self) -> Vec<String> {
+    /// The footer lines set with `ui.setStatus`, in name order, as (text, tone) parts.
+    pub fn statuses(&self) -> Vec<Vec<(String, Option<String>)>> {
         self.state.lock().unwrap().plugins.iter().filter_map(|plugin| plugin.status.clone()).collect()
     }
 
@@ -336,7 +337,7 @@ impl Plugins {
         match message["method"].as_str() {
             Some(method @ ("ui.setStatus" | "ui.setAccountLabels" | "ui.showPanel")) => {
                 if method == "ui.setStatus" {
-                    plugin.status = message["params"]["text"].as_str().filter(|text| !text.is_empty()).map(String::from);
+                    plugin.status = status_parts(&message["params"]["text"]);
                 } else if method == "ui.setAccountLabels" {
                     let labels = message["params"]["labels"].as_object().into_iter().flatten();
                     plugin.account_labels = labels.filter_map(|(id, text)| Some((id.clone(), text.as_str()?.to_string()))).collect();
@@ -375,6 +376,16 @@ impl Plugins {
             on_change();
         }
     }
+}
+
+/// `ui.setStatus` text: a string, or an array of `{ "text", "tone" }` parts. None when nothing would show.
+fn status_parts(text: &Value) -> Option<Vec<(String, Option<String>)>> {
+    let parts: Vec<_> = match text {
+        Value::String(text) => vec![(text.clone(), None)],
+        Value::Array(parts) => parts.iter().filter_map(|part| Some((part["text"].as_str()?.to_string(), part["tone"].as_str().map(String::from)))).collect(),
+        _ => Vec::new(),
+    };
+    parts.iter().any(|(text, _)| !text.is_empty()).then_some(parts)
 }
 
 fn stop(plugin: &mut Plugin) {
@@ -596,7 +607,7 @@ done"#
 
     #[test]
     fn status_and_account_labels_reach_the_ui() {
-        let script = r#"echo '{"jsonrpc":"2.0","method":"ui.setStatus","params":{"text":"5h 9%"}}'; echo '{"jsonrpc":"2.0","method":"ui.setAccountLabels","params":{"labels":{"uuid-1":"uf_tVdC…"}}}'; cat >/dev/null"#;
+        let script = r#"echo '{"jsonrpc":"2.0","method":"ui.setStatus","params":{"text":[{"text":"5h "},{"text":"9%","tone":"ok"}]}}'; echo '{"jsonrpc":"2.0","method":"ui.setAccountLabels","params":{"labels":{"uuid-1":"uf_tVdC…"}}}'; cat >/dev/null"#;
         let home = home_with("status", &[("fleet", script)]);
         let plugins = Plugins::new(&home);
         let woken = Arc::new(Mutex::new(false));
@@ -604,7 +615,7 @@ done"#
         plugins.on_change(move || *flag.lock().unwrap() = true);
         plugins.sync(&[], &json!({}));
         eventually(|| *woken.lock().unwrap() && !plugins.account_labels().is_empty());
-        assert_eq!(plugins.statuses(), ["5h 9%"]);
+        assert_eq!(plugins.statuses(), [[("5h ".to_string(), None), ("9%".to_string(), Some("ok".to_string()))]]);
         assert_eq!(plugins.account_labels(), [("fleet".to_string(), HashMap::from([("uuid-1".to_string(), "uf_tVdC…".to_string())]))]);
         plugins.sync(&["fleet".into()], &json!({}));
         assert!(plugins.statuses().is_empty());

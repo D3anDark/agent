@@ -3227,7 +3227,16 @@ impl App {
         let percent = (self.context_tokens * 100).checked_div(self.settings.context_window(model)).unwrap_or(0);
         let mut right = Line::default();
         for status in self.plugins.statuses() {
-            right.push(span(format!("{status}  "), MUTED));
+            for (text, tone) in status {
+                let style = match tone.as_deref() {
+                    Some("ok") => OK,
+                    Some("warn") => WARN,
+                    Some("error") => ERROR,
+                    _ => MUTED,
+                };
+                right.push(span(text, style));
+            }
+            right.push(span("  ", MUTED));
         }
         right.push(span(models::short_label(&model.name), MUTED));
         right.push(span(" ", PLAIN));

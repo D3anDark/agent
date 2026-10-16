@@ -7,14 +7,23 @@ const context: Context = { provider: "anthropic", model: "claude-opus-5-5", acco
 describe("usagefleet", () => {
 	test("shows fresh account limits and hides stale ones", () => {
 		const limits = { fiveHourPct: 5.4, sevenDayPct: 41, at: "2026-10-15T11:58:00Z" };
-		expect(formatLimits({ limits }, now)).toBe("5h 5% · 7d 41%");
+		expect(formatLimits({ limits }, now)).toEqual([{ text: "5h " }, { text: "5%", tone: "ok" }, { text: " · 7d " }, { text: "41%", tone: "ok" }]);
 		expect(formatLimits({ limits: { ...limits, at: "2026-10-15T11:50:00Z" } }, now)).toBeNull();
+	});
+
+	test("tones percents green below 50, orange below 80, red from 80", () => {
+		const tones = (fiveHourPct: number, sevenDayPct: number) =>
+			formatLimits({ limits: { fiveHourPct, sevenDayPct, at: "2026-10-15T11:58:00Z" } }, now)?.map((part) => part.tone);
+		expect(tones(49.4, 49.5)).toEqual([undefined, "ok", undefined, "warn"]);
+		expect(tones(79.4, 79.5)).toEqual([undefined, "warn", undefined, "error"]);
 	});
 
 	test("shows the group budget unless it repeats the account's", () => {
 		const view = { group: "Artur", sessionPct: 30, weeklyPct: 17 };
-		expect(formatGroupLimits(view, "5h 5% · 7d 41%")).toBe("Artur: 5h 30% · 7d 17%");
-		expect(formatGroupLimits(view, "5h 30% · 7d 17%")).toBeNull();
+		const account = formatLimits({ limits: { fiveHourPct: 5, sevenDayPct: 41, at: "2026-10-15T11:58:00Z" } }, now);
+		expect(formatGroupLimits(view, account)?.map((part) => part.text).join("")).toBe("Artur: 5h 30% · 7d 17%");
+		const same = formatLimits({ limits: { fiveHourPct: 30, sevenDayPct: 17, at: "2026-10-15T11:58:00Z" } }, now);
+		expect(formatGroupLimits(view, same)).toBeNull();
 	});
 
 	test("picks the session account's token before the shared one", () => {
