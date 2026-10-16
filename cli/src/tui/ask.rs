@@ -6,7 +6,6 @@ use super::OK;
 use super::render::{Line, PLAIN, Style, span, wrap};
 use crate::tools::ask::{Answer, Question, TYPE_SOMETHING};
 
-const RULE: Style = Style::fg(240);
 const BRIGHT: Style = Style::fg(255);
 const MUTED: Style = Style::fg(245);
 const PREVIEW_LINES: usize = 8;
@@ -92,8 +91,7 @@ impl AskPanel {
     pub fn render(&self, width: usize) -> Vec<Line> {
         let question = &self.questions[self.current];
         let draft = &self.drafts[self.current];
-        let rule = vec![span("─".repeat(width), RULE)];
-        let mut lines = vec![rule.clone(), self.tabs()];
+        let mut lines = vec![Vec::new(), self.tabs()];
         lines.extend(wrap(&[span(question.question.clone(), PLAIN.bold())], width, &Vec::new()));
         lines.push(Vec::new());
         for (index, option) in question.options.iter().enumerate() {
@@ -124,7 +122,7 @@ impl AskPanel {
         }
         let switch = if self.questions.len() > 1 { "←→ question     " } else { "" };
         let action = if question.multi { "space toggle     enter submit" } else { "enter choose" };
-        lines.extend([Vec::new(), rule, vec![span(format!("↑↓ move     {switch}{action}     esc cancel"), MUTED)]]);
+        lines.push(vec![span(format!("↑↓ move     {switch}{action}     esc cancel"), MUTED)]);
         lines
     }
 

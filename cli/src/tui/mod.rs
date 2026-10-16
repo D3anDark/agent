@@ -2412,7 +2412,7 @@ impl App {
                 view.render(width, PANEL_ROWS)
             }
             Panel::Permission { request, index, .. } => permission_lines(request, *index, width),
-            Panel::Plan { index } => plan_lines(*index, width),
+            Panel::Plan { index } => plan_lines(*index),
             Panel::Ask(ask) => ask.render(width),
             Panel::Subagents { index } => {
                 let runs = self.subagents.lock().unwrap();
@@ -2797,7 +2797,7 @@ impl App {
         }
         let selected = self.menu_index.min(matches.len() - 1);
         let first = (selected + 1).saturating_sub(MENU_ROWS);
-        let mut rows = Vec::new();
+        let mut rows = vec![Vec::new()];
         for (index, (name, description)) in matches.iter().enumerate().skip(first).take(MENU_ROWS) {
             let label = format!("{name:<31} {description}");
             if index == selected {
@@ -2806,7 +2806,9 @@ impl App {
                 rows.push(vec![span(format!("    {label}"), TOOL_ARGS)]);
             }
         }
-        rows.push(vec![span(format!("    ({}/{})", selected + 1, matches.len()), TOOL_ARGS)]);
+        if matches.len() > MENU_ROWS {
+            rows.push(vec![span(format!("    {}/{}", selected + 1, matches.len()), TOOL_ARGS)]);
+        }
         rows
     }
 
@@ -3969,10 +3971,9 @@ fn open_in_browser(url: &str) -> Result<(), String> {
 
 /// fx's "Permission needed" prompt.
 fn permission_lines(request: &Request, selected: usize, width: usize) -> Vec<Line> {
-    let rule = vec![span("─".repeat(width), Style::fg(240))];
     let title = vec![span("  ", PLAIN), span("Permission needed · Choose one", PLAIN.bold())];
     let always = if request.kind == "Command" { "Yes, and don't ask again for this exact command" } else { "Yes, and don't ask again for this file" };
-    let mut lines = vec![rule.clone(), spread(title, vec![span(request.kind, MUTED)], width), Vec::new(), vec![span(format!("  {}", request.question), PLAIN.bold())], Vec::new()];
+    let mut lines = vec![Vec::new(), spread(title, vec![span(request.kind, MUTED)], width), Vec::new(), vec![span(format!("  {}", request.question), PLAIN.bold())], Vec::new()];
     let prefix = if request.kind == "Command" { "$ " } else { "" };
     for (index, line) in request.detail.lines().enumerate() {
         let lead = if index == 0 { prefix } else { "  " };
@@ -3983,18 +3984,17 @@ fn permission_lines(request: &Request, selected: usize, width: usize) -> Vec<Lin
         let label = format!("{}. {option}", index + 1);
         lines.push(if index == selected { vec![span("  ", PLAIN), span("→ ", OK), span(label, BRIGHT.bold())] } else { vec![span(format!("    {label}"), PLAIN)] });
     }
-    lines.extend([Vec::new(), rule, vec![span("↑↓ move     enter choose     1-3 pick     esc deny", MUTED)]]);
+    lines.push(vec![span("↑↓ move     enter choose     1-3 pick     esc deny", MUTED)]);
     lines
 }
 
-fn plan_lines(selected: usize, width: usize) -> Vec<Line> {
-    let rule = vec![span("─".repeat(width), Style::fg(240))];
-    let mut lines = vec![rule.clone(), vec![span("  ", PLAIN), span("Plan ready · Choose one", PLAIN.bold())], Vec::new()];
+fn plan_lines(selected: usize) -> Vec<Line> {
+    let mut lines = vec![Vec::new(), vec![span("  ", PLAIN), span("Plan ready · Choose one", PLAIN.bold())], Vec::new()];
     for (index, option) in PLAN_OPTIONS.iter().enumerate() {
         let label = format!("{}. {option}", index + 1);
         lines.push(if index == selected { vec![span("  ", PLAIN), span("→ ", OK), span(label, BRIGHT.bold())] } else { vec![span(format!("    {label}"), PLAIN)] });
     }
-    lines.extend([Vec::new(), rule, vec![span("↑↓ move     enter choose     1-4 pick     esc keep planning", MUTED)]]);
+    lines.push(vec![span("↑↓ move     enter choose     1-4 pick     esc keep planning", MUTED)]);
     lines
 }
 

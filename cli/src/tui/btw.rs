@@ -12,7 +12,6 @@ const SYSTEM: &str = "You answer quick side questions for a coding-agent user.
 
 Use the provided conversation context only as background. Answer the user's side question directly and concisely. Do not claim to have changed files, run tools, or affected the main task. If the context is insufficient, say what is unknown and give the best next step.";
 const MAX_CONTEXT_CHARS: usize = 40_000;
-const RULE: Style = Style::fg(240);
 const BRIGHT: Style = Style::fg(255);
 const MUTED: Style = Style::fg(245);
 const ERROR: Style = Style::rgb(0xff7b72);
@@ -54,7 +53,6 @@ impl Btw {
     }
 
     pub fn render(&self, width: usize) -> Vec<Line> {
-        let rule = vec![span("─".repeat(width), RULE)];
         let mut body = Vec::new();
         for (question, answer) in &self.turns {
             body.extend(wrap(&[span(format!("> {question}"), BRIGHT.bold())], width, &vec![span("  ", PLAIN)]));
@@ -65,10 +63,10 @@ impl Btw {
             body.extend(wrap(&[span(error.clone(), ERROR)], width, &Vec::new()));
         }
         let first = body.len().saturating_sub(VISIBLE_LINES);
-        let mut lines = vec![rule.clone(), vec![span("btw", BRIGHT.bold()), span("  side question, not saved to the session", MUTED)]];
+        let mut lines = vec![Vec::new(), vec![span("btw", BRIGHT.bold()), span("  side question, not saved to the session", MUTED)]];
         lines.extend(body.into_iter().skip(first));
         let prompt = if self.streaming { span("  answering…", MUTED) } else { span(format!("> {}", self.input.field(None)), BRIGHT) };
-        lines.extend([vec![prompt], rule, vec![span("enter ask     tab insert answer into editor     esc close", MUTED)]]);
+        lines.extend([vec![prompt], vec![span("enter ask     tab insert answer into editor     esc close", MUTED)]]);
         lines
     }
 }
