@@ -14,7 +14,7 @@ pub struct Snapshots {
 impl Snapshots {
     /// None outside a git work tree: snapshotting any directory (say ~) could copy gigabytes.
     pub fn open(home: &Path, cwd: &Path) -> Option<Snapshots> {
-        let top = run(Command::new("git").arg("-C").arg(cwd).args(["rev-parse", "--show-toplevel"])).ok()?;
+        let top = run(crate::process::command("git").arg("-C").arg(cwd).args(["rev-parse", "--show-toplevel"])).ok()?;
         let work_tree = PathBuf::from(top);
         let git_dir = home.join(".agents/snapshots").join(work_tree.to_string_lossy().replace('/', "-"));
         // One index per process, so two agents in the same repo do not fight over index.lock.
@@ -31,7 +31,7 @@ impl Snapshots {
     /// The tree stays reachable from a ref named after today, so gc packs it and keeps it for KEEP_DAYS.
     pub fn take(&self) -> Result<String, String> {
         if !self.git_dir.exists() {
-            run(Command::new("git").args(["init", "-q", "--bare"]).arg(&self.git_dir))?;
+            run(crate::process::command("git").args(["init", "-q", "--bare"]).arg(&self.git_dir))?;
             // Git's default waits for 6700 loose objects; packing sooner stores each edit as a small delta.
             self.git(&["config", "gc.auto", "500"])?;
             // Expired snapshots leave many unreachable objects; with the default two-week grace gc warns
@@ -101,7 +101,7 @@ impl Snapshots {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new("git");
+        let mut command = crate::process::command("git");
         command.arg("--git-dir").arg(&self.git_dir).arg("--work-tree").arg(&self.work_tree);
         command.args(["-c", "core.autocrlf=false"]).args(args).env("GIT_INDEX_FILE", &self.index);
         command.current_dir(&self.work_tree);

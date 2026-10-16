@@ -1,7 +1,6 @@
 //! GitHub code URLs: a shallow clone the agent can explore, summarised as tree, listing, README or file.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const NON_CODE: [&str; 21] = [
     "issues", "pull", "pulls", "discussions", "releases", "wiki", "actions", "settings", "security", "projects", "graphs", "compare", "commits", "tags",
@@ -102,7 +101,7 @@ fn clone(repo: &Repo, force_clone: bool) -> Result<PathBuf, String> {
         return Ok(dir);
     }
     _ = std::fs::remove_dir_all(&dir);
-    let mut git = Command::new("git");
+    let mut git = crate::process::command("git");
     git.args(["clone", "--depth", "1", "--single-branch"]).env("GIT_TERMINAL_PROMPT", "0");
     if let Some(git_ref) = &repo.git_ref {
         git.args(["--branch", git_ref]);

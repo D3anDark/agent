@@ -1,8 +1,8 @@
 use serde_json::Value;
 use std::io::Read;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -21,6 +21,7 @@ pub mod web;
 
 use hashline::{Anchors, resolve, str_arg};
 use rtk::Rtk;
+use crate::process;
 
 pub const MAX_LINES: usize = 2000;
 pub const MAX_BYTES: usize = 50 * 1024;
@@ -79,13 +80,11 @@ enum Killed {
 fn bash(input: &Value, cwd: &Path, rtk: &Rtk, abort: &Arc<AtomicBool>) -> Result<String, String> {
     let command = rtk.rewrite(str_arg(input, &["command"])?);
     let timeout = input["timeout"].as_f64().filter(|s| *s > 0.0);
-    let mut child = Command::new("bash")
+    let mut child = process::command("bash")
         .arg("-c")
         .arg(format!("exec 2>&1\n{command}"))
         .current_dir(cwd)
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .process_group(0)
         .spawn()
         .map_err(|e| format!("Cannot start bash: {e}"))?;
     let pid = child.id();
@@ -103,7 +102,7 @@ fn bash(input: &Value, cwd: &Path, rtk: &Rtk, abort: &Arc<AtomicBool>) -> Result
                 continue;
             };
             let _ = killed_tx.send(reason);
-            let _ = Command::new("kill").args(["-9", "--", &format!("-{pid}")]).stderr(Stdio::null()).status();
+            let _ = process::command("kill").args(["-9", "--", &format!("-{pid}")]).stderr(Stdio::null()).status();
             return;
         }
     });
@@ -264,7 +263,7 @@ fn fd(input: &Value, cwd: &Path) -> Result<String, String> {
 }
 
 fn search(program: &str, args: &[String], cwd: &Path) -> Result<String, String> {
-    let output = Command::new(program).args(args).current_dir(cwd).stdin(Stdio::null()).output().map_err(|e| format!("Cannot run {program}: {e}"))?;
+    let output = process::command(program).args(args).current_dir(cwd).output().map_err(|e| format!("Cannot run {program}: {e}"))?;
     let code = output.status.code().unwrap_or(-1);
     // rg exits 1 for "no matches"; fd exits 0 even with no results.
     if code != 0 && !(program == "rg" && code == 1) {
@@ -385,6 +384,13 @@ mod tests {
         let (out, err) = run_bash(json!({"command": "echo start; sleep 30", "timeout": 0.5}), &Arc::default());
         assert!(err);
         assert_eq!(out, "start\n\n\nCommand timed out after 0.5 seconds");
+    }
+
+    #[test]
+    fn bash_commands_cannot_take_over_the_terminal() {
+        // `zsh -i` from a command took the tty's foreground group, and the TUI stopped on its next read.
+        let (out, _) = run_bash(json!({"command": "if : </dev/tty; then echo tty; else echo no tty; fi", "timeout": null}), &Arc::default());
+        assert!(out.ends_with("no tty\n"), "{out}");
     }
 
     #[test]

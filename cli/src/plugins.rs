@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::mpsc::{self, Sender};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -294,7 +294,7 @@ impl Plugins {
     }
 
     fn spawn(&self, name: &str, dir: &Path, command: &[String], run: u64) -> Result<Process, String> {
-        let mut child = Command::new(&command[0])
+        let mut child = crate::process::command(&command[0])
             .args(&command[1..])
             .current_dir(dir)
             .stdin(Stdio::piped())

@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// One checkout from `git worktree list --porcelain`.
 #[derive(Clone, Debug, PartialEq)]
@@ -46,7 +45,7 @@ fn parse(porcelain: &str) -> Vec<Worktree> {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git").args(args).current_dir(cwd).output().map_err(|e| format!("Cannot run git: {e}"))?;
+    let output = crate::process::command("git").args(args).current_dir(cwd).output().map_err(|e| format!("Cannot run git: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }

@@ -656,7 +656,7 @@ fn spawn_update(channel: String, events: Sender<Msg>) {
 fn spawn_on_start(commands: Vec<String>, events: Sender<Msg>) {
     std::thread::spawn(move || {
         for command in commands {
-            let failure = match std::process::Command::new("sh").args(["-c", &command]).stdin(std::process::Stdio::null()).output() {
+            let failure = match crate::process::command("sh").args(["-c", &command]).output() {
                 Ok(output) if output.status.success() => continue,
                 Ok(output) => tail(&String::from_utf8_lossy(&output.stderr)),
                 Err(e) => e.to_string(),
@@ -1377,7 +1377,7 @@ impl App {
     }
 
     fn rtk_gain(&mut self) {
-        match std::process::Command::new("rtk").arg("gain").stdin(std::process::Stdio::null()).output() {
+        match crate::process::command("rtk").arg("gain").output() {
             Ok(output) if output.status.success() => self.system("rtk", String::from_utf8_lossy(&output.stdout).trim_end()),
             Ok(output) => self.push(Item::Error(format!("rtk gain failed: {}", String::from_utf8_lossy(&output.stderr).trim_end()))),
             Err(error) => self.push(Item::Error(format!("Cannot run rtk: {error}"))),
@@ -3761,9 +3761,9 @@ fn matching_paths(cwd: &Path, query: &str) -> Vec<(String, String)> {
 /// Paths below the top level whose names start with `prefix`, from `fd` so ignored trees like target/ stay out.
 /// fd is killed after 150 ms, so a huge tree (a home directory takes 7 s) lists nothing deeper instead of freezing typing.
 fn nested_paths(cwd: &Path, prefix: &str) -> Vec<(bool, String)> {
-    let mut fd = std::process::Command::new("fd");
+    let mut fd = crate::process::command("fd");
     fd.args(["--color=never", "--ignore-case", "--glob", "--min-depth=2", "--max-results=50"]).current_dir(cwd);
-    fd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    fd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
     if prefix.starts_with('.') {
         fd.arg("--hidden");
     }
@@ -3978,7 +3978,7 @@ fn history_items(messages: &[Value]) -> Vec<Item> {
 
 fn git_info(cwd: &Path) -> Git {
     let run = |args: &[&str]| {
-        std::process::Command::new("git").args(args).current_dir(cwd).stderr(std::process::Stdio::null()).output().ok().filter(|o| o.status.success())
+        crate::process::command("git").args(args).current_dir(cwd).stderr(std::process::Stdio::null()).output().ok().filter(|o| o.status.success())
     };
     let branch = run(&["branch", "--show-current"]).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).map(|b| if b.is_empty() { "detached".to_string() } else { b });
     let changed = run(&["status", "--porcelain", "--untracked-files=all"]).map_or(0, |o| o.stdout.split(|b| *b == b'\n').filter(|l| !l.is_empty()).count());
@@ -4038,7 +4038,7 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
     } else {
         ("xclip", &["-selection", "clipboard"])
     };
-    let mut child = std::process::Command::new(program)
+    let mut child = crate::process::command(program)
         .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
@@ -4053,7 +4053,7 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
 fn open_in_browser(url: &str) -> Result<(), String> {
     if !cfg!(target_os = "macos") {
         // Not waited for: xdg-open runs a browser without a desktop handler in the foreground.
-        std::process::Command::new("xdg-open")
+        crate::process::command("xdg-open")
             .arg(url)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -4062,7 +4062,7 @@ fn open_in_browser(url: &str) -> Result<(), String> {
         return Ok(());
     }
     // output() and not status(): open's stderr would draw over the alternate screen.
-    let output = std::process::Command::new("open").arg(url).output().map_err(|e| format!("Cannot run open: {e}"))?;
+    let output = crate::process::command("open").arg(url).output().map_err(|e| format!("Cannot run open: {e}"))?;
     if !output.status.success() {
         return Err(format!("open {url} failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
     }

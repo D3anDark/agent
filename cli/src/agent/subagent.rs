@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -118,7 +118,7 @@ impl Runs {
             Mode::Ask | Mode::Auto => "--auto",
         };
         let args = ["--headless", "--model", &launch.model, "--thinking", &launch.thinking, mode, "--parent", &launch.parent_session];
-        let mut child = Command::new(exe)
+        let mut child = crate::process::command(exe)
             .args(args)
             .current_dir(&launch.cwd)
             .stdin(Stdio::piped())

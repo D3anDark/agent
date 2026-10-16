@@ -194,10 +194,11 @@ fn resolve_credential(raw: &str, provider: &str) -> Result<String, String> {
         return Ok(raw[1..].to_string());
     }
     if let Some(command) = raw.strip_prefix('!') {
-        let output = std::process::Command::new("sh").arg("-c").arg(command).output().map_err(|e| format!("{provider} credential command failed: {e}"))?;
+        let output = crate::process::command("sh").arg("-c").arg(command).output().map_err(|e| format!("{provider} credential command failed: {e}"))?;
         let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !output.status.success() || key.is_empty() {
-            return Err(format!("{provider} credential command produced no key (exit {}).", output.status));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("{provider} credential command produced no key (exit {}): {}", output.status, stderr.trim()));
         }
         return Ok(key);
     }

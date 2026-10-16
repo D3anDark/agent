@@ -1,9 +1,9 @@
 use serde_json::Value;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -110,13 +110,11 @@ impl Terminals {
         std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
         let (stdout, stderr) = (dir.join(format!("{id}.stdout")), dir.join(format!("{id}.stderr")));
         let file = |path: &Path| File::create(path).map_err(|e| format!("Cannot create {}: {e}", path.display()));
-        let mut child = Command::new("sh")
+        let mut child = crate::process::command("sh")
             .args(["-c", command])
             .current_dir(&cwd)
-            .stdin(Stdio::null())
             .stdout(file(&stdout)?)
             .stderr(file(&stderr)?)
-            .process_group(0)
             .spawn()
             .map_err(|e| format!("Cannot start sh: {e}"))?;
         let terminal = Arc::new(Terminal { id, title, cwd, pid: child.id(), started: Instant::now(), stdout, stderr, state: Mutex::default() });
@@ -181,7 +179,7 @@ impl Terminals {
     pub fn kill_all(&self) {
         for terminal in &self.list {
             if terminal.status() == Status::Running {
-                let _ = Command::new("kill").args(["-KILL", "--", &format!("-{}", terminal.pid)]).stderr(Stdio::null()).status();
+                let _ = crate::process::command("kill").args(["-KILL", "--", &format!("-{}", terminal.pid)]).stderr(Stdio::null()).status();
             }
         }
     }
@@ -233,10 +231,10 @@ impl Terminal {
         state.killed = true;
         drop(state);
         let group = format!("-{}", self.pid);
-        let _ = Command::new("kill").args(["-TERM", "--", &group]).stderr(Stdio::null()).status();
+        let _ = crate::process::command("kill").args(["-TERM", "--", &group]).stderr(Stdio::null()).status();
         std::thread::spawn(move || {
             std::thread::sleep(FORCE_KILL_AFTER);
-            let _ = Command::new("kill").args(["-KILL", "--", &group]).stderr(Stdio::null()).status();
+            let _ = crate::process::command("kill").args(["-KILL", "--", &group]).stderr(Stdio::null()).status();
         });
         true
     }

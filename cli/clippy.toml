@@ -1,0 +1,1 @@
+disallowed-methods = [{ path = "std::process::Command::new", reason = "use process::command, which detaches the child from the TUI's terminal" }]

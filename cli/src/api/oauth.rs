@@ -166,7 +166,7 @@ fn codex_account_id(access: &str) -> Option<String> {
 pub fn open_browser(url: &str) {
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     // spawn() and not status(): xdg-open runs a browser without a desktop handler in the foreground.
-    let _ = std::process::Command::new(opener).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    let _ = crate::process::command(opener).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
 }
 
 /// POSTs to a token endpoint. The error carries the status and body, never the request, which holds the secrets.

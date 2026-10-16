@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -153,7 +153,7 @@ fn wait<T>(answer: &Receiver<T>, timeout: Option<Duration>, abort: &AtomicBool) 
 }
 
 fn spawn(command: &str, args: &[String], env: &[(String, String)], cwd: &Path, exited: impl FnOnce(String) + Send + 'static) -> Result<Process, String> {
-    let mut child = Command::new(command)
+    let mut child = crate::process::command(command)
         .args(args)
         .envs(env.iter().map(|(key, value)| (key, value)))
         .current_dir(cwd)

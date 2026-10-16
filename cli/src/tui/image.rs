@@ -1,6 +1,5 @@
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -59,7 +58,7 @@ pub fn from_clipboard() -> Result<Value, String> {
     } else {
         ("xclip", &["-selection", "clipboard", "-target", "image/png", "-out"])
     };
-    let output = Command::new(program).args(args).output().map_err(|e| format!("Cannot run {program}: {e}"))?;
+    let output = crate::process::command(program).args(args).output().map_err(|e| format!("Cannot run {program}: {e}"))?;
     let block = if output.status.success() { bytes_block(&output.stdout) } else { None };
     block.ok_or_else(|| "No image in the clipboard".into())
 }
@@ -71,7 +70,7 @@ fn from_macos_clipboard() -> Result<Value, String> {
         "set f to open for access (POSIX file \"{}\") with write permission\nset eof f to 0\nwrite (the clipboard as «class PNGf») to f\nclose access f",
         path.display()
     );
-    let output = Command::new("osascript").arg("-e").arg(script).output().map_err(|e| format!("Cannot run osascript: {e}"))?;
+    let output = crate::process::command("osascript").arg("-e").arg(script).output().map_err(|e| format!("Cannot run osascript: {e}"))?;
     let block = if output.status.success() { block(&path) } else { Err("No image in the clipboard".into()) };
     let _ = std::fs::remove_file(&path);
     block

@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -68,7 +67,7 @@ fn download(version: &str, path: &Path) -> Result<(), String> {
 
 /// A truncated or wrong download must never replace a working binary.
 fn verify(path: &Path, version: &str) -> Result<(), String> {
-    let output = Command::new(path)
+    let output = crate::process::command(path)
         .arg("--version")
         .output()
         .map_err(|e| format!("Cannot run the downloaded agent: {e}"))?;

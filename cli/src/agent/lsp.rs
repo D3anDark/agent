@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -197,7 +197,7 @@ impl Server {
     fn start(command: &str, root: &Path, deadline: Instant, abort: &AtomicBool) -> Result<Server, Stop> {
         let mut words = command.split_whitespace();
         let program = words.next().expect("languages with an empty command are skipped");
-        let mut child = match Command::new(program).args(words).current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
+        let mut child = match crate::process::command(program).args(words).current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
             Ok(child) => child,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(Stop::NotInstalled),
             Err(_) => return Err(Stop::Stopped),
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn servers_unused_for_the_idle_time_stop() {
         let server = |last_used: Instant| {
-            let mut child = Command::new("sleep").arg("60").stdin(Stdio::piped()).spawn().unwrap();
+            let mut child = crate::process::command("sleep").arg("60").stdin(Stdio::piped()).spawn().unwrap();
             let stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
             Server { child, stdin, inbox: mpsc::channel().1, next_id: 1, pull: false, versions: HashMap::new(), last_used }
         };

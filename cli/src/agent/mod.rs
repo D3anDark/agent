@@ -1665,7 +1665,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("agent-restore-{}", std::process::id()));
         let work = root.join("work");
         std::fs::create_dir_all(&work).unwrap();
-        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&work).args(args).output().unwrap().status.success());
+        let git = |args: &[&str]| assert!(crate::process::command("git").arg("-C").arg(&work).args(args).output().unwrap().status.success());
         git(&["init", "-q"]);
         let write = |name: &str, text: &str| std::fs::write(work.join(name), text).unwrap();
         let read = |name: &str| std::fs::read_to_string(work.join(name)).ok();
@@ -1699,17 +1699,17 @@ mod tests {
         let root = std::env::temp_dir().join(format!("agent-expire-{}", std::process::id()));
         let work = root.join("work");
         std::fs::create_dir_all(&work).unwrap();
-        assert!(std::process::Command::new("git").arg("-C").arg(&work).args(["init", "-q"]).status().unwrap().success());
+        assert!(crate::process::command("git").arg("-C").arg(&work).args(["init", "-q"]).status().unwrap().success());
         std::fs::write(work.join("a.txt"), "v1").unwrap();
         let recent = Snapshots::open(&root, &work).unwrap().take().unwrap();
         let git_dir = std::fs::read_dir(root.join(".agents/snapshots")).unwrap().next().unwrap().unwrap().path();
         let refs = || {
-            let output = std::process::Command::new("git").arg("--git-dir").arg(&git_dir).args(["for-each-ref", "--format=%(refname)"]).output().unwrap();
+            let output = crate::process::command("git").arg("--git-dir").arg(&git_dir).args(["for-each-ref", "--format=%(refname)"]).output().unwrap();
             String::from_utf8(output.stdout).unwrap().lines().map(String::from).collect::<Vec<_>>()
         };
         let recent_ref = refs().pop().unwrap();
         let old_ref = format!("refs/snapshots/1/{recent}");
-        assert!(std::process::Command::new("git").arg("--git-dir").arg(&git_dir).args(["update-ref", &old_ref, &recent]).status().unwrap().success());
+        assert!(crate::process::command("git").arg("--git-dir").arg(&git_dir).args(["update-ref", &old_ref, &recent]).status().unwrap().success());
 
         Snapshots::open(&root, &work).unwrap();
         let kept = refs();
@@ -1730,7 +1730,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("agent-changes-{}", std::process::id()));
         let work = root.join("work");
         std::fs::create_dir_all(&work).unwrap();
-        assert!(std::process::Command::new("git").arg("-C").arg(&work).args(["init", "-q"]).output().unwrap().status.success());
+        assert!(crate::process::command("git").arg("-C").arg(&work).args(["init", "-q"]).output().unwrap().status.success());
         let write = |name: &str, text: &str| std::fs::write(work.join(name), text).unwrap();
         let snapshots = Snapshots::open(&root, &work).unwrap();
         let tool_call = |writes: &[(&str, &str)]| {

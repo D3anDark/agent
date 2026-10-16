@@ -1,4 +1,4 @@
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Output handling for the model's bash calls, matching pi-rtk-optimizer's defaults.
 /// shortcut: pi's build/test/git/linter output filters are not ported; `rtk rewrite` already routes those commands through rtk.
@@ -18,7 +18,7 @@ impl Rtk {
         if !self.enabled || trimmed.is_empty() || trimmed == "rtk" || trimmed.starts_with("rtk ") {
             return command.to_string();
         }
-        let output = Command::new("rtk").args(["rewrite", command]).stdin(Stdio::null()).stderr(Stdio::null()).output();
+        let output = crate::process::command("rtk").args(["rewrite", command]).stderr(Stdio::null()).output();
         match output {
             Ok(output) => rewritten(command, output.status.code(), &String::from_utf8_lossy(&output.stdout)).unwrap_or_else(|| command.to_string()),
             Err(_) => command.to_string(),

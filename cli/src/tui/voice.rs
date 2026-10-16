@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::Instant;
 
 const MODEL: &str = ".agents/models/ggml-large-v3-turbo-q5_0.bin";
@@ -19,7 +19,7 @@ pub fn start(home: &Path) -> Result<Recording, String> {
         return Err(format!("No whisper model at {}. Download it: curl -L --create-dirs -o {} {MODEL_URL}", model.display(), model.display()));
     }
     let wav = std::env::temp_dir().join(format!("agent-voice-{}.wav", std::process::id()));
-    let ffmpeg = Command::new("ffmpeg")
+    let ffmpeg = crate::process::command("ffmpeg")
         .args(["-loglevel", "error", "-y"])
         .args(if cfg!(target_os = "macos") { ["-f", "avfoundation", "-i", ":default"] } else { ["-f", "pulse", "-i", "default"] })
         .args(["-ar", "16000", "-ac", "1"])
@@ -48,7 +48,7 @@ impl Recording {
             let _ = std::fs::remove_file(&self.wav);
             return Err("Recording failed. Check that the terminal may use the microphone.".into());
         }
-        let output = Command::new("whisper-cli")
+        let output = crate::process::command("whisper-cli")
             .args(["-l", "auto", "-nt", "-np", "-m"])
             .arg(&self.model)
             .arg("-f")

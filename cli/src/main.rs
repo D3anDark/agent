@@ -2,6 +2,7 @@ mod agent;
 mod api;
 mod mcp;
 mod plugins;
+mod process;
 mod settings;
 mod tools;
 mod tui;
@@ -83,6 +84,10 @@ fn plugin_command(args: &[String]) -> Result<(), String> {
 }
 
 fn main() {
+    process::on_hangup(|| {
+        process::hang_up_children();
+        std::process::exit(129);
+    });
     if std::env::args().nth(1).as_deref() == Some("--version") {
         println!("agent {}", env!("CARGO_PKG_VERSION"));
         return;
