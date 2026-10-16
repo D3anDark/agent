@@ -351,6 +351,8 @@ struct App {
     plugins: crate::plugins::Plugins,
     mcp: crate::mcp::Mcp,
     steering: Arc<Mutex<Vec<String>>>,
+    /// Slash commands and `!bash` typed while the agent works; they run one by one once it is idle.
+    queued_commands: Vec<String>,
     abort: Arc<AtomicBool>,
     permission_mode: Arc<Mutex<Mode>>,
     hint: Option<(String, Instant)>,
@@ -713,8 +715,13 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
         if app.hint.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_millis(1500)) {
             app.hint = None;
         }
-        if app.working.is_none() && !app.follow_ups.lock().unwrap().is_empty() {
+        // Steering typed after the turn's last check, e.g. while edit hooks ran, still needs a turn.
+        if app.working.is_none() && (!app.follow_ups.lock().unwrap().is_empty() || !app.steering.lock().unwrap().is_empty()) {
             app.start(Command::FollowUps);
+        }
+        while app.working.is_none() && !app.queued_commands.is_empty() {
+            let text = app.queued_commands.remove(0);
+            app.submit(text);
         }
         if app.quit {
             return Ok(());
@@ -754,6 +761,7 @@ impl App {
             cwd: agent.cwd.clone(),
             path_matches: Default::default(),
             steering: agent.steering.clone(),
+            queued_commands: Vec::new(),
             abort: agent.abort.clone(),
             permission_mode: agent.permission_mode.clone(),
             hint: None,
@@ -1181,7 +1189,8 @@ impl App {
             KeyCode::Char('r') if ctrl => self.open_history(),
             KeyCode::BackTab => self.cycle_thinking(),
             KeyCode::Up if alt => {
-                let queued = std::mem::take(&mut *self.steering.lock().unwrap());
+                let mut queued = std::mem::take(&mut *self.steering.lock().unwrap());
+                queued.append(&mut self.queued_commands);
                 if !queued.is_empty() {
                     self.editor.set(&queued.join("\n\n"));
                 }
@@ -1398,7 +1407,15 @@ impl App {
         // Plugin commands can carry secrets such as tokens, so they never become steering text.
         let plugin = self.plugins.commands().iter().any(|(name, _)| command_args(&text, &format!("/{name}")).is_some());
         if self.working.is_some() && !local && !plugin {
-            self.steering.lock().unwrap().push(text);
+            // Steering reaches the model as plain text, so commands wait for the turn to end and run then.
+            let command = text.starts_with('!')
+                || text.trim().starts_with("/skill:")
+                || self.slash_commands.iter().any(|(name, _)| command_args(&text, &format!("/{name}")).is_some());
+            if command {
+                self.queued_commands.push(text);
+            } else {
+                self.steering.lock().unwrap().push(text);
+            }
             return;
         }
         let trimmed = text.trim();
@@ -2989,7 +3006,10 @@ impl App {
         for text in &queued {
             bottom.push(vec![span(format!(" Steering: {}", text.replace('\n', " ")), DIM)]);
         }
-        if !queued.is_empty() {
+        for text in &self.queued_commands {
+            bottom.push(vec![span(format!(" Queued: {}", text.replace('\n', " ")), DIM)]);
+        }
+        if !queued.is_empty() || !self.queued_commands.is_empty() {
             bottom.push(vec![span(format!(" ↳ {ALT}+Up to edit all queued messages"), DIM)]);
         }
         if let Some(recording) = &self.recording {
