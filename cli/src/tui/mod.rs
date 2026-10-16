@@ -2704,7 +2704,10 @@ impl App {
         match event {
             Event::Text(delta) => self.append_assistant(&delta, false),
             Event::Thinking(delta) => self.append_assistant(&delta, true),
-            Event::Notice(text) => self.system("agent", text),
+            Event::Notice(text) => {
+                let (source, text) = notice_source(&text);
+                self.system(source, text);
+            }
             Event::ToolStart { id, name, input } => self.push(Item::Tool { id, name, input, result: None }),
             Event::ToolEnd { id, output, is_error } => {
                 let entry = self.entries.iter_mut().rev().find(|e| matches!(&e.item, Item::Tool { id: tool_id, .. } if *tool_id == id));
@@ -3617,6 +3620,11 @@ fn rewind_entry(entries: &[Entry], points: &[RewindPoint], chosen: usize) -> Opt
     None
 }
 
+/// "[lsp] Cannot read x" shows as source "lsp"; an unprefixed notice comes from "agent".
+fn notice_source(text: &str) -> (&str, &str) {
+    text.strip_prefix('[').and_then(|rest| rest.split_once("] ")).unwrap_or(("agent", text))
+}
+
 fn rewind_note(files: Option<RestoredFiles>) -> String {
     let Some(files) = files else { return "Rewound the conversation. Files are not tracked outside a git repo.".into() };
     let mut note = match files.restored.len() {
@@ -3921,6 +3929,12 @@ fn recording_line(elapsed: Duration) -> Line {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn bracketed_notice_prefix_becomes_the_source() {
+        assert_eq!(notice_source("[lsp] Cannot read a.rs"), ("lsp", "Cannot read a.rs"));
+        assert_eq!(notice_source("Operation aborted"), ("agent", "Operation aborted"));
+    }
 
     #[test]
     fn unknown_tool_args_read_as_key_values() {
