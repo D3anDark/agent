@@ -12,6 +12,7 @@ pub enum Color {
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
 pub struct Style {
     pub fg: Color,
+    pub bg: Option<u8>,
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
@@ -34,6 +35,9 @@ impl Style {
     pub const fn underline(self) -> Style {
         Style { underline: true, ..self }
     }
+    pub const fn on(self, bg: u8) -> Style {
+        Style { bg: Some(bg), ..self }
+    }
 
     fn sgr(&self) -> String {
         let mut codes = vec!["0".to_string()];
@@ -42,6 +46,9 @@ impl Style {
             Color::Default => {}
             Color::Ansi(n) => codes.push(format!("38;5;{n}")),
             Color::Rgb(rgb) => codes.push(format!("38;2;{};{};{}", rgb >> 16, (rgb >> 8) & 0xff, rgb & 0xff)),
+        }
+        if let (Some(bg), false) = (self.bg, self.selected) {
+            codes.push(format!("48;5;{bg}"));
         }
         if self.bold {
             codes.push("1".into());
@@ -56,7 +63,7 @@ impl Style {
     }
 }
 
-pub const PLAIN: Style = Style { fg: Color::Default, bold: false, italic: false, underline: false, selected: false };
+pub const PLAIN: Style = Style { fg: Color::Default, bg: None, bold: false, italic: false, underline: false, selected: false };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Span {

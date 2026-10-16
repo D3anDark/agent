@@ -3104,7 +3104,7 @@ impl App {
             *first = overlay_right(first, vec![span(format!(" {hint} "), Style { selected: true, ..PLAIN })], content_width);
         }
         if let (true, Some(last)) = (self.scroll > 0, rows.last_mut()) {
-            *last = overlay_center(last, vec![span(format!(" ↓ Jump to latest message · {ALT}+Down "), DIM)], content_width);
+            *last = overlay_center(last, vec![span(format!(" ↓ Jump to latest message · {ALT}+Down "), BRIGHT.on(240))], content_width);
         }
         for (row, glyph) in scrollbar(total, visible, self.scroll).into_iter().enumerate() {
             let pad = content_width.saturating_sub(line_width(&rows[row]));
