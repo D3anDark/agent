@@ -1,0 +1,254 @@
+//! GitHub code URLs: a shallow clone the agent can explore, summarised as tree, listing, README or file.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+const NON_CODE: [&str; 21] = [
+    "issues", "pull", "pulls", "discussions", "releases", "wiki", "actions", "settings", "security", "projects", "graphs", "compare", "commits", "tags",
+    "branches", "stargazers", "watchers", "network", "forks", "milestone", "labels",
+];
+const NOISE: [&str; 15] = [
+    "node_modules", "vendor", ".next", "dist", "build", "__pycache__", ".venv", "venv", ".tox", ".mypy_cache", ".pytest_cache", "target", ".gradle", ".idea",
+    ".vscode",
+];
+const TREE_LIMIT: usize = 200;
+const README_CHARS: usize = 8192;
+const FILE_CHARS: usize = 100_000;
+const FOOTER: &str = "Use `read` and `bash` tools at the path above to explore further.";
+
+#[derive(Debug, PartialEq)]
+pub enum Kind {
+    Root,
+    Tree,
+    Blob,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Repo {
+    pub owner: String,
+    pub repo: String,
+    pub kind: Kind,
+    pub git_ref: Option<String>,
+    pub path: String,
+}
+
+/// pi's parseGitHubUrl: None for non-GitHub URLs and for pages that are not code (issues, pulls, ...).
+pub fn parse(url: &str) -> Option<Repo> {
+    if !matches!(super::host(url)?.as_str(), "github.com" | "www.github.com") {
+        return None;
+    }
+    let path = url.split_once("://")?.1.split(['?', '#']).next()?;
+    let segments: Vec<String> = path.split('/').skip(1).filter(|s| !s.is_empty()).map(percent_decode).collect::<Option<_>>()?;
+    let [owner, repo, rest @ ..] = segments.as_slice() else { return None };
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    let owner_ok = owner.len() <= 39
+        && !owner.contains("--")
+        && !owner.starts_with('-')
+        && !owner.ends_with('-')
+        && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    let repo_ok = (1..=100).contains(&repo.len()) && repo != "." && repo != ".." && repo.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+    if !owner_ok || !repo_ok {
+        return None;
+    }
+    let (owner, repo) = (owner.clone(), repo.to_string());
+    let Some(kind) = rest.first() else { return Some(Repo { owner, repo, kind: Kind::Root, git_ref: None, path: String::new() }) };
+    if NON_CODE.contains(&kind.to_lowercase().as_str()) {
+        return None;
+    }
+    let kind = match kind.as_str() {
+        "tree" => Kind::Tree,
+        "blob" => Kind::Blob,
+        _ => return None,
+    };
+    let git_ref = rest.get(1)?;
+    if git_ref.len() > 1024 || git_ref.chars().any(char::is_control) {
+        return None;
+    }
+    let path = rest[2..].join("/");
+    // The path is joined onto the clone dir: `..` or a leading `/` (also percent-encoded) would escape it.
+    if path.starts_with(['/', '\\']) || path.split(['/', '\\']).any(|part| part == "..") {
+        return None;
+    }
+    Some(Repo { owner, repo, kind, git_ref: Some(git_ref.clone()), path })
+}
+
+fn percent_decode(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            out.push(u8::from_str_radix(segment.get(i + 1..i + 3)?, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Clones (or reuses) the repository and describes the part the URL points at.
+pub fn fetch(repo: &Repo, force_clone: bool) -> Result<String, String> {
+    let dir = clone(repo, force_clone)?;
+    Ok(describe(repo, &dir))
+}
+
+/// shortcut: plain `git clone`, no `gh` auth and no repository size check; private repos fall back to the page fetch.
+fn clone(repo: &Repo, force_clone: bool) -> Result<PathBuf, String> {
+    let safe_ref: String = repo.git_ref.as_deref().unwrap_or("HEAD").chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect();
+    let dir = std::env::temp_dir().join("agent-github").join(format!("{}-{}@{safe_ref}", repo.owner, repo.repo));
+    if dir.join(".git").is_dir() && !force_clone {
+        return Ok(dir);
+    }
+    _ = std::fs::remove_dir_all(&dir);
+    let mut git = Command::new("git");
+    git.args(["clone", "--depth", "1", "--single-branch"]).env("GIT_TERMINAL_PROMPT", "0");
+    if let Some(git_ref) = &repo.git_ref {
+        git.args(["--branch", git_ref]);
+    }
+    let output = git.arg(format!("https://github.com/{}/{}.git", repo.owner, repo.repo)).arg(&dir).output().map_err(|e| format!("git: {e}"))?;
+    if !output.status.success() {
+        _ = std::fs::remove_dir_all(&dir);
+        return Err(format!("git clone failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    Ok(dir)
+}
+
+fn describe(repo: &Repo, dir: &Path) -> String {
+    let mut lines = vec![format!("Repository cloned to: {}", dir.display()), String::new()];
+    let target = dir.join(&repo.path);
+    let not_found = format!("Path `{}` not found in clone. Showing repository root instead.", repo.path);
+    match repo.kind {
+        Kind::Root => {
+            lines.extend(["## Structure".to_string(), tree(dir), String::new()]);
+            if let Some((name, readme)) = readme(dir) {
+                lines.extend([format!("## {name}"), readme, String::new()]);
+            }
+        }
+        Kind::Tree if !target.exists() => lines.extend([not_found, String::new(), "## Structure".into(), tree(dir), String::new()]),
+        Kind::Tree => {
+            let shown = if repo.path.is_empty() { "/" } else { &repo.path };
+            lines.extend([format!("## {shown}"), listing(&target), String::new()]);
+        }
+        Kind::Blob if !target.exists() => lines.extend([not_found, String::new()]),
+        Kind::Blob if target.is_dir() => lines.extend([format!("## {}", repo.path), listing(&target), String::new()]),
+        Kind::Blob => match std::fs::read(&target).ok().filter(|b| !b.iter().take(512).any(|&byte| byte == 0)).and_then(|b| String::from_utf8(b).ok()) {
+            None => lines.extend([format!("Could not read `{}` as UTF-8 text.", repo.path), String::new()]),
+            Some(text) if text.chars().count() > FILE_CHARS => lines.extend([
+                format!("## {}", repo.path),
+                super::char_slice(&text, 0, FILE_CHARS).to_string(),
+                String::new(),
+                format!("[File truncated at 100K chars. Full file: {}]", target.display()),
+                String::new(),
+            ]),
+            Some(text) => lines.extend([format!("## {}", repo.path), text, String::new()]),
+        },
+    }
+    lines.push(FOOTER.into());
+    lines.join("\n")
+}
+
+/// Depth-first sorted tree without `.git`; noise directories are named but not entered.
+fn tree(root: &Path) -> String {
+    let mut lines = Vec::new();
+    walk(root, root, &mut lines);
+    if lines.len() > TREE_LIMIT {
+        lines.truncate(TREE_LIMIT);
+        lines.push(format!("... (truncated at {TREE_LIMIT} entries)"));
+    }
+    lines.join("\n")
+}
+
+fn walk(root: &Path, dir: &Path, lines: &mut Vec<String>) {
+    for path in sorted(dir) {
+        if lines.len() > TREE_LIMIT {
+            return;
+        }
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        if name == ".git" {
+            continue;
+        }
+        let rel = path.strip_prefix(root).unwrap_or(&path).display().to_string();
+        if !path.is_dir() {
+            lines.push(rel);
+        } else if NOISE.contains(&name.as_str()) {
+            lines.push(format!("{rel}/  [skipped]"));
+        } else {
+            lines.push(format!("{rel}/"));
+            walk(root, &path, lines);
+        }
+    }
+}
+
+fn listing(dir: &Path) -> String {
+    let lines: Vec<String> = sorted(dir)
+        .into_iter()
+        .map(|path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            match std::fs::metadata(&path) {
+                Ok(meta) if meta.is_file() => format!("  {name}  ({})", size(meta.len())),
+                _ => format!("  {name}/"),
+            }
+        })
+        .collect();
+    lines.join("\n")
+}
+
+fn sorted(dir: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    paths
+}
+
+fn size(bytes: u64) -> String {
+    match bytes {
+        0..1024 => format!("{bytes} B"),
+        1024..1_048_576 => format!("{:.1} KB", bytes as f64 / 1024.0),
+        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+    }
+}
+
+fn readme(dir: &Path) -> Option<(&'static str, String)> {
+    ["README.md", "readme.md", "README", "README.txt", "README.rst"].into_iter().find_map(|name| {
+        let text = std::fs::read_to_string(dir.join(name)).ok()?;
+        if text.chars().count() <= README_CHARS {
+            return Some((name, text));
+        }
+        Some((name, format!("{}\n\n[README truncated at 8K chars]", super::char_slice(&text, 0, README_CHARS))))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_accepts_code_urls_and_refuses_the_rest() {
+        let blob = parse("https://github.com/rust-lang/rust/blob/main/src/lib%20x.rs?plain=1").unwrap();
+        assert_eq!(blob, Repo { owner: "rust-lang".into(), repo: "rust".into(), kind: Kind::Blob, git_ref: Some("main".into()), path: "src/lib x.rs".into() });
+        assert_eq!(parse("https://www.github.com/a/b.git").unwrap().kind, Kind::Root);
+        assert!(parse("https://github.com/a/b/issues/1").is_none());
+        assert!(parse("https://github.com/a--b/c").is_none());
+        assert!(parse("https://github.com/a/..").is_none());
+        assert!(parse("https://github.com/a/b/blob/main/%2e%2e/%2e%2e/etc/passwd").is_none());
+        assert!(parse("https://github.com/a").is_none());
+        assert!(parse("https://gitlab.com/a/b").is_none());
+    }
+
+    #[test]
+    fn describe_shows_root_tree_with_noise_skipped_and_readme() {
+        let dir = std::env::temp_dir().join(format!("agent-github-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/x")).unwrap();
+        std::fs::write(dir.join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.join("README.md"), "# Hi").unwrap();
+        let repo = Repo { owner: "o".into(), repo: "r".into(), kind: Kind::Root, git_ref: None, path: String::new() };
+        let text = describe(&repo, &dir);
+        let expected = format!("Repository cloned to: {}\n\n## Structure\nREADME.md\nnode_modules/  [skipped]\nsrc/\nsrc/main.rs\n\n## README.md\n# Hi\n\n{FOOTER}", dir.display());
+        assert_eq!(text, expected);
+        let tree = Repo { kind: Kind::Tree, path: "src".into(), git_ref: Some("main".into()), ..repo };
+        assert!(describe(&tree, &dir).contains("## src\n  main.rs  (12 B)\n"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

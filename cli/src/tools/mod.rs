@@ -17,6 +17,7 @@ pub mod hashline;
 pub mod plan;
 pub mod rtk;
 pub mod todo;
+pub mod web;
 
 use hashline::{Anchors, resolve, str_arg};
 use rtk::Rtk;

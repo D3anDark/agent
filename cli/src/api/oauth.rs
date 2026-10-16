@@ -238,17 +238,19 @@ fn base64url_decode(text: &str) -> Option<Vec<u8>> {
 
 /// `application/x-www-form-urlencoded`, also used for query strings.
 pub fn form(pairs: &[(&str, &str)]) -> String {
-    let encode = |text: &str| -> String {
-        let mut out = String::new();
-        for byte in text.bytes() {
-            match byte {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
-                _ => out.push_str(&format!("%{byte:02X}")),
-            }
+    pairs.iter().map(|(key, value)| format!("{}={}", percent_encode(key), percent_encode(value))).collect::<Vec<_>>().join("&")
+}
+
+/// Every byte but RFC 3986 unreserved characters as `%XX`, like `encodeURIComponent`.
+pub fn percent_encode(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            _ => out.push_str(&format!("%{byte:02X}")),
         }
-        out
-    };
-    pairs.iter().map(|(key, value)| format!("{}={}", encode(key), encode(value))).collect::<Vec<_>>().join("&")
+    }
+    out
 }
 
 fn parse_query(query: &str) -> Vec<(String, String)> {
