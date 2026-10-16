@@ -404,8 +404,9 @@ mod tests {
 
     #[test]
     fn tables_become_pipe_tables() {
-        let html = "<table><tr><th>Name</th><th>Size</th></tr><tr><td>a.rs</td><td>3 KB</td></tr></table><p>After</p>";
-        let (_, markdown) = to_markdown(html, "https://example.com/");
-        assert_eq!(markdown, "| Name | Size |\n| --- | --- |\n| a.rs | 3 KB |\n\nAfter");
+        let table = "<table><tr><th>Name</th><th>Size</th></tr><tr><td>a.rs</td><td>3 KB</td></tr></table>";
+        let (_, markdown) = to_markdown(&format!("{table}<p>After</p>{table}"), "https://example.com/");
+        let expected = "| Name | Size |\n| --- | --- |\n| a.rs | 3 KB |";
+        assert_eq!(markdown, format!("{expected}\n\nAfter\n\n{expected}"));
     }
 }
