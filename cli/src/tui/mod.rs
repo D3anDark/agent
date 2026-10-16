@@ -309,6 +309,8 @@ struct Entry {
 struct Git {
     branch: Option<String>,
     changed: usize,
+    /// The main checkout, set only when the session runs in a linked worktree.
+    main: Option<Worktree>,
 }
 
 struct App {
@@ -3060,12 +3062,14 @@ impl App {
 
     fn footer(&self, width: usize) -> Vec<Line> {
         let home = std::env::var("HOME").unwrap_or_default();
-        let cwd = self.cwd.display().to_string();
-        let cwd = match cwd.strip_prefix(&home) {
-            Some(rest) if !home.is_empty() => format!("~{rest}"),
-            _ => cwd,
+        let tilde = |path: &Path| {
+            let path = path.display().to_string();
+            match path.strip_prefix(&home) {
+                Some(rest) if !home.is_empty() => format!("~{rest}"),
+                _ => path,
+            }
         };
-        let mut left = vec![span(cwd, PLAIN.bold())];
+        let mut left = vec![span(tilde(&self.cwd), PLAIN.bold())];
         if let Some(branch) = &self.git.branch {
             left.push(span(" ", PLAIN));
             left.push(span(branch, MUTED));
@@ -3073,6 +3077,9 @@ impl App {
         if self.git.changed > 0 {
             left.push(span(" ", PLAIN));
             left.push(span(format!("{} changed", self.git.changed), WARN));
+        }
+        if let Some(main) = &self.git.main {
+            left.push(span(format!(" → {} {}", main.branch, tilde(&main.path)), WARN));
         }
         if let Some(goal) = self.goal.lock().unwrap().as_ref() {
             left.push(span(format!(" goal {}", goal.status.as_str()), MUTED));
@@ -3094,7 +3101,7 @@ impl App {
         if self.context_tokens > 0 {
             right.push(span(format!(" {} {percent}%", tokens(self.context_tokens)), MUTED));
         }
-        vec![spread(left, right, width)]
+        footer_rows(left, right, width)
     }
 }
 
@@ -3554,6 +3561,17 @@ fn spread(left: Line, right: Line, width: usize) -> Line {
     [left, vec![span(" ".repeat(gap), PLAIN)], right].concat()
 }
 
+/// `left` word-wrapped to `width`, with `right` at the end of its last row, or on a row of its own when that one is full.
+fn footer_rows(left: Line, right: Line, width: usize) -> Vec<Line> {
+    let mut rows = wrap(&left, width, &Vec::new());
+    let mut last = rows.pop().expect("wrap returns at least one row");
+    if line_width(&last) + 1 + line_width(&right) > width {
+        rows.push(std::mem::take(&mut last));
+    }
+    rows.push(spread(last, right, width));
+    rows
+}
+
 fn context_lines(split: [u64; 5], window: u64, session: Usage, last: Usage) -> Vec<Line> {
     let used: u64 = split.iter().sum();
     let percent = |part: u64, of: u64| format!("{}%", (part * 100).checked_div(of).unwrap_or(0));
@@ -3715,9 +3733,10 @@ fn git_info(cwd: &Path) -> Git {
     let run = |args: &[&str]| {
         std::process::Command::new("git").args(args).current_dir(cwd).stderr(std::process::Stdio::null()).output().ok().filter(|o| o.status.success())
     };
-    let branch = run(&["branch", "--show-current"]).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|b| !b.is_empty());
+    let branch = run(&["branch", "--show-current"]).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).map(|b| if b.is_empty() { "detached".to_string() } else { b });
     let changed = run(&["status", "--porcelain", "--untracked-files=all"]).map_or(0, |o| o.stdout.split(|b| *b == b'\n').filter(|l| !l.is_empty()).count());
-    Git { branch, changed }
+    let main = worktree::list(cwd).ok().and_then(|(worktrees, current)| worktrees.into_iter().next().filter(|main| main.path != current));
+    Git { branch, changed, main }
 }
 
 fn context_window_label(window: Option<u64>) -> String {
@@ -3944,6 +3963,14 @@ mod tests {
 
     fn text(line: &Line) -> String {
         line.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn footer_wraps_by_word_when_the_row_is_full() {
+        let rows = |width| footer_rows(vec![span("~/r/app-pr detached → main ~/r/app", PLAIN)], vec![span("opus 12%", MUTED)], width).iter().map(text).collect::<Vec<_>>();
+        assert_eq!(rows(44), ["~/r/app-pr detached → main ~/r/app  opus 12%"]);
+        assert_eq!(rows(30), ["~/r/app-pr detached → main ", "~/r/app               opus 12%"]);
+        assert_eq!(rows(15), ["~/r/app-pr ", "detached → main", "~/r/app", "       opus 12%"]);
     }
 
     #[test]
