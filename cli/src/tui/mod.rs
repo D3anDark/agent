@@ -3536,8 +3536,7 @@ fn render_tool(name: &str, input: &Value, result: Option<&(String, bool)>, width
             vec![span(icon, icon_style), span(" [skill] ", TOOL_NAME), span(skill, TOOL_ARGS), span(hint, MUTED)]
         }
         None => {
-            let label = if name == "bash" { "Bash" } else { name };
-            vec![span(icon, icon_style), span(" ", PLAIN), span(label, TOOL_NAME), span(" ", PLAIN), span(tool_args(name, input), TOOL_ARGS)]
+            vec![span(icon, icon_style), span(" ", PLAIN), span(name, TOOL_NAME), span(" ", PLAIN), span(tool_args(name, input), TOOL_ARGS)]
         }
     };
     if !expanded {
@@ -4228,7 +4227,7 @@ mod tests {
         let result = ("total 1\na.txt  6B\n".to_string(), false);
         let lines = render_tool("bash", &json!({"command": "ls", "timeout": 10}), Some(&result), 40, true);
         let rows: Vec<String> = lines.iter().map(text).collect();
-        assert_eq!(rows, ["✓ Bash ls (timeout 10s)", "└ total 1", "  a.txt  6B"]);
+        assert_eq!(rows, ["✓ bash ls (timeout 10s)", "└ total 1", "  a.txt  6B"]);
     }
 
     #[test]
