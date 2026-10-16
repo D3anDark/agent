@@ -39,7 +39,7 @@ use crate::agent::subagent::Runs;
 use crate::api::accounts::Policy;
 use crate::api::models::{self, Model};
 use crate::api::oauth::Tokens;
-use crate::settings::{self, Settings, model_key};
+use crate::settings::{self, PRUNE_SESSIONS, Settings, model_key};
 use crate::tools::bg::Terminals;
 use crate::tools::goal::{Goal, Status as GoalStatus};
 use crate::tools::plan::{self, Plan};
@@ -222,7 +222,7 @@ const MENU_ROWS: [usize; 5] = [4, 6, 8, 10, 12];
 const PANEL_ROWS: usize = 8;
 const PLAN_OPTIONS: [&str; 4] = ["Implement here", "Start fresh and implement", "Export to PLAN.md", "Keep planning"];
 const SCROLL_LINES: [usize; 5] = [1, 2, 3, 5, 10];
-const SETTING_NAMES: [&str; 24] = [
+const SETTING_NAMES: [&str; 25] = [
     "Model",
     "Thinking level",
     "Permission mode",
@@ -247,9 +247,10 @@ const SETTING_NAMES: [&str; 24] = [
     "Copy on select",
     "Update channel",
     "Menu rows",
+    "Auto prune sessions",
 ];
 /// Rows of `SETTING_NAMES` in the order the settings panel lists them.
-const SETTING_ORDER: [usize; 24] = [0, 1, 18, 13, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 23, 21, 22];
+const SETTING_ORDER: [usize; 25] = [0, 1, 18, 13, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 23, 21, 22, 24];
 const MODEL_ROWS: [usize; 3] = [0, 8, 12];
 const CONTEXT_WINDOW_ROW: usize = 13;
 const CONTEXT_WINDOWS: [Option<u64>; 5] = [
@@ -2275,6 +2276,7 @@ impl App {
         let ponytail: Vec<String> = PONYTAIL_LEVELS.iter().map(|l| l.to_string()).collect();
         let caveman: Vec<String> = CAVEMAN_LEVELS.iter().map(|l| l.to_string()).collect();
         let channels: Vec<String> = crate::update::CHANNELS.iter().map(|c| c.to_string()).collect();
+        let prune: Vec<String> = PRUNE_SESSIONS.iter().map(|p| p.to_string()).collect();
         self.update_settings(|s| match row {
             1 => s.thinking = step(&thinking, &s.thinking, forward),
             2 => s.permission_mode = step(&MODES, &s.permission_mode, forward),
@@ -2296,11 +2298,12 @@ impl App {
             21 => s.copy_on_select = !s.copy_on_select,
             22 => s.update_channel = step(&channels, &s.update_channel, forward),
             23 => s.menu_rows = step(&MENU_ROWS, &s.menu_rows, forward),
+            24 => s.prune_sessions = step(&prune, &s.prune_sessions, forward),
             _ => unreachable!("rows 0, 8, 12 and 13 open their own panels"),
         });
     }
 
-    fn setting_values(&self) -> [Line; 24] {
+    fn setting_values(&self) -> [Line; 25] {
         let s = &self.settings;
         let on_off = |value: bool| if value { "on" } else { "off" };
         let condense_model = if s.condense_model.is_empty() { "auto" } else { &s.condense_model };
@@ -2331,6 +2334,7 @@ impl App {
             choices(["off", "on"].map(String::from), on_off(s.copy_on_select)),
             choices(crate::update::CHANNELS.map(String::from), &s.update_channel),
             choices(MENU_ROWS.map(|n| n.to_string()), &s.menu_rows.to_string()),
+            choices(PRUNE_SESSIONS.map(String::from), &s.prune_sessions),
         ]
     }
 

@@ -174,6 +174,9 @@ fn run(options: Options) -> Result<(), String> {
         Some(Resume::Latest) => Session::resume(&sessions_dir, &Session::latest(&sessions_dir, &cwd)?)?,
         None => (Session::start(&sessions_dir, options.save, &cwd, &settings.model)?, History::default()),
     };
+    if let Some(max_age) = settings.prune_sessions_after() {
+        Session::prune(&sessions_dir, max_age);
+    }
     if let Some(parent) = &options.parent {
         session.append(&serde_json::json!({"type": "parent", "session": parent}))?;
     }

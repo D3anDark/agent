@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::agent::permissions::Mode;
 use crate::api::accounts::Policy;
@@ -56,6 +57,8 @@ pub struct Settings {
     pub copy_on_select: bool,
     /// One of `update::CHANNELS`.
     pub update_channel: String,
+    /// One of `PRUNE_SESSIONS`: sessions untouched this long are deleted at start.
+    pub prune_sessions: String,
     /// Shell commands the TUI runs in the background at start, e.g. a global tool update.
     pub on_start: Vec<String>,
     /// Language name to the server that checks a file after each edit; an empty command turns the language off.
@@ -70,12 +73,26 @@ pub struct LspServer {
     pub roots: Vec<String>,
 }
 
+pub const PRUNE_SESSIONS: [&str; 6] = ["never", "24h", "3d", "7d", "14d", "30d"];
+
 impl Settings {
     pub fn context_window(&self, model: &Model) -> u64 {
         let overrides = &self.context_windows;
         overrides.get(&model_key(model)).or(overrides.get(&model.provider)).copied().unwrap_or(model.context_window)
     }
 
+    /// How long an untouched session is kept; `None` keeps it forever.
+    pub fn prune_sessions_after(&self) -> Option<Duration> {
+        let hours = match self.prune_sessions.as_str() {
+            "24h" => 24,
+            "3d" => 3 * 24,
+            "7d" => 7 * 24,
+            "14d" => 14 * 24,
+            "30d" => 30 * 24,
+            _ => return None,
+        };
+        Some(Duration::from_secs(hours * 3600))
+    }
 }
 
 pub fn model_key(model: &Model) -> String {
@@ -129,6 +146,7 @@ pub fn load(home: &Path) -> Settings {
         menu_rows: own["menu_rows"].as_u64().unwrap_or(6) as usize,
         copy_on_select: own["copy_on_select"].as_bool().unwrap_or(true),
         update_channel: own["update_channel"].as_str().unwrap_or("latest").to_string(),
+        prune_sessions: own["prune_sessions"].as_str().unwrap_or("never").to_string(),
         on_start: own["on_start"].as_array().into_iter().flatten().filter_map(|command| Some(command.as_str()?.to_string())).collect(),
         lsp: lsp_servers(&own["lsp"]),
     }
@@ -195,6 +213,7 @@ pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
         "menu_rows": settings.menu_rows,
         "copy_on_select": settings.copy_on_select,
         "update_channel": settings.update_channel,
+        "prune_sessions": settings.prune_sessions,
         "on_start": settings.on_start,
         "lsp": settings.lsp.iter().map(|(language, server)| (language.clone(), json!({"command": server.command, "extensions": server.extensions, "roots": server.roots}))).collect::<serde_json::Map<_, _>>(),
         "condense": {"enabled": settings.condense, "model": settings.condense_model, "min_batch_chars": settings.condense_min_batch_chars},
@@ -235,6 +254,7 @@ mod tests {
         settings.menu_rows = 10;
         settings.copy_on_select = false;
         settings.update_channel = "pre-release".into();
+        settings.prune_sessions = "7d".into();
         settings.on_start = vec!["echo started".into()];
         settings.lsp.get_mut("rust").unwrap().command = "ra-multiplex".into();
         save(&home, &settings).unwrap();
@@ -260,6 +280,7 @@ mod tests {
         assert_eq!(properties["ponytail"]["enum"], json!(crate::agent::modes::PONYTAIL_LEVELS));
         assert_eq!(properties["caveman"]["enum"], json!(crate::agent::modes::CAVEMAN_LEVELS));
         assert_eq!(properties["update_channel"]["enum"], json!(crate::update::CHANNELS));
+        assert_eq!(properties["prune_sessions"]["enum"], json!(PRUNE_SESSIONS));
     }
 
     /// Every object `save` writes has exactly the properties its schema lists, nested objects included.

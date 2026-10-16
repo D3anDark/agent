@@ -1228,6 +1228,23 @@ impl Session {
         sessions
     }
 
+    /// Deletes saved sessions untouched for longer than `max_age`. A session open in any process, this one included, holds its lock and stays.
+    pub fn prune(dir: &Path, max_age: Duration) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let cutoff = std::time::SystemTime::now() - max_age;
+        for path in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
+            if path.extension().is_none_or(|extension| extension != "jsonl") {
+                continue;
+            }
+            let Ok(modified) = path.metadata().and_then(|m| m.modified()) else { continue };
+            let Ok(file) = File::open(&path) else { continue };
+            if modified < cutoff && file.try_lock().is_ok() {
+                // A file that cannot be removed now is tried again at the next start.
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
     /// Id of the newest saved session started in `cwd`.
     pub fn latest(dir: &Path, cwd: &Path) -> Result<String, String> {
         let cwd = cwd.display().to_string();
@@ -1603,6 +1620,25 @@ mod tests {
         assert_eq!(copy.forked_from.as_deref(), Some(id.as_str()));
         assert_eq!((history.messages, copied.messages), (vec![user("hi")], vec![user("hi")]));
         assert_eq!((again.id, again.forked_from), (id, None));
+    }
+
+    #[test]
+    fn prune_deletes_only_old_sessions_no_process_has_open() {
+        let dir = std::env::temp_dir().join(format!("agent-prune-{}", std::process::id()));
+        let open = Session::start(&dir, true, Path::new("/w"), "m").unwrap();
+        let closed = Session::start(&dir, true, Path::new("/w"), "m").unwrap();
+        let (open_path, closed_path) = (open.path.clone().unwrap(), closed.path.clone().unwrap());
+        drop(closed);
+        let fresh = dir.join("fresh.jsonl");
+        std::fs::write(&fresh, "").unwrap();
+        let month_ago = std::time::SystemTime::now() - Duration::from_secs(30 * 24 * 3600);
+        for path in [&open_path, &closed_path] {
+            File::options().write(true).open(path).unwrap().set_modified(month_ago).unwrap();
+        }
+        Session::prune(&dir, Duration::from_secs(7 * 24 * 3600));
+        let left = (open_path.exists(), closed_path.exists(), fresh.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(left, (true, false, true));
     }
 
     #[test]
