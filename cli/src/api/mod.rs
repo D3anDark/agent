@@ -26,13 +26,14 @@ const LIMITED_FOR: Duration = Duration::from_secs(60);
 /// `headroom proxy`'s default address; it serves both /v1/messages and /backend-api/codex/responses.
 const HEADROOM_URL: &str = "http://127.0.0.1:8787";
 
-/// Talks to Anthropic and Codex. Clones share the accounts, the usage cache and the current pick.
+/// Talks to Anthropic, Codex and OpenRouter. Clones share the accounts, the usage cache and the current pick.
 #[derive(Clone)]
 pub struct Client {
     http: ureq::Agent,
     home: PathBuf,
     anthropic_base: String,
     chatgpt_base: String,
+    openrouter_base: String,
     catalog: Arc<Vec<Model>>,
     /// Codex prompt_cache_key; one per process, like pi's session id.
     cache_key: String,
@@ -111,41 +112,55 @@ enum Choice {
 }
 
 impl Client {
-    /// Loads `~/.agents/accounts.json`; without an Anthropic account, `ANTHROPIC_API_KEY` acts as one named `env`.
-    /// Then loads the model catalog, asking each logged-in provider when the cached list is a day old.
-    pub fn new(home: &Path) -> Result<Client, String> {
+    /// Loads `~/.agents/accounts.json`; a provider without an account uses `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` as one named `env`.
+    /// Then builds the model catalog live from every account's model list; returns it with one error per list that failed.
+    pub fn new(home: &Path) -> Result<(Client, Vec<String>), String> {
         let base = |var: &str, default: &str| std::env::var(var).unwrap_or_else(|_| default.into()).trim_end_matches('/').to_string();
         let mut client = Client {
             http: ureq::Agent::config_builder().http_status_as_error(false).timeout_connect(Some(Duration::from_secs(30))).build().into(),
             home: home.to_path_buf(),
             anthropic_base: base("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
             chatgpt_base: base("CHATGPT_BASE_URL", "https://chatgpt.com/backend-api"),
+            openrouter_base: base("OPENROUTER_BASE_URL", "https://openrouter.ai/api"),
             catalog: Arc::default(),
             cache_key: format!("agent-{}-{}", std::process::id(), crate::now_ms()),
             state: Arc::new(Mutex::new(State { threshold: 90.0, ..State::default() })),
         };
         client.reload(accounts::load(home)?);
-        let catalog = models::load(home, |provider| client.list_models(provider));
+        let mut catalog = Vec::new();
+        let mut errors = Vec::new();
+        // Public list, so OpenRouter models show in the picker before /login.
+        match fetch_models(models_agent().get(format!("{}/v1/models", client.openrouter_base)), models::parse_openrouter) {
+            Ok(listed) => catalog.extend(listed),
+            Err(error) => errors.push(format!("openrouter: {error}")),
+        }
+        let accounts: Vec<Account> = client.state.lock().unwrap().accounts.iter().filter(|a| a.provider != "openrouter").cloned().collect();
+        for account in accounts {
+            match client.list_models(&account) {
+                Ok(listed) => models::merge(&mut catalog, listed, &account.name),
+                Err(error) => errors.push(format!("{}: {error}", key(&account))),
+            }
+        }
+        catalog.extend(models::free_routers(&catalog));
         client.catalog = Arc::new(catalog);
-        Ok(client)
+        Ok((client, errors))
     }
 
     pub fn catalog(&self) -> &[Model] {
         &self.catalog
     }
 
-    /// The models this provider serves the first saved account right now; see models-endpoints.md.
-    fn list_models(&self, provider: &str) -> Result<Vec<Model>, String> {
-        let account = self.state.lock().unwrap().accounts.iter().find(|a| a.provider == provider).cloned();
-        let account = self.fresh(account.ok_or(format!("No {provider} account."))?)?;
-        let http: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(10))).build().into();
-        let request = match (&account.secret, provider) {
+    /// The models this account can use right now; see models-endpoints.md.
+    fn list_models(&self, account: &Account) -> Result<Vec<Model>, String> {
+        let account = self.fresh(account.clone())?;
+        let http = models_agent();
+        let request = match (&account.secret, account.provider.as_str()) {
             (Secret::ApiKey(key), "anthropic") => http
-                .get(format!("{}/v1/models?limit=100", self.anthropic_base))
+                .get(format!("{}/v1/models?limit=1000", self.anthropic_base))
                 .header("anthropic-version", "2023-06-01")
                 .header("x-api-key", key),
             (Secret::OAuth(tokens), "anthropic") => http
-                .get(format!("{}/v1/models?limit=100", self.anthropic_base))
+                .get(format!("{}/v1/models?limit=1000", self.anthropic_base))
                 .header("anthropic-version", "2023-06-01")
                 .header("authorization", format!("Bearer {}", tokens.access))
                 .header("anthropic-beta", "oauth-2025-04-20"),
@@ -154,19 +169,10 @@ impl Client {
                 .get(format!("{}/codex/models?client_version=0.160.0", self.chatgpt_base))
                 .header("authorization", format!("Bearer {}", tokens.access))
                 .header("chatgpt-account-id", tokens.account_id.as_deref().unwrap_or_default()),
-            (Secret::ApiKey(_), _) => return Err(format!("{provider} accounts need /login, not an API key.")),
+            (Secret::ApiKey(_), provider) => return Err(format!("{provider} accounts need /login, not an API key.")),
         };
-        let mut response = request.call().map_err(|e| format!("Model list request failed: {e}."))?;
-        let status = response.status().as_u16();
-        if status != 200 {
-            return Err(format!("Model list request failed ({status})."));
-        }
-        let text = response.body_mut().read_to_string().map_err(|e| format!("Model list request failed: {e}."))?;
-        let body: Value = serde_json::from_str(&text).map_err(|e| format!("Model list is not JSON: {e}."))?;
-        Ok(match provider {
-            "anthropic" => models::parse_anthropic(&body),
-            _ => models::parse_codex(&body),
-        })
+        let parse = if account.provider == "anthropic" { models::parse_anthropic } else { models::parse_codex };
+        fetch_models(request, parse)
     }
 
     pub fn configure(&self, settings: &Settings) {
@@ -182,9 +188,11 @@ impl Client {
     }
 
     fn reload(&self, mut saved: Vec<Account>) {
-        let env_key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.is_empty());
-        if let Some(key) = env_key.filter(|_| !saved.iter().any(|a| a.provider == "anthropic")) {
-            saved.push(Account { provider: "anthropic".into(), name: "env".into(), secret: Secret::ApiKey(key) });
+        for (provider, var) in [("anthropic", "ANTHROPIC_API_KEY"), ("openrouter", "OPENROUTER_API_KEY")] {
+            let env_key = std::env::var(var).ok().filter(|k| !k.is_empty());
+            if let Some(key) = env_key.filter(|_| !saved.iter().any(|a| a.provider == provider)) {
+                saved.push(Account { provider: provider.into(), name: "env".into(), secret: Secret::ApiKey(key) });
+            }
         }
         self.state.lock().unwrap().accounts = saved;
     }
@@ -196,11 +204,11 @@ impl Client {
         let mut rate_limited: Vec<String> = Vec::new();
         let mut attempt = 0;
         loop {
-            let provider = self.provider_of(&request)?;
-            let account = match self.choose(&provider, fell_back, on_delta)? {
+            let model = self.model_of(&request)?;
+            let account = match self.choose(model, fell_back, on_delta)? {
                 Choice::Use(account) => self.fresh(account)?,
                 Choice::Fallback => {
-                    request = self.fallback(request, &provider, on_delta)?;
+                    request = self.fallback(request, &model.provider, on_delta)?;
                     fell_back = true;
                     continue;
                 }
@@ -228,18 +236,26 @@ impl Client {
         }
     }
 
-    fn provider_of(&self, request: &Value) -> Result<String, String> {
+    fn model_of(&self, request: &Value) -> Result<&Model, String> {
         let id = request["model"].as_str().unwrap_or_default();
-        let model = self.catalog.iter().find(|m| m.id == id).ok_or(format!("Unknown model {id}."))?;
-        Ok(model.provider.clone())
+        self.catalog.iter().find(|m| m.id == id).ok_or(format!("Unknown model {id}."))
     }
 
     /// Picks the account for this request and reports a change of account as "Switched to <name>: <reason>".
-    fn choose(&self, provider: &str, fell_back: bool, on_delta: &mut dyn FnMut(Delta)) -> Result<Choice, String> {
-        let accounts: Vec<Account> = self.state.lock().unwrap().accounts.iter().filter(|a| a.provider == provider).cloned().collect();
-        if accounts.is_empty() {
-            let hint = if provider == "anthropic" { " or set ANTHROPIC_API_KEY" } else { "" };
+    fn choose(&self, model: &Model, fell_back: bool, on_delta: &mut dyn FnMut(Delta)) -> Result<Choice, String> {
+        let provider = model.provider.as_str();
+        let saved: Vec<Account> = self.state.lock().unwrap().accounts.iter().filter(|a| a.provider == provider).cloned().collect();
+        if saved.is_empty() {
+            let hint = match provider {
+                "anthropic" => " or set ANTHROPIC_API_KEY",
+                "openrouter" => " or set OPENROUTER_API_KEY",
+                _ => "",
+            };
             return Err(format!("No {provider} account. Use /login{hint}."));
+        }
+        let (accounts, without_access): (Vec<Account>, Vec<Account>) = saved.into_iter().partition(|a| models::serves(&self.catalog, model, &a.name));
+        if accounts.is_empty() {
+            return Err(format!("No {provider} account has access to {}.", model.id));
         }
         self.refresh_usage(&accounts);
         let mut state = self.state.lock().unwrap();
@@ -270,6 +286,7 @@ impl Client {
             Some(c) if c.limited => format!("{previous} hit a rate limit"),
             Some(Candidate { usage: Some(u), .. }) if u.peak() >= threshold => format!("{previous} is at {:.0}%", u.peak()),
             _ if Some(index) == pinned => "picked in /account".into(),
+            None if without_access.iter().any(|a| a.name == previous) => format!("{previous} has no access to {}", model.id),
             None => format!("{previous} is gone"),
             Some(_) => "it comes first".into(),
         };
@@ -362,7 +379,29 @@ impl Client {
                     }
                 }
             }
-            (_, Secret::OAuth(tokens)) => {
+            ("openrouter", Secret::ApiKey(key)) => {
+                // OpenRouter's Anthropic-compatible Messages endpoint serves every model, so the Anthropic stream parser reads it.
+                let call = self
+                    .http
+                    .post(format!("{}/v1/messages", self.openrouter_base))
+                    .header("anthropic-version", "2023-06-01")
+                    .header("anthropic-beta", THINKING_BETA)
+                    .header("authorization", format!("Bearer {key}"));
+                let mut body = request.clone();
+                // A clef router asks for its first free model; OpenRouter moves to the next on a rate limit or outage.
+                if let Some((first, rest)) = models::free_route(&self.catalog, request["model"].as_str().unwrap_or_default()).split_first() {
+                    body["model"] = json!(first.id);
+                    body["fallbacks"] = rest.iter().map(|m| json!({"model": m.id})).collect();
+                }
+                // OpenRouter rejects the whole request when a non-Anthropic model gets block_binding.
+                if !body["model"].as_str().unwrap_or_default().starts_with("anthropic/")
+                    && let Some(thinking) = body["thinking"].as_object_mut()
+                {
+                    thinking.remove("block_binding");
+                }
+                (call, body)
+            }
+            ("openai-codex", Secret::OAuth(tokens)) => {
                 let call = self
                     .http
                     .post(format!("{chatgpt_base}/codex/responses"))
@@ -375,6 +414,7 @@ impl Client {
                 (call, codex::request(request, &self.cache_key))
             }
             (provider, Secret::ApiKey(_)) => return Err(ApiError::fatal(format!("{provider} accounts need /login, not an API key."))),
+            (provider, Secret::OAuth(_)) => return Err(ApiError::fatal(format!("{provider} accounts need an API key, not /login."))),
         };
         let hint = if headroom { format!(" Is `headroom proxy` running on {HEADROOM_URL}?") } else { String::new() };
         let response = call.header("content-type", "application/json").send(body.to_string()).map_err(|e| ApiError::retryable(format!("Request failed: {e}.{hint}")))?;
@@ -387,7 +427,7 @@ impl Client {
             let retryable = status == 408 || status == 429 || status >= 500;
             return Err(ApiError { message: format!("API error {status}: {}", text.trim()), retryable, quota });
         }
-        if account.provider == "anthropic" { parse_stream(&mut reader, abort, on_delta) } else { codex::parse_stream(&mut reader, abort, on_delta) }
+        if account.provider == "openai-codex" { codex::parse_stream(&mut reader, abort, on_delta) } else { parse_stream(&mut reader, abort, on_delta) }
     }
 
     pub fn accounts(&self) -> Vec<AccountView> {
@@ -451,6 +491,21 @@ impl Client {
 
 fn key(account: &Account) -> String {
     format!("{}/{}", account.provider, account.name)
+}
+
+fn models_agent() -> ureq::Agent {
+    ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(10))).build().into()
+}
+
+fn fetch_models(request: ureq::RequestBuilder<ureq::typestate::WithoutBody>, parse: fn(&Value) -> Vec<Model>) -> Result<Vec<Model>, String> {
+    let mut response = request.call().map_err(|e| format!("Model list request failed: {e}."))?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        return Err(format!("Model list request failed ({status})."));
+    }
+    let text = response.body_mut().read_to_string().map_err(|e| format!("Model list request failed: {e}."))?;
+    let body: Value = serde_json::from_str(&text).map_err(|e| format!("Model list is not JSON: {e}."))?;
+    Ok(parse(&body))
 }
 
 pub struct ApiError {
@@ -618,7 +673,7 @@ mod tests {
     #[test]
     fn picking_an_account_reports_it_before_the_next_request() {
         let home = std::env::temp_dir().join(format!("agent-pick-{}", std::process::id()));
-        let client = Client::new(&home).unwrap();
+        let (client, _) = Client::new(&home).unwrap();
         let account = |name: &str| Account { provider: "anthropic".into(), name: name.into(), secret: Secret::ApiKey("sk".into()) };
         client.reload(vec![account("home"), account("work")]);
         client.state.lock().unwrap().current.insert("anthropic".into(), "home".into());

@@ -163,10 +163,18 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(mode) = options.permission_mode {
         settings.permission_mode = mode;
     }
-    let client = Client::new(&home)?;
-    client.configure(&settings);
+    let (client, mut model_notices) = Client::new(&home)?;
     let catalog = client.catalog().to_vec();
-    let model = catalog.iter().find(|m| m.id == settings.model).ok_or(format!("Unknown model {}.", settings.model))?;
+    // A model no logged-in account lists gives way to one an account lists, then to OpenRouter's public list.
+    let model = catalog.iter().find(|m| m.id == settings.model).or_else(|| catalog.iter().find(|m| !m.accounts.is_empty())).or_else(|| catalog.first());
+    let Some(model) = model else {
+        return Err(format!("No provider listed any model. {}", model_notices.join(" ")));
+    };
+    if model.id != settings.model {
+        model_notices.push(format!("{} is not on any account's model list; using {}.", settings.model, model.id));
+        settings.model = model.id.clone();
+    }
+    client.configure(&settings);
     let cwd = std::env::current_dir().map_err(|e| format!("Cannot read the working directory: {e}"))?;
     let sessions_dir = home.join(".agents/sessions");
     let (session, history) = match &options.resume {
@@ -180,7 +188,7 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(parent) = &options.parent {
         session.append(&serde_json::json!({"type": "parent", "session": parent}))?;
     }
-    let cheap_model = models::small_model(&catalog, &model.provider);
+    let cheap_model = models::small_model(&catalog, model);
     let modes_error = modes::fetch(&home, &settings.ponytail, &settings.caveman, true).err();
     // Before agent.plugins.sync starts the processes, so they run the updated code.
     let plugin_updates = plugins::update_bundled(&home);
@@ -269,6 +277,9 @@ fn run(options: Options) -> Result<(), String> {
         for notice in &plugin_updates {
             eprintln!("{notice}");
         }
+        for notice in &model_notices {
+            eprintln!("{notice}");
+        }
         let result = if options.headless {
             headless_mode(&mut agent, prompt.as_deref().unwrap_or_default())
         } else {
@@ -283,7 +294,7 @@ fn run(options: Options) -> Result<(), String> {
     let templates = prompt::load_templates(&agent_dir, &agent.cwd);
     agent.interactive = true;
     agent.snapshots = snapshots::Snapshots::open(&home, &agent.cwd);
-    tui::run(agent, tui::Setup { home, settings, catalog, skills, templates, prompt, modes_error, plugin_updates })
+    tui::run(agent, tui::Setup { home, settings, catalog, skills, templates, prompt, modes_error, plugin_updates, model_notices })
 }
 
 /// Non-interactive run: streams text to stdout (or nothing with --json) and progress to stderr.

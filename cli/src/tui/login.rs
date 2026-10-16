@@ -12,7 +12,7 @@ const BRIGHT: Style = Style::fg(255).bold();
 const MUTED: Style = Style::fg(245);
 const KINDS: [&str; 2] = ["Account (subscription)", "API key"];
 /// Login methods as (is an API key, label); the label is also what `choose` matches on.
-const METHODS: [(bool, &str); 3] = [(false, "Claude Pro/Max"), (true, "Anthropic API key"), (false, "ChatGPT Plus/Pro (Codex)")];
+const METHODS: [(bool, &str); 4] = [(false, "Claude Pro/Max"), (true, "Anthropic API key"), (true, "OpenRouter API key"), (false, "ChatGPT Plus/Pro (Codex)")];
 
 /// The /login panel: pick account or API key, search and pick a method, sign in or paste a key, then name the account.
 pub enum Login {
@@ -20,7 +20,7 @@ pub enum Login {
     Choose { api: bool, query: Editor, index: usize },
     /// Anthropic shows `code#state` after sign-in; the user pastes it here.
     ClaudeCode { pending: Pending, input: Editor },
-    ApiKey { input: Editor },
+    ApiKey { provider: &'static str, title: &'static str, input: Editor },
     /// A token exchange or the Codex browser callback is running; Esc sets `cancel`. `url` is the Codex sign-in page.
     Waiting { cancel: Arc<AtomicBool>, url: Option<String> },
     Name { provider: &'static str, secret: Secret, input: Editor },
@@ -73,7 +73,7 @@ impl Login {
                 }
             },
             Login::Waiting { .. } => {}
-            Login::ClaudeCode { input, .. } | Login::ApiKey { input } | Login::Name { input, .. } => match code {
+            Login::ClaudeCode { input, .. } | Login::ApiKey { input, .. } | Login::Name { input, .. } => match code {
                 KeyCode::Enter if !input.text().trim().is_empty() => return self.submit(),
                 _ => _ = input.edit_key(key),
             },
@@ -85,7 +85,7 @@ impl Login {
         if let Login::Choose { query, index, .. } = self {
             query.insert(text.trim());
             *index = 0;
-        } else if let Login::ClaudeCode { input, .. } | Login::ApiKey { input } | Login::Name { input, .. } = self {
+        } else if let Login::ClaudeCode { input, .. } | Login::ApiKey { input, .. } | Login::Name { input, .. } = self {
             input.insert(text.trim());
         }
     }
@@ -112,7 +112,11 @@ impl Login {
                 Action::None
             }
             "Anthropic API key" => {
-                *self = Login::ApiKey { input: Editor::new() };
+                *self = Login::ApiKey { provider: "anthropic", title: method, input: Editor::new() };
+                Action::None
+            }
+            "OpenRouter API key" => {
+                *self = Login::ApiKey { provider: "openrouter", title: method, input: Editor::new() };
                 Action::None
             }
             _ => {
@@ -133,8 +137,9 @@ impl Login {
                 let code = input.text();
                 Action::Exchange { provider: "anthropic", cancel, exchange: Box::new(move |_| oauth::finish_claude(&pending, &code)) }
             }
-            Login::ApiKey { input } => {
-                *self = Login::Name { provider: "anthropic", secret: Secret::ApiKey(input.text().trim().into()), input: Editor::from_text("api") };
+            Login::ApiKey { provider, input, .. } => {
+                let name = if provider == "anthropic" { "api" } else { provider };
+                *self = Login::Name { provider, secret: Secret::ApiKey(input.text().trim().into()), input: Editor::from_text(name) };
                 Action::None
             }
             Login::Name { provider, secret, input } => Action::Save(Account { provider: provider.into(), name: input.text().trim().into(), secret }),
@@ -156,7 +161,7 @@ impl Login {
                 (KINDS[*api as usize].into(), rows, "type to search     ↑↓ navigate     enter choose     esc back")
             }
             Login::ClaudeCode { input, .. } => ("Claude login".into(), vec![field("Code", input.field(Some('•')))], "paste the code#state shown after sign-in     enter continue     ctrl+y copy link     esc cancel"),
-            Login::ApiKey { input } => ("Anthropic API key".into(), vec![field("Key", input.field(Some('•')))], "paste the key     enter continue     esc cancel"),
+            Login::ApiKey { title, input, .. } => ((*title).into(), vec![field("Key", input.field(Some('•')))], "paste the key     enter continue     esc cancel"),
             Login::Waiting { url, .. } => ("Login".into(), vec![panel::Row { left: "Waiting for the sign-in to finish...".into(), right: Vec::new() }], if url.is_some() { "ctrl+y copy link     esc cancel" } else { "esc cancel" }),
             Login::Name { input, .. } => ("Account name".into(), vec![field("Name", input.field(None))], "enter save     esc cancel"),
         };
@@ -213,6 +218,18 @@ mod tests {
         let Action::Save(account) = login.key(KeyCode::Enter.into()) else { panic!("expected a save") };
         assert_eq!((account.provider.as_str(), account.name.as_str()), ("anthropic", "ap2"));
         assert!(matches!(account.secret, Secret::ApiKey(key) if key == "sk-ant-123"));
+    }
+
+    #[test]
+    fn openrouter_key_is_saved_as_an_openrouter_account() {
+        let mut login = Login::Kind { index: 1 };
+        login.key(KeyCode::Enter.into());
+        login.paste("openrouter");
+        login.key(KeyCode::Enter.into());
+        login.paste("sk-or-1");
+        login.key(KeyCode::Enter.into());
+        let Action::Save(account) = login.key(KeyCode::Enter.into()) else { panic!("expected a save") };
+        assert_eq!((account.provider.as_str(), account.name.as_str()), ("openrouter", "openrouter"));
     }
 
     #[test]

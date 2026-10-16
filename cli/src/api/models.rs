@@ -1,57 +1,39 @@
-use serde_json::{json, Value};
-use std::path::Path;
-use std::time::Duration;
+use serde_json::Value;
 
-/// Used for a provider with no account or no network; the live list replaces it.
-const BUILT_IN: &str = include_str!("models.json");
-const REFRESH_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 /// The Codex model list has no output limit; every Codex model takes this many.
 const CODEX_MAX_TOKENS: u64 = 128_000;
 
 /// The providers this agent can talk to.
-pub const PROVIDERS: [&str; 2] = ["anthropic", "openai-codex"];
+pub const PROVIDERS: [&str; 3] = ["anthropic", "openai-codex", "openrouter"];
+/// OpenRouter's routers (`openrouter/auto`) list no output limit.
+const OPENROUTER_MAX_TOKENS: u64 = 32_000;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Model {
     pub provider: String,
     pub id: String,
     pub name: String,
     pub context_window: u64,
     pub max_tokens: u64,
+    /// Names of the accounts whose live model list has this model; empty for OpenRouter's public list.
+    pub accounts: Vec<String>,
 }
 
-/// The cached catalog while it is under a day old; otherwise asks `fetch` for each provider and caches the result.
-/// A provider that cannot be fetched keeps its cached or built-in models.
-pub fn load(home: &Path, mut fetch: impl FnMut(&str) -> Result<Vec<Model>, String>) -> Vec<Model> {
-    let path = home.join(".agents/models.json");
-    let cached = std::fs::read_to_string(&path).ok().and_then(|text| parse(&text));
-    let age = std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|modified| modified.elapsed().ok());
-    if let Some(cached) = &cached
-        && age.is_some_and(|age| age < REFRESH_AFTER)
-    {
-        return cached.clone();
-    }
-    let known = cached.unwrap_or_else(built_in);
-    let mut catalog = Vec::new();
-    let mut fetched_any = false;
-    for provider in PROVIDERS {
-        match fetch(provider) {
-            Ok(models) if models.iter().any(is_small) => {
-                fetched_any = true;
-                catalog.extend(models);
-            }
-            _ => catalog.extend(known.iter().filter(|m| m.provider == provider).cloned()),
+/// Adds one account's live list to the catalog, so each model knows every account that can use it.
+pub fn merge(catalog: &mut Vec<Model>, listed: Vec<Model>, account: &str) {
+    for model in listed {
+        match catalog.iter_mut().find(|m| m.provider == model.provider && m.id == model.id) {
+            Some(known) => known.accounts.push(account.into()),
+            None => catalog.push(Model { accounts: vec![account.into()], ..model }),
         }
     }
-    if fetched_any {
-        // A cache that cannot be written only costs another fetch on the next start.
-        std::fs::write(&path, serialize(&catalog)).ok();
-    }
-    catalog
 }
 
-pub fn built_in() -> Vec<Model> {
-    parse(BUILT_IN).expect("models.json is valid")
+/// Whether the account may get requests for this model. An account no list came from (a failed fetch,
+/// a /login after startup, any OpenRouter key) is unchecked, so the API decides.
+pub fn serves(catalog: &[Model], model: &Model, account: &str) -> bool {
+    let checked = catalog.iter().any(|m| m.provider == model.provider && m.accounts.iter().any(|a| a == account));
+    !checked || model.accounts.iter().any(|a| a == account)
 }
 
 /// Anthropic's `GET /v1/models`, newest first.
@@ -60,7 +42,7 @@ pub fn parse_anthropic(body: &Value) -> Vec<Model> {
     for m in body["data"].as_array().into_iter().flatten() {
         let (Some(id), Some(context_window), Some(max_tokens)) = (m["id"].as_str(), m["max_input_tokens"].as_u64(), m["max_tokens"].as_u64()) else { continue };
         let name = m["display_name"].as_str().unwrap_or(id);
-        models.push(Model { provider: "anthropic".into(), id: id.into(), name: name.into(), context_window, max_tokens });
+        models.push(Model { provider: "anthropic".into(), id: id.into(), name: name.into(), context_window, max_tokens, accounts: Vec::new() });
     }
     models
 }
@@ -74,92 +56,141 @@ pub fn parse_codex(body: &Value) -> Vec<Model> {
             continue;
         }
         let name = m["display_name"].as_str().unwrap_or(id);
-        models.push(Model { provider: "openai-codex".into(), id: id.into(), name: name.into(), context_window, max_tokens: CODEX_MAX_TOKENS });
+        models.push(Model { provider: "openai-codex".into(), id: id.into(), name: name.into(), context_window, max_tokens: CODEX_MAX_TOKENS, accounts: Vec::new() });
     }
     models
 }
 
-/// The provider's newest small model (haiku, luna), used for summaries and permission reviews.
-pub fn small_model<'a>(catalog: &'a [Model], provider: &str) -> &'a Model {
-    catalog.iter().find(|m| m.provider == provider && is_small(m)).expect("load keeps a small model for every provider")
+/// OpenRouter's `GET /v1/models`, newest first; models without tool calling cannot run the agent.
+pub fn parse_openrouter(body: &Value) -> Vec<Model> {
+    let mut models = Vec::new();
+    for m in body["data"].as_array().into_iter().flatten() {
+        let (Some(id), Some(context_window)) = (m["id"].as_str(), m["context_length"].as_u64()) else { continue };
+        if !m["supported_parameters"].as_array().is_some_and(|p| p.iter().any(|p| p == "tools")) {
+            continue;
+        }
+        let name = m["name"].as_str().unwrap_or(id);
+        let max_tokens = m["top_provider"]["max_completion_tokens"].as_u64().unwrap_or(OPENROUTER_MAX_TOKENS);
+        models.push(Model { provider: "openrouter".into(), id: id.into(), name: name.into(), context_window, max_tokens, accounts: Vec::new() });
+    }
+    models
+}
+
+/// Our OpenRouter routers as (id, name): each sends a request to the `:free` models of `free_route`.
+const FREE_ROUTERS: [(&str, &str); 2] = [("clef/auto", "clef/auto (free)"), ("clef-flash/auto", "clef-flash/auto (free)")];
+/// The id words that mark a small, fast model, like `nemotron-3.5-lightning` or `laguna-xs-2.1`.
+const FLASH_WORDS: [&str; 7] = ["flash", "lightning", "lite", "mini", "nano", "small", "xs"];
+
+/// A catalog entry per router that has free models, sized to fit every model it can land on.
+pub fn free_routers(catalog: &[Model]) -> Vec<Model> {
+    let mut routers = Vec::new();
+    for (id, name) in FREE_ROUTERS {
+        let route = free_route(catalog, id);
+        let (Some(context_window), Some(max_tokens)) = (route.iter().map(|m| m.context_window).min(), route.iter().map(|m| m.max_tokens).min()) else { continue };
+        routers.push(Model { provider: "openrouter".into(), id: id.into(), name: name.into(), context_window, max_tokens, accounts: Vec::new() });
+    }
+    routers
+}
+
+/// The free models a router tries, biggest context first: `clef-flash` the small fast ones, `clef` the rest.
+/// Empty for a model that is no router. Four, since OpenRouter's Messages `fallbacks` takes at most 3 after the first.
+pub fn free_route<'a>(catalog: &'a [Model], router: &str) -> Vec<&'a Model> {
+    if !FREE_ROUTERS.iter().any(|(id, _)| *id == router) {
+        return Vec::new();
+    }
+    let flash = router == "clef-flash/auto";
+    let mut route: Vec<&Model> = catalog.iter().filter(|m| m.provider == "openrouter" && m.id.ends_with(":free") && is_flash(m) == flash).collect();
+    route.sort_by_key(|m| std::cmp::Reverse(m.context_window));
+    route.truncate(4);
+    route
+}
+
+fn is_flash(model: &Model) -> bool {
+    let name = model.id.rsplit('/').next().unwrap_or_default().trim_end_matches(":free");
+    name.split('-').any(|word| FLASH_WORDS.contains(&word))
+}
+
+/// The provider's newest small model (haiku, luna), used for summaries and permission reviews; `model` itself when its provider lists none.
+pub fn small_model<'a>(catalog: &'a [Model], model: &'a Model) -> &'a Model {
+    catalog.iter().find(|m| m.provider == model.provider && is_small(m)).unwrap_or(model)
 }
 
 fn is_small(model: &Model) -> bool {
     model.id.contains("haiku") || model.id.contains("luna")
 }
 
-fn parse(text: &str) -> Option<Vec<Model>> {
-    let entries: Vec<Value> = serde_json::from_str(text).ok()?;
-    let mut models = Vec::new();
-    for m in &entries {
-        models.push(Model {
-            provider: m["provider"].as_str()?.into(),
-            id: m["id"].as_str()?.into(),
-            name: m["name"].as_str()?.into(),
-            context_window: m["contextWindow"].as_u64()?,
-            max_tokens: m["maxTokens"].as_u64()?,
-        });
+/// pi's footer label: "Claude Opus 5.5" becomes "opus 5.5". OpenRouter shows the id, since names like "Auto Router" hide whose model it is.
+pub fn short_label(model: &Model) -> String {
+    if model.provider == "openrouter" {
+        return model.id.clone();
     }
-    Some(models)
-}
-
-fn serialize(models: &[Model]) -> String {
-    let entries: Vec<Value> = models
-        .iter()
-        .map(|m| json!({"provider": m.provider, "id": m.id, "name": m.name, "contextWindow": m.context_window, "maxTokens": m.max_tokens}))
-        .collect();
-    serde_json::to_string_pretty(&entries).expect("models serialize")
-}
-
-/// pi's footer label: "Claude Opus 5.5" becomes "opus 5.5".
-pub fn short_label(name: &str) -> String {
-    let lower = name.to_lowercase();
+    let lower = model.name.to_lowercase();
     lower.strip_prefix("claude ").unwrap_or(&lower).to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn model(provider: &str, id: &str) -> Model {
-        Model { provider: provider.into(), id: id.into(), name: id.into(), context_window: 1, max_tokens: 1 }
+        Model { provider: provider.into(), id: id.into(), name: id.into(), context_window: 1, max_tokens: 1, accounts: Vec::new() }
     }
 
     #[test]
-    fn built_in_catalog_has_a_small_model_per_provider() {
-        let models = built_in();
-        let opus = models.iter().find(|m| m.id == "claude-opus-5-5").unwrap();
-        assert_eq!(short_label(&opus.name), "opus 5.5");
-        assert_eq!(small_model(&models, "anthropic").id, "claude-haiku-5-5");
-        assert_eq!(small_model(&models, "openai-codex").id, "gpt-6-luna");
+    fn small_model_falls_back_to_the_model_itself_and_labels_are_short() {
+        let opus = Model { name: "Claude Opus 5.5".into(), ..model("anthropic", "claude-opus-5-5") };
+        let terra = model("openai-codex", "gpt-5.6-terra");
+        let models = [opus.clone(), model("anthropic", "claude-haiku-5-5"), terra.clone()];
+        assert_eq!(short_label(&opus), "opus 5.5");
+        assert_eq!(small_model(&models, &opus).id, "claude-haiku-5-5");
+        assert_eq!(small_model(&models, &terra).id, "gpt-5.6-terra");
+        let router = Model { name: "Auto Router".into(), ..model("openrouter", "openrouter/auto") };
+        assert_eq!(short_label(&router), "openrouter/auto");
     }
 
     #[test]
-    fn load_takes_fetched_lists_and_keeps_built_in_models_for_a_failed_provider() {
-        let home = std::env::temp_dir().join(format!("agent-models-{}", std::process::id()));
-        std::fs::create_dir_all(home.join(".agents")).unwrap();
-        let fetch = |provider: &str| match provider {
-            "anthropic" => Ok(vec![model("anthropic", "claude-haiku-9")]),
-            _ => Err("No openai-codex account.".to_string()),
-        };
-        let catalog = load(&home, fetch);
-        assert_eq!(catalog[0].id, "claude-haiku-9");
-        assert_eq!(catalog.iter().filter(|m| m.provider == "anthropic").count(), 1);
-        assert_eq!(small_model(&catalog, "openai-codex").id, "gpt-6-luna");
-
-        let cached = load(&home, |_| panic!("a fresh cache is not refetched"));
-        assert_eq!(cached.len(), catalog.len());
-        std::fs::remove_dir_all(&home).unwrap();
+    fn only_accounts_that_list_a_model_serve_it() {
+        let mut catalog = Vec::new();
+        merge(&mut catalog, vec![model("openai-codex", "gpt-6-luna"), model("openai-codex", "gpt-6-sol")], "pro");
+        merge(&mut catalog, vec![model("openai-codex", "gpt-6-luna")], "plus");
+        let (luna, sol) = (&catalog[0], &catalog[1]);
+        assert_eq!(luna.accounts, ["pro", "plus"]);
+        assert!(serves(&catalog, sol, "pro"));
+        assert!(!serves(&catalog, sol, "plus"));
+        assert!(serves(&catalog, sol, "logged-in-later"));
     }
 
     #[test]
-    fn a_list_without_a_small_model_is_not_trusted() {
-        let home = std::env::temp_dir().join(format!("agent-models-small-{}", std::process::id()));
-        std::fs::create_dir_all(home.join(".agents")).unwrap();
-        let catalog = load(&home, |provider| Ok(vec![model(provider, "big")]));
-        assert!(catalog.iter().all(|m| m.id != "big"));
-        assert!(!home.join(".agents/models.json").exists());
-        std::fs::remove_dir_all(&home).unwrap();
+    fn openrouter_list_keeps_tool_models_and_defaults_a_missing_output_limit() {
+        let body = json!({"data": [
+            {"id": "anthropic/claude-haiku-5.5", "name": "Anthropic: Claude Haiku 5.5", "context_length": 1000000, "top_provider": {"max_completion_tokens": 128000}, "supported_parameters": ["tools"]},
+            {"id": "openrouter/auto", "name": "Auto Router", "context_length": 2000000, "top_provider": {"max_completion_tokens": null}, "supported_parameters": ["tools"]},
+            {"id": "moondream/moondream3-preview", "context_length": 32000, "top_provider": {}, "supported_parameters": ["temperature"]}
+        ]});
+        let models = parse_openrouter(&body);
+        let ids: Vec<(&str, u64)> = models.iter().map(|m| (m.id.as_str(), m.max_tokens)).collect();
+        assert_eq!(ids, [("anthropic/claude-haiku-5.5", 128000), ("openrouter/auto", OPENROUTER_MAX_TOKENS)]);
+        assert!(models.iter().all(|m| m.provider == "openrouter"));
+    }
+
+    #[test]
+    fn free_routers_split_free_models_into_flash_and_the_rest() {
+        let free = |id: &str, context_window: u64| Model { context_window, ..model("openrouter", id) };
+        let catalog = [
+            free("liquid/lfm-2.5-2.6b:free", 65536),
+            free("nvidia/nemotron-3-ultra:free", 1000000),
+            free("nvidia/nemotron-3.5-lightning:free", 1000000),
+            free("poolside/laguna-xs-2.1:free", 262144),
+            model("openrouter", "anthropic/claude-haiku-5.5"),
+            model("anthropic", "claude-mini:free"),
+        ];
+        let ids = |router: &str| free_route(&catalog, router).iter().map(|m| m.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids("clef/auto"), ["nvidia/nemotron-3-ultra:free", "liquid/lfm-2.5-2.6b:free"]);
+        assert_eq!(ids("clef-flash/auto"), ["nvidia/nemotron-3.5-lightning:free", "poolside/laguna-xs-2.1:free"]);
+        assert!(ids("anthropic/claude-haiku-5.5").is_empty());
+        let clef = &free_routers(&catalog)[0];
+        assert_eq!((clef.id.as_str(), clef.name.as_str(), clef.context_window), ("clef/auto", "clef/auto (free)", 65536));
     }
 
     #[test]

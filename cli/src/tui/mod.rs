@@ -408,6 +408,8 @@ pub struct Setup {
     pub modes_error: Option<String>,
     /// One line per bundled plugin updated, or failed to update, at startup.
     pub plugin_updates: Vec<String>,
+    /// Model lists that failed at startup, and a configured model no account lists.
+    pub model_notices: Vec<String>,
 }
 
 pub fn run(agent: Agent, setup: Setup) -> Result<(), String> {
@@ -731,7 +733,7 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
 
 impl App {
     fn new(agent: &Agent, setup: Setup, commands: Sender<Command>, events: Sender<Msg>) -> App {
-        let Setup { home, settings, catalog, skills, templates, modes_error, plugin_updates, .. } = setup;
+        let Setup { home, settings, catalog, skills, templates, modes_error, plugin_updates, model_notices, .. } = setup;
         let mut recent_prompts: Vec<String> = history::load(&home.join(".agents")).into_iter().map(|entry| entry.prompt).collect();
         recent_prompts.drain(..recent_prompts.len().saturating_sub(100));
         let mut slash_commands: Vec<(String, String)> = BUILTIN_COMMANDS.iter().map(|(name, description)| (name.to_string(), description.to_string())).collect();
@@ -806,6 +808,9 @@ impl App {
         }
         for notice in plugin_updates {
             app.system("plugins", notice);
+        }
+        for notice in model_notices {
+            app.system("models", notice);
         }
         app.header_len = app.entries.len();
         app.push_history(&agent.messages);
@@ -1349,7 +1354,7 @@ impl App {
             self.push(Item::Error(error));
         }
         let model = self.model().clone();
-        let cheap_model = models::small_model(&self.catalog, &model.provider).id.clone();
+        let cheap_model = models::small_model(&self.catalog, &model).id.clone();
         let _ = self.commands.send(Command::Apply(Box::new(self.settings.clone()), model, cheap_model));
         if let Err(error) = settings::save(&self.home, &self.settings) {
             self.push(Item::Error(error));
@@ -2461,7 +2466,7 @@ impl App {
                 let rows: Vec<panel::Row> = matching_models(&self.catalog, *row, &query.text())
                     .into_iter()
                     .map(|m| match m {
-                        Some(m) => panel::Row { left: m.id.clone(), right: vec![span(m.provider.clone(), MUTED)] },
+                        Some(m) => panel::Row { left: m.id.clone(), right: vec![span(model_owners(m), MUTED)] },
                         None => panel::Row { left: "auto".into(), right: vec![] },
                     })
                     .collect();
@@ -3300,7 +3305,7 @@ impl App {
             }
             right.push(span("  ", MUTED));
         }
-        right.push(span(models::short_label(&model.name), MUTED));
+        right.push(span(models::short_label(model), MUTED));
         right.push(span(" ", PLAIN));
         right.push(span(&self.settings.thinking, thinking_style(&self.settings.thinking)));
         if self.context_tokens > 0 {
@@ -4098,8 +4103,16 @@ fn plan_lines(selected: usize) -> Vec<Line> {
 fn matching_models<'a>(catalog: &'a [Model], row: usize, query: &str) -> Vec<Option<&'a Model>> {
     let query = query.to_lowercase();
     let auto = (row != 0 && "auto".contains(&query)).then_some(None);
-    let models = catalog.iter().filter(|m| format!("{} {}", m.provider, m.id).to_lowercase().contains(&query)).map(Some);
+    let models = catalog.iter().filter(|m| format!("{} {}", model_owners(m), m.id).to_lowercase().contains(&query)).map(Some);
     auto.into_iter().chain(models).collect()
+}
+
+/// "openai-codex · pro, plus": the provider and the accounts whose model list has the model.
+fn model_owners(model: &Model) -> String {
+    if model.accounts.is_empty() {
+        return model.provider.clone();
+    }
+    format!("{} · {}", model.provider, model.accounts.join(", "))
 }
 
 /// The model id settings `row` edits: 0 model, 8 condense model, 12 fallback model.
@@ -4363,14 +4376,25 @@ mod tests {
     }
 
     #[test]
-    fn model_search_matches_provider_or_id_ignoring_case() {
-        let catalog = models::built_in();
+    fn model_search_matches_provider_account_or_id_ignoring_case() {
+        let model = |provider: &str, id: &str, accounts: &[&str]| Model {
+            provider: provider.into(),
+            id: id.into(),
+            accounts: accounts.iter().map(|a| a.to_string()).collect(),
+            ..Model::default()
+        };
+        let catalog = [
+            model("anthropic", "claude-haiku-5-5", &["work"]),
+            model("openai-codex", "gpt-6-luna", &["pro", "plus"]),
+            model("openai-codex", "gpt-6-sol", &["pro"]),
+        ];
         let ids = |row, query| {
             matching_models(&catalog, row, query).iter().map(|m| m.map_or("auto", |m| m.id.as_str()).to_string()).collect::<Vec<_>>()
         };
-        assert!(ids(0, "HAIKU").contains(&"claude-haiku-5-5".to_string()));
-        let codex = ids(0, "codex");
-        assert!(!codex.is_empty() && codex.iter().all(|id| id.starts_with("gpt")));
+        assert_eq!(ids(0, "HAIKU"), ["claude-haiku-5-5"]);
+        assert_eq!(ids(0, "codex"), ["gpt-6-luna", "gpt-6-sol"]);
+        assert_eq!(ids(0, "plus"), ["gpt-6-luna"]);
+        assert_eq!(model_owners(&catalog[1]), "openai-codex · pro, plus");
         assert_eq!(ids(0, "").len(), catalog.len());
         assert_eq!(ids(8, "").len(), catalog.len() + 1);
         assert_eq!(ids(12, "aut"), ["auto"]);

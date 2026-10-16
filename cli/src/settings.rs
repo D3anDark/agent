@@ -311,9 +311,8 @@ mod tests {
 
     #[test]
     fn model_window_beats_provider_window_beats_catalog() {
-        let catalog = crate::api::models::built_in();
-        let opus = catalog.iter().find(|m| m.provider == "anthropic" && m.id == "claude-opus-4-6").unwrap();
-        let sonnet = catalog.iter().find(|m| m.provider == "anthropic" && m.id == "claude-sonnet-4-6").unwrap();
+        let model = |id: &str| Model { provider: "anthropic".into(), id: id.into(), context_window: 1_000_000, ..Model::default() };
+        let (opus, sonnet) = (&model("claude-opus-4-6"), &model("claude-sonnet-4-6"));
         let mut settings = load(Path::new("/nonexistent"));
         assert_eq!(settings.context_window(opus), opus.context_window);
         settings.context_windows.insert("anthropic".into(), 400_000);
