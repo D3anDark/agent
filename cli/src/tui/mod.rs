@@ -2915,7 +2915,7 @@ impl App {
         self.git = git_info(&self.cwd);
     }
 
-    /// The whole screen: transcript, then status, editor, slash menu and footer right below it.
+    /// The whole screen: transcript, then status, open panel or slash menu, editor and footer right below it.
     /// The bottom block only reaches the last row once the transcript fills the screen.
     fn frame(&mut self, width: usize, height: usize) -> (Vec<Line>, (u16, u16)) {
         if matches!(self.panel, Some(Panel::Diff { .. })) {
@@ -2958,6 +2958,15 @@ impl App {
             let noun = if running == 1 { "subagent" } else { "subagents" };
             bottom.push(vec![span(format!(" {running} {noun} running • /subagents to view"), DIM)]);
         }
+        let mut panel_cursor = None;
+        match &self.panel {
+            Some(panel) => {
+                let mut lines = self.render_panel(panel, width);
+                panel_cursor = take_cursor(&mut lines).map(|(x, y)| (x, bottom.len() + y));
+                bottom.extend(lines);
+            }
+            None => bottom.extend(self.menu()),
+        }
         bottom.push(Vec::new());
         match *self.plan.lock().unwrap() {
             Plan::Off => {}
@@ -2974,17 +2983,7 @@ impl App {
             }
         }
         bottom.extend(editor_rows);
-        let mut cursor = (cursor_x, editor_top + cursor_row);
-        match &self.panel {
-            Some(panel) => {
-                let mut lines = self.render_panel(panel, width);
-                if let Some((x, y)) = take_cursor(&mut lines) {
-                    cursor = (x, bottom.len() + y);
-                }
-                bottom.extend(lines);
-            }
-            None => bottom.extend(self.menu()),
-        }
+        let cursor = panel_cursor.unwrap_or((cursor_x, editor_top + cursor_row));
         bottom.push(Vec::new());
         bottom.extend(self.footer(width));
 
