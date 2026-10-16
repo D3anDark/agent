@@ -3886,7 +3886,7 @@ fn hotkeys_lines() -> Vec<Line> {
 }
 
 fn banner() -> Vec<Line> {
-    vec![vec![span("agent", BRIGHT.bold()), span(format!(" v{} · Run /help for commands", env!("CARGO_PKG_VERSION")), MUTED)]]
+    vec![vec![span("░▒▓", DIM), span("█▶ agent", BRIGHT.bold()), span(format!(" v{} · Run /help for commands", env!("CARGO_PKG_VERSION")), MUTED)]]
 }
 
 /// `#1 jpeg 38 KB` for an image block from `image::block`; base64 carries 3 bytes in 4 chars.
