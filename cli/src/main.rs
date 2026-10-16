@@ -182,6 +182,8 @@ fn run(options: Options) -> Result<(), String> {
     }
     let cheap_model = models::small_model(&catalog, &model.provider);
     let modes_error = modes::fetch(&home, &settings.ponytail, &settings.caveman, true).err();
+    // Before agent.plugins.sync starts the processes, so they run the updated code.
+    let plugin_updates = plugins::update_bundled(&home);
     let mut agent = Agent {
         client,
         system: prompt::system_prompt(&agent_dir, &cwd, &settings.disabled_skills),
@@ -263,6 +265,9 @@ fn run(options: Options) -> Result<(), String> {
         if let Some(notice) = agent.session.fork_notice() {
             eprintln!("{notice}");
         }
+        for notice in &plugin_updates {
+            eprintln!("{notice}");
+        }
         let result = if options.headless {
             headless_mode(&mut agent, prompt.as_deref().unwrap_or_default())
         } else {
@@ -277,7 +282,7 @@ fn run(options: Options) -> Result<(), String> {
     let templates = prompt::load_templates(&agent_dir, &agent.cwd);
     agent.interactive = true;
     agent.snapshots = snapshots::Snapshots::open(&home, &agent.cwd);
-    tui::run(agent, tui::Setup { home, settings, catalog, skills, templates, prompt, modes_error })
+    tui::run(agent, tui::Setup { home, settings, catalog, skills, templates, prompt, modes_error, plugin_updates })
 }
 
 /// Non-interactive run: streams text to stdout (or nothing with --json) and progress to stderr.

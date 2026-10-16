@@ -420,6 +420,30 @@ pub fn install(home: &Path, source: &str) -> Result<String, String> {
     Ok(source.to_string())
 }
 
+/// Reinstalls each installed bundled plugin whose built-in version is newer; returns one notice per update or failure.
+/// A copy with the same or a higher version stays, so a local edit with a bumped version survives.
+pub fn update_bundled(home: &Path) -> Vec<String> {
+    let mut notices = Vec::new();
+    for (name, files) in BUNDLED {
+        let Ok(installed) = read_manifest(&home.join(".agents/plugins").join(name)) else { continue };
+        let (_, manifest) = files.iter().find(|(file, _)| *file == "plugin.json").expect("bundled plugins ship a plugin.json");
+        let bundled = parse_manifest(manifest).expect("bundled plugin.json is valid").version;
+        if version_parts(&bundled) <= version_parts(&installed.version) {
+            continue;
+        }
+        notices.push(match install(home, name) {
+            Ok(_) => format!("Updated plugin {name} to {bundled}."),
+            Err(error) => format!("Cannot update plugin {name}: {error}"),
+        });
+    }
+    notices
+}
+
+/// shortcut: "1.2.3" compares as [1, 2, 3] and a non-numeric part as 0; enough until a plugin ships pre-release versions.
+fn version_parts(version: &str) -> Vec<u64> {
+    version.split('.').map(|part| part.parse().unwrap_or(0)).collect()
+}
+
 /// Deletes ~/.agents/plugins/<name> with everything in it.
 pub fn remove(home: &Path, name: &str) -> Result<(), String> {
     check_name(name)?;
@@ -682,5 +706,19 @@ done"#;
         assert!(remove(&home, "..").is_err());
         assert_eq!(remove(&home, "usagefleet"), Ok(()));
         assert!(!home.join(".agents/plugins/usagefleet").exists());
+    }
+
+    #[test]
+    fn bundled_plugins_update_only_over_an_older_version() {
+        let home = home_with("update", &[]);
+        assert!(update_bundled(&home).is_empty());
+        install(&home, "usagefleet").unwrap();
+        let manifest = home.join(".agents/plugins/usagefleet/plugin.json");
+        let bundled = read_manifest(manifest.parent().unwrap()).unwrap().version;
+        std::fs::write(&manifest, r#"{"version": "99.0.0", "command": ["bun", "index.ts"]}"#).unwrap();
+        assert!(update_bundled(&home).is_empty());
+        std::fs::write(&manifest, r#"{"version": "0.0.1", "command": ["bun", "index.ts"]}"#).unwrap();
+        assert_eq!(update_bundled(&home), [format!("Updated plugin usagefleet to {bundled}.")]);
+        assert_eq!(read_manifest(manifest.parent().unwrap()).unwrap().version, bundled);
     }
 }

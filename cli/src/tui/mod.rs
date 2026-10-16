@@ -400,6 +400,8 @@ pub struct Setup {
     pub prompt: Option<String>,
     /// Why the ponytail or caveman rules could not be downloaded at startup.
     pub modes_error: Option<String>,
+    /// One line per bundled plugin updated, or failed to update, at startup.
+    pub plugin_updates: Vec<String>,
 }
 
 pub fn run(agent: Agent, setup: Setup) -> Result<(), String> {
@@ -705,7 +707,7 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
 
 impl App {
     fn new(agent: &Agent, setup: Setup, commands: Sender<Command>, events: Sender<Msg>) -> App {
-        let Setup { home, settings, catalog, skills, templates, modes_error, .. } = setup;
+        let Setup { home, settings, catalog, skills, templates, modes_error, plugin_updates, .. } = setup;
         let mut recent_prompts: Vec<String> = history::load(&home.join(".agents")).into_iter().map(|entry| entry.prompt).collect();
         recent_prompts.drain(..recent_prompts.len().saturating_sub(100));
         let mut slash_commands: Vec<(String, String)> = BUILTIN_COMMANDS.iter().map(|(name, description)| (name.to_string(), description.to_string())).collect();
@@ -775,6 +777,9 @@ impl App {
         }
         if let Some(error) = modes_error {
             app.push(Item::Error(error));
+        }
+        for notice in plugin_updates {
+            app.system("plugins", notice);
         }
         app.header_len = app.entries.len();
         app.push_history(&agent.messages);
