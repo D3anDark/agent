@@ -1137,7 +1137,11 @@ impl App {
                 }
                 self.submit(text);
             }
-            KeyCode::Esc if self.working.is_some() => self.abort.store(true, Ordering::Relaxed),
+            KeyCode::Esc if self.working.is_some() => {
+                if !self.abort.swap(true, Ordering::Relaxed) {
+                    self.system("agent", "Interrupting...");
+                }
+            }
             KeyCode::Esc if self.hint.as_ref().is_some_and(|(text, _)| text.contains("Esc")) => {
                 self.hint = None;
                 let _ = self.commands.send(Command::RewindPoints);
