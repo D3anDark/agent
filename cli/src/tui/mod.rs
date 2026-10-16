@@ -473,7 +473,13 @@ fn leave(out: &mut Stdout) {
 
 fn spawn_worker(mut agent: Agent, commands: Receiver<Command>, events: Sender<Msg>) {
     std::thread::spawn(move || {
-        for command in commands {
+        loop {
+            agent.lsp.stop_idle();
+            let command = match commands.recv_timeout(Duration::from_secs(60)) {
+                Ok(command) => command,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => return,
+            };
             let result = match command {
                 Command::Prompt(text, images) => {
                     agent.images = images;

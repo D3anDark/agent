@@ -396,7 +396,8 @@ impl Agent {
                 emit(Event::ToolStart { id: id.clone(), name: name.clone(), input: shown });
                 self.plugins.event(json!({"type": "tool_call", "name": name, "input": input, "context": self.plugin_context()}));
                 let targets = edit_hooks::edited_files(&name, &input, &self.cwd, &self.anchors);
-                for file in &targets {
+                // Files outside the project get no baseline, so after_edit skips them too: no server starts for /tmp or node_modules elsewhere.
+                for file in targets.iter().filter(|file| file.starts_with(&self.cwd)) {
                     if let Err(notice) = self.lsp.before_edit(file, &self.abort) {
                         emit(Event::Notice(notice));
                     }

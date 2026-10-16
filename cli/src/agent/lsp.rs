@@ -15,6 +15,8 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// Some servers publish syntax errors first and type errors right after, for the same version.
 const QUIET: Duration = Duration::from_millis(200);
 const MAX_LISTED: usize = 20;
+/// A tsc-rs server holds 60-130 MB; one unused this long stops and the next edit starts it again.
+const IDLE: Duration = Duration::from_secs(5 * 60);
 
 /// Language servers from settings, started on the first edit of their language, one per language and root.
 pub struct Lsp {
@@ -36,6 +38,10 @@ struct Error {
 impl Lsp {
     pub fn new(languages: BTreeMap<String, LspServer>) -> Lsp {
         Lsp { languages, servers: HashMap::new(), off: HashSet::new(), baselines: HashMap::new() }
+    }
+
+    pub fn stop_idle(&mut self) {
+        self.servers.retain(|_, server| server.last_used.elapsed() < IDLE);
     }
 
     /// Records the errors `file` has before its first edit in this session. Err is a notice for the user.
@@ -83,6 +89,9 @@ impl Lsp {
         }
         let (language, server) = (language.clone(), server.clone());
         let deadline = Instant::now() + TIMEOUT;
+        self.stop_idle();
+        // `/tmp` and `/private/tmp`, or a symlinked checkout, would otherwise start a second server on one directory.
+        let file = &file.canonicalize().map_err(|e| format!("[lsp] Cannot read {}: {e}", file.display()))?;
         let key = (language.clone(), root(file, &server.roots));
         if !self.servers.contains_key(&key) {
             match Server::start(&server.command, &key.1, deadline, abort) {
@@ -180,6 +189,7 @@ struct Server {
     /// The server answers `textDocument/diagnostic`; otherwise it publishes diagnostics on its own.
     pull: bool,
     versions: HashMap<PathBuf, u64>,
+    last_used: Instant,
 }
 
 impl Server {
@@ -209,7 +219,7 @@ impl Server {
                 }
             }
         });
-        let mut server = Server { child, stdin, inbox, next_id: 1, pull: false, versions: HashMap::new() };
+        let mut server = Server { child, stdin, inbox, next_id: 1, pull: false, versions: HashMap::new(), last_used: Instant::now() };
         let uri = file_uri(root);
         let name = root.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
         let capabilities = json!({"textDocument": {"publishDiagnostics": {"versionSupport": true}, "diagnostic": {"dynamicRegistration": false}}});
@@ -230,6 +240,7 @@ impl Server {
             self.notify("textDocument/didChange", json!({"textDocument": {"uri": uri, "version": version}, "contentChanges": [{"text": text}]}))?;
         }
         self.versions.insert(file.to_path_buf(), version);
+        self.last_used = Instant::now();
         if self.pull {
             let reply = self.request("textDocument/diagnostic", json!({"textDocument": {"uri": uri}}), deadline, abort)?;
             return Ok(reply["result"]["items"].clone());
@@ -357,5 +368,19 @@ mod tests {
     #[test]
     fn uris_encode_everything_but_path_characters() {
         assert_eq!(file_uri(Path::new("/tmp/a b/zażółć.ts")), "file:///tmp/a%20b/za%C5%BC%C3%B3%C5%82%C4%87.ts");
+    }
+
+    #[test]
+    fn servers_unused_for_the_idle_time_stop() {
+        let server = |last_used: Instant| {
+            let mut child = Command::new("sleep").arg("60").stdin(Stdio::piped()).spawn().unwrap();
+            let stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
+            Server { child, stdin, inbox: mpsc::channel().1, next_id: 1, pull: false, versions: HashMap::new(), last_used }
+        };
+        let mut lsp = Lsp::new(BTreeMap::new());
+        lsp.servers.insert(("typescript".into(), "/old".into()), server(Instant::now() - IDLE - Duration::from_secs(1)));
+        lsp.servers.insert(("typescript".into(), "/recent".into()), server(Instant::now()));
+        lsp.stop_idle();
+        assert_eq!(lsp.servers.into_keys().collect::<Vec<_>>(), [("typescript".to_string(), PathBuf::from("/recent"))]);
     }
 }
