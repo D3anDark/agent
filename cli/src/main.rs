@@ -39,6 +39,7 @@ Options:
   --ask                 Ask before commands and file edits
   --headless            Run the message, print JSONL events (tool, session, done, error)
   --parent <id>         Run as a subagent of that session: linked to it, no load_tools or ask_user_question
+  --account <p>=<name>  Use that saved account first for provider p, like a pin in /account
   --version             Print the version";
 
 struct Options {
@@ -49,6 +50,8 @@ struct Options {
     json: bool,
     headless: bool,
     parent: Option<String>,
+    /// Provider and account name the parent uses, pinned for this run only.
+    account: Option<(String, String)>,
     save: bool,
     resume: Option<Resume>,
     prompt: Option<String>,
@@ -122,6 +125,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
         json: false,
         headless: false,
         parent: None,
+        account: None,
         save: true,
         resume: None,
         prompt: None,
@@ -139,6 +143,11 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
             "--json" => options.json = true,
             "--headless" => options.headless = true,
             "--parent" => options.parent = Some(value("--parent")?),
+            "--account" => {
+                let account = value("--account")?;
+                let (provider, name) = account.split_once('=').ok_or("--account needs provider=name.")?;
+                options.account = Some((provider.into(), name.into()));
+            }
             "--no-session" => options.save = false,
             "--auto" => options.permission_mode = Some(Mode::Auto),
             "--full-access" | "--yolo" => options.permission_mode = Some(Mode::FullAccess),
@@ -167,6 +176,9 @@ fn run(options: Options) -> Result<(), String> {
     }
     if let Some(mode) = options.permission_mode {
         settings.permission_mode = mode;
+    }
+    if let Some((provider, name)) = options.account {
+        settings.default_accounts.insert(provider, name);
     }
     let client = Client::new(&home)?;
     client.configure(&settings);
@@ -380,5 +392,12 @@ mod tests {
     fn installed_finds_only_executables_on_path() {
         assert!(super::installed("sh"));
         assert!(!super::installed("agent-no-such-binary"));
+    }
+
+    #[test]
+    fn account_flag_names_a_provider_and_an_account() {
+        let options = super::parse_args(vec!["--account".into(), "anthropic=work".into()]).unwrap();
+        assert_eq!(options.account, Some(("anthropic".into(), "work".into())));
+        assert!(super::parse_args(vec!["--account".into(), "work".into()]).is_err());
     }
 }

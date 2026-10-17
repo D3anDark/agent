@@ -98,6 +98,8 @@ pub struct Launch {
     pub thinking: String,
     pub mode: Mode,
     pub parent_session: String,
+    /// `provider=name` of the account the parent uses for the child's model.
+    pub account: Option<String>,
 }
 
 #[derive(Default)]
@@ -118,7 +120,10 @@ impl Runs {
             Mode::FullAccess => "--full-access",
             Mode::Ask | Mode::Auto => "--auto",
         };
-        let args = ["--headless", "--model", &launch.model, "--thinking", &launch.thinking, mode, "--parent", &launch.parent_session];
+        let mut args = vec!["--headless", "--model", &launch.model, "--thinking", &launch.thinking, mode, "--parent", &launch.parent_session];
+        if let Some(account) = &launch.account {
+            args.extend(["--account", account]);
+        }
         let mut child = crate::process::command(exe)
             .args(args)
             .current_dir(&launch.cwd)
@@ -321,6 +326,7 @@ mod tests {
             thinking: "low".into(),
             mode: Mode::Auto,
             parent_session: "parent".into(),
+            account: None,
         };
         let error = runs.spawn(launch, true, &Arc::default()).err().unwrap();
         assert!(error.starts_with("Cannot start subagent"), "{error}");

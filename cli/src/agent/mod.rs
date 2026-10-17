@@ -635,7 +635,9 @@ impl Agent {
             for task in chunk {
                 let model = task.model.clone().unwrap_or_else(|| self.model.clone());
                 let thinking = task.effort.clone().unwrap_or_else(|| self.effort.clone());
-                let launch = Launch { label: task.label.clone(), task: task.prompt.clone(), cwd: cwd.clone(), model, thinking, mode, parent_session: self.session.id.clone() };
+                let provider = self.client.catalog().iter().find(|c| c.id == model).map(|c| c.provider.clone());
+                let account = provider.and_then(|provider| Some(format!("{provider}={}", self.client.account(&provider)?.0)));
+                let launch = Launch { label: task.label.clone(), task: task.prompt.clone(), cwd: cwd.clone(), model, thinking, mode, parent_session: self.session.id.clone(), account };
                 started.push(self.subagents.lock().unwrap().spawn(launch, background, &self.follow_ups)?);
             }
             if !background {
