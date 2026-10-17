@@ -305,6 +305,7 @@ const HOTKEYS: [(&str, &[(&str, &str)]); 4] = [
         ("Shift+Tab", "cycle thinking level"),
         ("PageUp, PageDown", "scroll the transcript"),
         (if cfg!(target_os = "macos") { "Option+Down" } else { "Alt+Down" }, "jump to the latest message"),
+        ("Down", "open running subagents (empty editor)"),
     ]),
     ("Stop", &[
         ("Esc", "abort the running turn"),
@@ -1233,6 +1234,9 @@ impl App {
             KeyCode::PageUp => self.scroll += 10,
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
             KeyCode::Up => self.editor.up(self.editor_width),
+            KeyCode::Down if self.editor.is_empty() && self.subagents.lock().unwrap().running() > 0 => {
+                self.panel = Some(Panel::Subagents { index: 0 });
+            }
             KeyCode::Down => self.editor.down(self.editor_width),
             KeyCode::Char('v') if ctrl => self.attach(image::from_clipboard()),
             _ => _ = self.editor.edit_key(key),
@@ -3118,7 +3122,7 @@ impl App {
         let running = self.subagents.lock().unwrap().running();
         if running > 0 {
             let noun = if running == 1 { "subagent" } else { "subagents" };
-            bottom.push(vec![span(format!(" {running} {noun} running • /subagents to view"), DIM)]);
+            bottom.push(vec![span(format!(" {running} {noun} running • ↓ to view"), DIM)]);
         }
         let mut panel_cursor = None;
         match &self.panel {
