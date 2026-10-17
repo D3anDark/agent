@@ -101,8 +101,8 @@ enum Panel {
     Resume { all: bool, index: usize, sessions: Vec<SessionInfo> },
     /// `row` indexes `SETTING_NAMES`. Typing filters the list by name.
     Settings { row: usize, query: Editor },
-    /// Searchable model list for the settings `row` it edits; /model opens it without the settings panel behind.
-    Models { row: usize, query: Editor, index: usize, from_settings: bool },
+    /// Searchable model list for the settings `row` it edits; Enter and Esc return to `back`.
+    Models { row: usize, query: Editor, index: usize, back: ModelsBack },
     /// Context window overrides, tab 0 per provider, tab 1 per model filtered by `query`.
     ContextWindows { tab: usize, query: Editor, index: usize },
     /// fx's "Permission needed" prompt; the agent thread waits on `reply`.
@@ -141,6 +141,16 @@ enum Panel {
     Diff { files: Vec<FileChange>, index: usize, scroll: usize },
     /// What to do with the plan from plan_mode_complete, opened when its turn ends or by /plan.
     Plan { index: usize },
+    /// "Start fresh and implement": the model and thinking level for the new session, then Start.
+    PlanFresh { index: usize },
+}
+
+/// The panel the model picker returns to: none for /model, the settings list, or the start-fresh panel.
+#[derive(Clone, Copy)]
+enum ModelsBack {
+    Close,
+    Settings,
+    PlanFresh,
 }
 
 enum Command {
@@ -228,6 +238,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
 const MENU_ROWS: [usize; 5] = [4, 6, 8, 10, 12];
 const PANEL_ROWS: usize = 8;
 const PLAN_OPTIONS: [&str; 4] = ["Implement here", "Start fresh and implement", "Export to PLAN.md", "Keep planning"];
+const PLAN_FRESH_ROWS: [&str; 3] = ["Model", "Effort", "Start"];
 const SCROLL_LINES: [usize; 5] = [1, 2, 3, 5, 10];
 const SETTING_NAMES: [&str; 25] = [
     "Model",
@@ -1501,7 +1512,7 @@ impl App {
                 let out = if args.is_empty() { format!("session-{}.jsonl", self.session_id) } else { args.to_string() };
                 let _ = self.commands.send(Command::Export(self.cwd.join(out)));
             }
-            "model" => self.open_models(0, args, false),
+            "model" => self.open_models(0, args, ModelsBack::Close),
             "thinking" if args.is_empty() => self.system("thinking", format!("{}. Levels: {}", self.settings.thinking, THINKING_LEVELS.join(", "))),
             "thinking" if THINKING_LEVELS.contains(&args) => {
                 self.update_settings(|s| s.thinking = args.to_string());
@@ -1696,6 +1707,18 @@ impl App {
                 _ => return,
             };
             self.plan_action(choice);
+            return;
+        }
+        if let Some(Panel::PlanFresh { index }) = self.panel.as_mut() {
+            match (code, *index) {
+                (KeyCode::Up, _) => *index = index.saturating_sub(1),
+                (KeyCode::Down, _) => *index = (*index + 1).min(PLAN_FRESH_ROWS.len() - 1),
+                (KeyCode::Esc, _) => self.panel = Some(Panel::Plan { index: 1 }),
+                (KeyCode::Enter, 0) => self.open_models(0, "", ModelsBack::PlanFresh),
+                (KeyCode::Enter | KeyCode::Right | KeyCode::Left, 1) => self.change_setting(1, code != KeyCode::Left),
+                (KeyCode::Enter, _) => self.start_fresh_plan(),
+                _ => {}
+            }
             return;
         }
         if let Some(Panel::Ask(ask)) = self.panel.as_mut() {
@@ -2014,7 +2037,7 @@ impl App {
                     }
                 }
             }
-            Some(Panel::Permission { .. } | Panel::Ask(_) | Panel::Btw | Panel::Login(_) | Panel::Models { .. } | Panel::ContextWindows { .. } | Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Diff { .. } | Panel::Plan { .. } | Panel::PluginSettings { .. } | Panel::Plugin { .. } | Panel::Usage { .. }) | None => {}
+            Some(Panel::Permission { .. } | Panel::Ask(_) | Panel::Btw | Panel::Login(_) | Panel::Models { .. } | Panel::ContextWindows { .. } | Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Diff { .. } | Panel::Plan { .. } | Panel::PlanFresh { .. } | Panel::PluginSettings { .. } | Panel::Plugin { .. } | Panel::Usage { .. }) | None => {}
         }
     }
 
@@ -2128,27 +2151,32 @@ impl App {
 
     fn plan_action(&mut self, choice: usize) {
         self.panel = None;
-        let Plan::Ready(text) = self.plan.lock().unwrap().clone() else { return };
+        let Plan::Ready(_) = *self.plan.lock().unwrap() else { return };
         match choice {
             0 => {
                 self.set_plan(Plan::Off);
                 self.push(Item::User(plan::IMPLEMENT.into()));
                 self.start(Command::Prompt(plan::IMPLEMENT.into(), Vec::new()));
             }
-            1 => {
-                self.set_plan(Plan::Off);
-                self.entries.truncate(self.header_len);
-                self.context_tokens = 0;
-                let prompt = format!("Implement this plan:\n\n{text}");
-                self.push(Item::User(prompt.clone()));
-                self.start(Command::Fresh(prompt));
-            }
+            1 => self.panel = Some(Panel::PlanFresh { index: PLAN_FRESH_ROWS.len() - 1 }),
             2 => self.export_plan("PLAN.md"),
             _ => {
                 self.set_plan(Plan::Drafting);
                 self.system("plan", "Still planning. Say what to change.");
             }
         }
+    }
+
+    /// Clears the transcript and implements the ready plan in a new session with the current model and thinking level.
+    fn start_fresh_plan(&mut self) {
+        self.panel = None;
+        let Plan::Ready(text) = self.plan.lock().unwrap().clone() else { return };
+        self.set_plan(Plan::Off);
+        self.entries.truncate(self.header_len);
+        self.context_tokens = 0;
+        let prompt = format!("Implement this plan:\n\n{text}");
+        self.push(Item::User(prompt.clone()));
+        self.start(Command::Fresh(prompt));
     }
 
     /// Sets plan mode and writes it to the session, so resuming it comes back in the same mode.
@@ -2212,8 +2240,13 @@ impl App {
     }
 
     fn models_key(&mut self, key: KeyEvent) {
-        let Some(Panel::Models { row, query, index, from_settings }) = self.panel.as_mut() else { return };
-        let (row, back) = (*row, from_settings.then_some(Panel::Settings { row: *row, query: Editor::new() }));
+        let Some(Panel::Models { row, query, index, back }) = self.panel.as_mut() else { return };
+        let row = *row;
+        let back = match back {
+            ModelsBack::Close => None,
+            ModelsBack::Settings => Some(Panel::Settings { row, query: Editor::new() }),
+            ModelsBack::PlanFresh => Some(Panel::PlanFresh { index: 0 }),
+        };
         let matches = matching_models(self.client.catalog(), row, &query.text());
         match key.code {
             KeyCode::Esc => self.panel = back,
@@ -2348,16 +2381,16 @@ impl App {
     }
 
     /// The model picker for settings `row`, on the current model when it matches `query`.
-    fn open_models(&mut self, row: usize, query: &str, from_settings: bool) {
+    fn open_models(&mut self, row: usize, query: &str, back: ModelsBack) {
         let current = model_setting(&mut self.settings, row).clone();
         let index = matching_models(self.client.catalog(), row, query).iter().position(|m| m.map_or("", |m| &m.id) == current).unwrap_or(0);
-        self.panel = Some(Panel::Models { row, query: Editor::from_text(query), index, from_settings });
+        self.panel = Some(Panel::Models { row, query: Editor::from_text(query), index, back });
     }
 
     /// Moves setting `row` to its next (or previous) value, then saves and applies it.
     fn change_setting(&mut self, row: usize, forward: bool) {
         if MODEL_ROWS.contains(&row) {
-            self.open_models(row, "", true);
+            self.open_models(row, "", ModelsBack::Settings);
             return;
         }
         if row == CONTEXT_WINDOW_ROW {
@@ -2521,6 +2554,22 @@ impl App {
             }
             Panel::Permission { request, index, .. } => permission_lines(request, *index, width),
             Panel::Plan { index } => plan_lines(*index),
+            Panel::PlanFresh { index } => {
+                let [model, effort, ..] = self.setting_values();
+                let rights = [model, effort, Vec::new()];
+                let rows: Vec<panel::Row> = PLAN_FRESH_ROWS.iter().zip(rights).map(|(left, right)| panel::Row { left: left.to_string(), right }).collect();
+                let view = panel::Panel {
+                    title: PLAN_OPTIONS[1].into(),
+                    tabs: &[],
+                    tab: 0,
+                    search: None,
+                    rows: &rows,
+                    selected: *index,
+                    empty: "",
+                    hint: "↑↓ navigate     enter pick model / start     ←→ change effort     esc back",
+                };
+                view.render(width, PANEL_ROWS)
+            }
             Panel::Ask(ask) => ask.render(width),
             Panel::Subagents { index } => {
                 let runs = self.subagents.lock().unwrap();
