@@ -48,12 +48,11 @@ use crate::tools::rtk::strip_ansi;
 use crate::tools::todo::{Status, Todos};
 use crate::worktree::{self, Worktree};
 use editor::Editor;
-use render::{Line, PLAIN, Screen, Style, line_width, link_at, overlay_center, overlay_right, select, span, take_cursor, text_in, truncate, width, wrap};
+use render::{Line, PLAIN, Screen, Span, Style, line_width, link_at, overlay_center, overlay_right, select, span, take_cursor, text_in, truncate, width, wrap};
 use selection::{Point, Selection};
 
 const WORKING: &str = "Working";
 const TRANSCRIBING: &str = "Transcribing";
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const LOADING_MODELS: &str = "loading models";
 const MODELS_STILL_LOADING: &str = "The model lists are still loading.";
 pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -715,7 +714,9 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
         screen.draw(out, rows, Some(cursor)).map_err(|e| e.to_string())?;
         let wait = if app.edge_drag.is_some() {
             EDGE_SCROLL
-        } else if app.working.is_some() || app.hint.is_some() || app.transcribing.is_some() {
+        } else if app.working.is_some() || app.hint.is_some() || app.transcribing.is_some()
+            || matches!(app.panel, Some(Panel::Subagents { .. })) && app.subagents.lock().unwrap().running() > 0
+        {
             Duration::from_millis(80)
         } else if app.recording.is_some() {
             Duration::from_secs(1)
@@ -3301,11 +3302,7 @@ impl App {
         // Run of the nearest rendered entry below; empty ones (collapsed thinking) must not split tool or log runs.
         let mut below_run = None;
         for index in (0..self.entries.len()).rev() {
-            let run = match self.entries[index].item {
-                Item::Tool { .. } => Some("tool"),
-                Item::System { .. } | Item::Error(_) => Some("log"),
-                _ => None,
-            };
+            let run = transcript_run(&self.entries[index].item);
             let is_prompt = matches!(self.entries[index].item, Item::User(_));
             let lines = self.entries[index].lines(width, expanded);
             if lines.is_empty() {
@@ -4000,15 +3997,33 @@ fn log_lines(text: &str, width: usize) -> Vec<Line> {
     lines
 }
 
-/// A subagent's session rendered like the main transcript, one blank line between items.
+/// A subagent's session rendered like the main transcript: a blank line between items, except inside a tool or log run.
 fn subagent_lines(path: &Path, width: usize) -> Result<Vec<Line>, String> {
     let history = Session::history(path)?;
     let mut lines = Vec::new();
+    let mut previous_run = None;
     for item in history_items(&history.messages) {
-        lines.push(Vec::new());
-        lines.extend(render_item(&item, width, false));
+        let item_lines = render_item(&item, width, false);
+        if item_lines.is_empty() {
+            continue;
+        }
+        let run = transcript_run(&item);
+        if run.is_none() || run != previous_run {
+            lines.push(Vec::new());
+        }
+        lines.extend(item_lines);
+        previous_run = run;
     }
     Ok(lines)
+}
+
+/// Consecutive items of the same run render without a blank line between them.
+fn transcript_run(item: &Item) -> Option<&'static str> {
+    match item {
+        Item::Tool { .. } => Some("tool"),
+        Item::System { .. } | Item::Error(_) => Some("log"),
+        _ => None,
+    }
 }
 
 /// Transcript items for a resumed session.
@@ -4108,11 +4123,12 @@ fn subagents_panel(runs: &[Arc<Run>], selected: usize, columns: usize) -> Vec<Li
             Some(Err(_)) => failed += 1,
         }
     }
-    let seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as usize;
-    let spinner = SPINNER[seconds % SPINNER.len()];
+    let tick = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() / 80;
+    // Same ✦ pulse as the Working line: lit 5 of every 12 ticks of 80 ms.
+    let spinner = star(((tick % 12) as usize).abs_diff(2));
     let mut title = vec![span(format!("Subagents {}", runs.len()), BRIGHT.bold())];
     if running > 0 {
-        title.push(span(format!("  {spinner} {running} running"), SYSTEM));
+        title.extend([span("  ", PLAIN), spinner.clone(), span(format!(" {running} running"), SYSTEM)]);
     }
     if done > 0 {
         title.push(span(format!("  ✓ {done}"), OK));
@@ -4131,7 +4147,7 @@ fn subagents_panel(runs: &[Arc<Run>], selected: usize, columns: usize) -> Vec<Li
         let elapsed = duration(run.elapsed());
         let state = run.state.lock().unwrap();
         let (icon, label_style, time_style) = match state.result {
-            None => (span(spinner, SYSTEM), BRIGHT, SYSTEM),
+            None => (spinner.clone(), BRIGHT, SYSTEM),
             Some(Ok(_)) => (span("✓", OK), MUTED, MUTED),
             Some(Err(_)) => (span("✗", ERROR), MUTED, MUTED),
         };
@@ -4304,12 +4320,19 @@ fn shimmer_line(label: &str, tick: usize) -> Line {
         distance @ 0..=2 => 255 - 4 * distance as u8,
         _ => 245,
     };
-    let glyph = if level(0) > 245 { span("✦", Style::fg(level(0))) } else { span("✧", DIM) };
-    let mut line = vec![span(" ", PLAIN), glyph, span(" ", PLAIN)];
+    let mut line = vec![span(" ", PLAIN), star(head.unsigned_abs()), span(" ", PLAIN)];
     for (index, letter) in label.chars().enumerate() {
         line.push(span(letter.to_string(), Style::fg(level(index + 2))));
     }
     line
+}
+
+/// Lit ✦ while a shimmer band `distance` columns away passes over it, dim ✧ otherwise.
+fn star(distance: usize) -> Span {
+    match distance {
+        0..=2 => span("✦", Style::fg(255 - 4 * distance as u8)),
+        _ => span("✧", DIM),
+    }
 }
 
 fn recording_line(elapsed: Duration) -> Line {
@@ -4599,6 +4622,30 @@ mod tests {
     fn log_lines_drop_colors_and_keep_the_last_progress_redraw() {
         let lines: Vec<String> = log_lines("\x1b[32mok\x1b[0m\n10%\r55%\r100%\nabcdefghij", 6).iter().map(text).collect();
         assert_eq!(lines, [" ok", " 100%", " abcde", " fghij"]);
+    }
+
+    #[test]
+    fn subagent_lines_keep_consecutive_tool_calls_together() {
+        let dir = std::env::temp_dir().join(format!("agent-subagent-tools-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = dir.join("abc123.jsonl");
+        let tool = |id: &str, path: &str| json!({"type": "tool_use", "id": id, "name": "read", "input": {"path": path}});
+        let result = |id: &str| json!({"type": "tool_result", "tool_use_id": id, "content": "ok"});
+        let messages = [
+            json!({"role": "assistant", "content": [tool("a", "one.rs"), tool("b", "two.rs")]}),
+            json!({"role": "user", "content": [result("a"), result("b")]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}),
+        ];
+        let entries: Vec<String> = messages.iter().map(|message| json!({"type": "message", "message": message}).to_string()).collect();
+        std::fs::write(&session, entries.join("\n")).unwrap();
+        let lines = subagent_lines(&session, 60);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let lines: Vec<String> = lines.unwrap().iter().map(text).collect();
+        let one = lines.iter().position(|line| line.contains("one.rs")).unwrap();
+        let two = lines.iter().position(|line| line.contains("two.rs")).unwrap();
+        let done = lines.iter().position(|line| line.contains("Done.")).unwrap();
+        assert!(lines[one..two].iter().all(|line| !line.trim().is_empty()), "{lines:#?}");
+        assert!(lines[two..done].iter().any(|line| line.trim().is_empty()), "{lines:#?}");
     }
 
     #[test]
