@@ -30,28 +30,41 @@ impl Panel<'_> {
             header.push(span("  ", PLAIN));
             header.push(if index == self.tab { span(format!("[{tab}]"), BRIGHT) } else { span(*tab, MUTED) });
         }
-        let first = (self.selected + 1).saturating_sub(max_rows);
-        let mut lines = vec![Vec::new(), header];
+        let mut head = vec![header];
         if let Some(search) = &self.search {
-            lines.push(vec![span(format!("> {search}"), BRIGHT)]);
+            head.push(vec![span(format!("> {search}"), BRIGHT)]);
         }
         if self.rows.is_empty() {
-            lines.push(vec![span(format!("  {}", self.empty), MUTED)]);
+            head.push(vec![span(format!("  {}", self.empty), MUTED)]);
         }
         let left_width = self.rows.iter().map(|r| width(&r.left)).max().unwrap_or(0);
-        for (index, row) in self.rows.iter().enumerate().skip(first).take(max_rows) {
-            let (marker, style) = if index == self.selected { ("→ ", BRIGHT) } else { ("  ", MUTED) };
+        frame(head, self.rows.len(), self.selected, self.hint, columns, max_rows, |index| {
+            let row = &self.rows[index];
+            let style = if index == self.selected { BRIGHT } else { MUTED };
             let pad = " ".repeat(left_width - width(&row.left));
-            let mut line = vec![span(marker, OK), span(format!("{}{pad}", row.left), style), span("    ", PLAIN)];
+            let mut line = vec![span(format!("{}{pad}", row.left), style), span("    ", PLAIN)];
             line.extend(row.right.iter().cloned());
-            lines.push(truncate(&line, columns));
-        }
-        if self.rows.len() > max_rows {
-            lines.extend([Vec::new(), vec![span(format!("  {}/{}", self.selected + 1, self.rows.len()), COUNT)]]);
-        }
-        lines.push(vec![span(self.hint, MUTED)]);
-        lines
+            line
+        })
     }
+}
+
+/// A panel around rows the caller styles: a blank line, `head`, the `max_rows` rows around `selected` behind a `→`, `n/len` when they scroll, key hints.
+pub fn frame(head: Vec<Line>, len: usize, selected: usize, hint: &str, columns: usize, max_rows: usize, row: impl Fn(usize) -> Line) -> Vec<Line> {
+    let mut lines = vec![Vec::new()];
+    lines.extend(head);
+    let first = (selected + 1).saturating_sub(max_rows);
+    for index in first..len.min(first + max_rows) {
+        let marker = if index == selected { "→ " } else { "  " };
+        let mut line = vec![span(marker, OK)];
+        line.extend(row(index));
+        lines.push(truncate(&line, columns));
+    }
+    if len > max_rows {
+        lines.extend([Vec::new(), vec![span(format!("  {}/{len}", selected + 1), COUNT)]]);
+    }
+    lines.push(vec![span(hint, MUTED)]);
+    lines
 }
 
 #[cfg(test)]

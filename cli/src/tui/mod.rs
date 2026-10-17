@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::agent::{self, Agent, Event, FileChange, RestoredFiles, RewindPoint, Session, SessionInfo, Spent};
 use crate::api::{AccountView, Client, Delta, Usage};
@@ -36,7 +36,7 @@ use crate::agent::permissions::{Decision, MODES, Mode, Request};
 use crate::agent::skill_usage;
 use crate::agent::usage::{self, ModelTotal, tokens};
 use crate::agent::prompt::{Skill, Template};
-use crate::agent::subagent::Runs;
+use crate::agent::subagent::{Run, Runs};
 use crate::api::accounts::Policy;
 use crate::api::models::{self, Model};
 use crate::api::oauth::Tokens;
@@ -53,6 +53,7 @@ use selection::{Point, Selection};
 
 const WORKING: &str = "Working";
 const TRANSCRIBING: &str = "Transcribing";
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const LOADING_MODELS: &str = "loading models";
 const MODELS_STILL_LOADING: &str = "The model lists are still loading.";
 pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -2576,27 +2577,7 @@ impl App {
             }
             Panel::Ask(ask) => ask.render(width),
             Panel::Subagents { index } => {
-                let runs = self.subagents.lock().unwrap();
-                let mut total = Usage::default();
-                let mut rows = Vec::new();
-                for run in &runs.list {
-                    let spent = run.state.lock().unwrap().usage;
-                    total.add(spent);
-                    let tokens = if spent == Usage::default() { String::new() } else { format!("  {}", usage::brief(spent)) };
-                    let right = format!("{} {}s{tokens}", run.status(), run.elapsed().as_secs());
-                    rows.push(panel::Row { left: format!("{} {}", run.id, run.label), right: vec![span(right, MUTED)] });
-                }
-                let view = panel::Panel {
-                    title: if total == Usage::default() { format!("Subagents {}", rows.len()) } else { format!("Subagents {}  {}", rows.len(), usage::brief(total)) },
-                    tabs: &[],
-                    tab: 0,
-                    search: None,
-                    rows: &rows,
-                    selected: *index,
-                    empty: "",
-                    hint: "↑↓ navigate     enter view     k stop     esc close",
-                };
-                view.render(width, PANEL_ROWS)
+                subagents_panel(&self.subagents.lock().unwrap().list, *index, width)
             }
             Panel::Terminals { index } => {
                 let terminals = self.terminals.lock().unwrap();
@@ -4112,6 +4093,58 @@ fn thinking_style(level: &str) -> Style {
     let (darkest, last) = (0x76, THINKING_LEVELS.len() as u32 - 1);
     let gray = darkest + index * (0xff - darkest) / last;
     Style::rgb(gray * 0x010101)
+}
+
+/// /subagents: per-status counts in the title, then one row per run with a status icon, a dim id and the label as the main text.
+fn subagents_panel(runs: &[Arc<Run>], selected: usize, columns: usize) -> Vec<Line> {
+    let mut total = Usage::default();
+    let (mut running, mut done, mut failed) = (0, 0, 0);
+    for run in runs {
+        let state = run.state.lock().unwrap();
+        total.add(state.usage);
+        match state.result {
+            None => running += 1,
+            Some(Ok(_)) => done += 1,
+            Some(Err(_)) => failed += 1,
+        }
+    }
+    let seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as usize;
+    let spinner = SPINNER[seconds % SPINNER.len()];
+    let mut title = vec![span(format!("Subagents {}", runs.len()), BRIGHT.bold())];
+    if running > 0 {
+        title.push(span(format!("  {spinner} {running} running"), SYSTEM));
+    }
+    if done > 0 {
+        title.push(span(format!("  ✓ {done}"), OK));
+    }
+    if failed > 0 {
+        title.push(span(format!("  ✗ {failed}"), ERROR));
+    }
+    if total != Usage::default() {
+        title.push(span(format!("   {}", usage::brief(total)), DIM));
+    }
+    let id_width = runs.iter().map(|run| width(&run.id)).max().unwrap_or(0);
+    let label_width = runs.iter().map(|run| width(&run.label)).max().unwrap_or(0);
+    let pad = |text: &str, to: usize| format!("{text}{}", " ".repeat(to - width(text)));
+    panel::frame(vec![title], runs.len(), selected, "↑↓ navigate     enter view     k stop     esc close", columns, PANEL_ROWS, |index| {
+        let run = &runs[index];
+        let elapsed = duration(run.elapsed());
+        let state = run.state.lock().unwrap();
+        let (icon, label_style, time_style) = match state.result {
+            None => (span(spinner, SYSTEM), BRIGHT, SYSTEM),
+            Some(Ok(_)) => (span("✓", OK), MUTED, MUTED),
+            Some(Err(_)) => (span("✗", ERROR), MUTED, MUTED),
+        };
+        let label_style = if index == selected { BRIGHT.bold() } else { label_style };
+        let tokens = if state.usage == Usage::default() { String::new() } else { usage::brief(state.usage) };
+        vec![
+            icon,
+            span(format!(" {} ", pad(&run.id, id_width)), DIM),
+            span(pad(&run.label, label_width), label_style),
+            span(format!("  {elapsed:<8}"), time_style),
+            span(tokens, DIM),
+        ]
+    })
 }
 
 fn duration(d: Duration) -> String {
