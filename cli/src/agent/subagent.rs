@@ -11,7 +11,7 @@ use super::{FollowUp, prompt, usage};
 use crate::api::Usage;
 
 const DEFAULT_SWARM_PROMPT: &str = include_str!("swarm-prompt.md");
-const MAX_PER_SESSION: usize = 64;
+const MAX_RUNNING: usize = 64;
 /// Sent ahead of every task, since the child's system prompt is the root's.
 const CHILD_BRIEF: &str = "You are a subagent. Another agent spawned you for the task below and reads only your final answer. \
 Nobody answers questions here: finish the task on your own, making the reasonable call where it is unclear. \
@@ -108,8 +108,9 @@ pub struct Runs {
 impl Runs {
     /// Starts the child and a thread reading its JSONL; a background run queues its answer as a follow-up.
     pub fn spawn(&mut self, launch: Launch, background: bool, follow_ups: &Arc<Mutex<Vec<FollowUp>>>) -> Result<Arc<Run>, String> {
-        if self.list.len() >= MAX_PER_SESSION {
-            return Err(format!("This session already started {MAX_PER_SESSION} subagents, the limit."));
+        let running = self.list.iter().filter(|run| run.state.lock().unwrap().result.is_none()).count();
+        if running >= MAX_RUNNING {
+            return Err(format!("{MAX_RUNNING} subagents are already running, the limit. Wait for one to finish."));
         }
         let exe = std::env::current_exe().map_err(|e| format!("Cannot find the agent binary: {e}"))?;
         // A child has no UI to ask in, so ask becomes auto.
@@ -302,6 +303,27 @@ mod tests {
             .collect();
         assert_eq!(read_events(stdout.as_bytes(), &run), Ok("ok".into()));
         assert_eq!(run.summary(), "sa-1 scan running: 1 tool calls, last read, 0s, ↑1k ↓300 cache 40k");
+    }
+
+    #[test]
+    fn finished_runs_do_not_count_toward_the_limit() {
+        let mut runs = Runs::default();
+        for _ in 0..MAX_RUNNING {
+            let run = scan_run();
+            run.state.lock().unwrap().result = Some(Ok("done".into()));
+            runs.list.push(Arc::new(run));
+        }
+        let launch = Launch {
+            label: "next".into(),
+            task: "look".into(),
+            cwd: PathBuf::from("/nonexistent/agent-subagent-test"),
+            model: "opus".into(),
+            thinking: "low".into(),
+            mode: Mode::Auto,
+            parent_session: "parent".into(),
+        };
+        let error = runs.spawn(launch, true, &Arc::default()).err().unwrap();
+        assert!(error.starts_with("Cannot start subagent"), "{error}");
     }
 
     fn scan_run() -> Run {
