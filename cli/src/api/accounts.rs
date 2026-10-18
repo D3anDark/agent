@@ -13,10 +13,19 @@ pub struct Account {
     pub secret: Secret,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Secret {
     ApiKey(String),
     OAuth(Tokens),
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Secret::ApiKey(_) => f.write_str("ApiKey(..)"),
+            Secret::OAuth(tokens) => f.debug_tuple("OAuth").field(tokens).finish(),
+        }
+    }
 }
 
 impl Account {
@@ -46,28 +55,32 @@ pub fn load(home: &Path) -> Result<Vec<Account>, String> {
         Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
     };
     let file: Value = serde_json::from_str(&text).map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?;
+    // update rewrites the whole file from what load returned, so anything skipped here would be deleted.
+    let broken = |what: &str| format!("{} is broken: {what}. Fix or remove it by hand.", path.display());
+    let file = file.as_object().ok_or_else(|| broken("not a JSON object"))?;
     let mut accounts = Vec::new();
-    for (provider, entries) in file.as_object().into_iter().flatten() {
-        for entry in entries.as_array().into_iter().flatten() {
-            let text = |key: &str| entry[key].as_str().unwrap_or_default().to_string();
+    for (provider, entries) in file {
+        let entries = entries.as_array().ok_or_else(|| broken(&format!("{provider} is not a list")))?;
+        for entry in entries {
+            let text = |key: &str| entry[key].as_str().map(String::from).ok_or_else(|| broken(&format!("a {provider} entry has no {key}")));
             let secret = match entry["type"].as_str() {
-                Some("api_key") => Secret::ApiKey(text("key")),
+                Some("api_key") => Secret::ApiKey(text("key")?),
                 Some("oauth") => Secret::OAuth(Tokens {
-                    access: text("access"),
-                    refresh: text("refresh"),
-                    expires: entry["expires"].as_u64().unwrap_or_default(),
+                    access: text("access")?,
+                    refresh: text("refresh")?,
+                    expires: entry["expires"].as_u64().ok_or_else(|| broken(&format!("a {provider} entry has no expires")))?,
                     account_id: entry["accountId"].as_str().map(String::from),
                 }),
-                _ => continue,
+                _ => return Err(broken(&format!("a {provider} entry has an unknown type"))),
             };
-            accounts.push(Account { provider: provider.clone(), name: text("name"), secret });
+            accounts.push(Account { provider: provider.clone(), name: text("name")?, secret });
         }
     }
     Ok(accounts)
 }
 
 /// Writes all accounts through a 0600 temp file and a rename, so a crash never leaves half a file.
-pub fn save(home: &Path, accounts: &[Account]) -> Result<(), String> {
+fn save(home: &Path, accounts: &[Account]) -> Result<(), String> {
     let mut file = json!({});
     for account in accounts {
         let entry = match &account.secret {
@@ -79,17 +92,28 @@ pub fn save(home: &Path, accounts: &[Account]) -> Result<(), String> {
             None => file[&account.provider] = json!([entry]),
         }
     }
-    let path = path(home);
+    // Renaming over a symlink would replace a dotfiles link with a plain file.
+    let path = std::fs::canonicalize(path(home)).unwrap_or_else(|_| path(home));
     let temp = path.with_extension("json.tmp");
-    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| format!("Cannot create {}: {e}", path.display()))?;
     let mut out = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temp).map_err(|e| format!("Cannot write {}: {e}", temp.display()))?;
-    out.write_all(format!("{file:#}\n").as_bytes()).map_err(|e| format!("Cannot write {}: {e}", temp.display()))?;
-    std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
-    std::fs::rename(&temp, &path).map_err(|e| format!("Cannot write {}: {e}", path.display()))
+    // mode() applies only on create, so a leftover temp file is made private before the secrets go in.
+    let written = out
+        .set_permissions(std::fs::Permissions::from_mode(0o600))
+        .and_then(|()| out.write_all(format!("{file:#}\n").as_bytes()))
+        .and_then(|()| out.sync_all())
+        .and_then(|()| std::fs::rename(&temp, &path));
+    written.map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("Cannot write {}: {e}", path.display())
+    })
 }
 
-/// Reads, changes and writes the file, so accounts another agent process saved meanwhile survive.
+/// Reads, changes and writes the file under a lock, so accounts another agent process saves meanwhile survive.
 pub fn update(home: &Path, change: impl FnOnce(&mut Vec<Account>) -> Result<(), String>) -> Result<Vec<Account>, String> {
+    let lock_path = path(home).with_extension("json.lock");
+    std::fs::create_dir_all(lock_path.parent().expect("accounts.json sits in ~/.agents")).map_err(|e| format!("Cannot create {}: {e}", lock_path.display()))?;
+    let lock = std::fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600).open(&lock_path).map_err(|e| format!("Cannot open {}: {e}", lock_path.display()))?;
+    lock.lock().map_err(|e| format!("Cannot lock {}: {e}", lock_path.display()))?;
     let mut accounts = load(home)?;
     change(&mut accounts)?;
     save(home, &accounts)?;
@@ -191,13 +215,13 @@ pub struct Candidate {
 #[derive(Debug, PartialEq)]
 pub enum Pick {
     Account(usize),
-    /// Every account is over the threshold; this one has the most room left.
+    /// Every account is over the threshold or rate-limited; this one has the most room left.
     OverLimit(usize),
     Blocked { resets_at: Option<u64> },
     OtherProvider,
 }
 
-/// The pinned account while it is under `threshold`, else the first one under it, else what `policy` says.
+/// The pinned account while it is under `threshold` and not rate-limited, else the first such account, else what `policy` says.
 /// A `threshold` of 0 turns switching off: always the pinned (or first) account, even when limited.
 pub fn pick(candidates: &[Candidate], threshold: f64, policy: Policy, pinned: Option<usize>) -> Pick {
     if threshold <= 0.0 {
@@ -269,6 +293,7 @@ mod tests {
         let all_limited = [Candidate { usage: None, limited: true }];
         assert_eq!(pick(&all_limited, 90.0, Policy::LeastUsed, None), Pick::OverLimit(0));
         assert_eq!(pick(&all_limited, 0.0, Policy::Block, Some(0)), Pick::Account(0));
+        assert_eq!(pick(&full, 0.0, Policy::Block, Some(2)), Pick::Account(2));
     }
 
     #[test]
@@ -285,15 +310,51 @@ mod tests {
     fn file_round_trips_with_owner_only_access() {
         let home = std::env::temp_dir().join(format!("agent-accounts-{}", std::process::id()));
         let tokens = Tokens { access: "a".into(), refresh: "r".into(), expires: 5, account_id: Some("acc".into()) };
-        let accounts = vec![
+        let accounts = [
             Account { provider: "openai-codex".into(), name: "work".into(), secret: Secret::OAuth(tokens) },
             Account { provider: "anthropic".into(), name: "key".into(), secret: Secret::ApiKey("sk".into()) },
         ];
-        save(&home, &accounts).unwrap();
+        update(&home, |list| {
+            list.extend(accounts.iter().cloned());
+            Ok(())
+        })
+        .unwrap();
         let mut loaded = load(&home).unwrap();
         loaded.sort_by(|a, b| a.provider.cmp(&b.provider));
         assert_eq!(loaded, [accounts[1].clone(), accounts[0].clone()]);
         assert_eq!(std::fs::metadata(path(&home)).unwrap().permissions().mode() & 0o777, 0o600);
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn concurrent_updates_keep_every_account() {
+        let home = std::env::temp_dir().join(format!("agent-accounts-race-{}", std::process::id()));
+        let threads: Vec<_> = (0..8)
+            .map(|n| {
+                let home = home.clone();
+                std::thread::spawn(move || {
+                    update(&home, |accounts| {
+                        accounts.push(Account { provider: "anthropic".into(), name: n.to_string(), secret: Secret::ApiKey("k".into()) });
+                        Ok(())
+                    })
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap().unwrap();
+        }
+        let saved = load(&home).unwrap().len();
+        std::fs::remove_dir_all(&home).unwrap();
+        assert_eq!(saved, 8);
+    }
+
+    #[test]
+    fn an_entry_load_cannot_read_is_an_error_not_dropped() {
+        let home = std::env::temp_dir().join(format!("agent-accounts-shape-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        std::fs::write(path(&home), r#"{"anthropic": [{"name": "a", "type": "OAuth"}]}"#).unwrap();
+        let loaded = load(&home);
+        std::fs::remove_dir_all(&home).unwrap();
+        assert!(loaded.unwrap_err().contains("unknown type"));
     }
 }

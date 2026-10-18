@@ -23,7 +23,7 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 /// Tokens are refreshed this long before they expire.
 pub const REFRESH_MARGIN_MS: u64 = 5 * 60 * 1000;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Tokens {
     pub access: String,
     pub refresh: String,
@@ -31,6 +31,13 @@ pub struct Tokens {
     pub expires: u64,
     /// ChatGPT account read from the Codex access token, or the Claude account uuid from the token response.
     pub account_id: Option<String>,
+}
+
+/// Redacted, so a failing assert or a `{:?}` in a log never prints a token.
+impl std::fmt::Debug for Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tokens").field("expires", &self.expires).field("account_id", &self.account_id).finish_non_exhaustive()
+    }
 }
 
 /// A started login: the URL to open and what the code exchange needs.
@@ -77,9 +84,13 @@ fn claude_tokens(data: Value) -> Result<Tokens, String> {
     let (Some(access), Some(refresh), Some(expires_in)) = (data["access_token"].as_str(), data["refresh_token"].as_str(), data["expires_in"].as_u64()) else {
         return Err("The token response is missing fields.".into());
     };
-    // pi-ai stores Anthropic expiry five minutes early.
     let account_id = data["account"]["uuid"].as_str().map(String::from);
-    Ok(Tokens { access: access.into(), refresh: refresh.into(), expires: now_ms() + expires_in * 1000 - REFRESH_MARGIN_MS, account_id })
+    Ok(Tokens { access: access.into(), refresh: refresh.into(), expires: expires_at(expires_in), account_id })
+}
+
+/// `fresh` in api/mod.rs applies `REFRESH_MARGIN_MS`, so the stored expiry is the server's.
+pub(crate) fn expires_at(expires_in_secs: u64) -> u64 {
+    now_ms().saturating_add(expires_in_secs.saturating_mul(1000))
 }
 
 pub fn start_codex() -> Pending {
@@ -129,9 +140,13 @@ pub fn callback_code(listener: &TcpListener, path: &str, state: &str, abort: &At
             continue;
         };
         stream.set_nonblocking(false).map_err(|e| e.to_string())?;
+        // A connection that sends nothing must not hold the login past abort or its deadline.
+        stream.set_read_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
         let mut stream = stream;
         let mut line = String::new();
-        BufReader::new(&stream).read_line(&mut line).map_err(|e| e.to_string())?;
+        if BufReader::new((&stream).take(8192)).read_line(&mut line).is_err() {
+            continue;
+        }
         let target = line.split_whitespace().nth(1).unwrap_or_default();
         let Some(query) = target.strip_prefix(path) else {
             let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n");
@@ -139,10 +154,16 @@ pub fn callback_code(listener: &TcpListener, path: &str, state: &str, abort: &At
         };
         let params = parse_query(query);
         let param = |key: &str| params.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        // Any local page can request this URL, so only the redirect carrying our state ends the login.
+        if param("state").as_deref() != Some(state) {
+            let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n");
+            continue;
+        }
         let page = "<!doctype html><p>Login finished. You can close this tab.</p>";
         let _ = write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\n\r\n{page}", page.len());
-        if param("state").as_deref() != Some(state) {
-            return Err("OAuth state mismatch. Start /login again.".into());
+        if let Some(error) = param("error") {
+            let shown: String = error.chars().filter(|c| !c.is_control()).take(200).collect();
+            return Err(format!("Login failed: {shown}. Start /login again."));
         }
         return param("code").ok_or_else(|| "Missing authorization code.".into());
     }
@@ -153,7 +174,7 @@ fn codex_tokens(data: Value) -> Result<Tokens, String> {
         return Err("The token response is missing fields.".into());
     };
     let account_id = codex_account_id(access).ok_or("The token has no ChatGPT account id.")?;
-    Ok(Tokens { access: access.into(), refresh: refresh.into(), expires: now_ms() + expires_in * 1000, account_id: Some(account_id) })
+    Ok(Tokens { access: access.into(), refresh: refresh.into(), expires: expires_at(expires_in), account_id: Some(account_id) })
 }
 
 /// The ChatGPT account id from the access token's JWT payload.
@@ -164,20 +185,26 @@ fn codex_account_id(access: &str) -> Option<String> {
 }
 
 pub fn open_browser(url: &str) {
+    // MCP servers supply the authorization URL; a file:// or app scheme would open something local.
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return;
+    }
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     // spawn() and not status(): xdg-open runs a browser without a desktop handler in the foreground.
     let _ = crate::process::command(opener).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
 }
 
-/// POSTs to a token endpoint. The error carries the status and body, never the request, which holds the secrets.
+/// POSTs to a token or client registration endpoint. The error carries the status and body, never the request,
+/// which holds the secrets.
 pub fn post(url: &str, content_type: &str, body: &str) -> Result<Value, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(30))).build().into();
-    let response = agent.post(url).header("content-type", content_type).header("accept", "application/json").send(body).map_err(|e| format!("Token request failed: {e}."))?;
-    let status = response.status().as_u16();
-    let mut text = String::new();
-    response.into_body().into_reader().read_to_string(&mut text).map_err(|e| format!("Token response unreadable: {e}."))?;
-    if status != 200 {
-        return Err(format!("Token request failed ({status}): {}", text.trim()));
+    let mut response = agent.post(url).header("content-type", content_type).header("accept", "application/json").send(body).map_err(|e| format!("Token request failed: {e}."))?;
+    let status = response.status();
+    let text = response.body_mut().read_to_string().map_err(|e| format!("Token response unreadable: {e}."))?;
+    if !status.is_success() {
+        // The body comes from a third-party server and ends up on the terminal, so escapes are dropped.
+        let shown: String = text.trim().chars().filter(|c| !c.is_control()).take(500).collect();
+        return Err(format!("Token request failed ({}): {shown}.", status.as_u16()));
     }
     serde_json::from_str(&text).map_err(|e| format!("Token response is not JSON: {e}."))
 }
@@ -254,30 +281,32 @@ pub fn percent_encode(text: &str) -> String {
 }
 
 fn parse_query(query: &str) -> Vec<(String, String)> {
-    let decode = |text: &str| -> String {
-        let bytes = text.as_bytes();
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i < bytes.len() {
-            let hex = (bytes[i] == b'%').then(|| text.get(i + 1..i + 3)).flatten().and_then(|h| u8::from_str_radix(h, 16).ok());
-            match (bytes[i], hex) {
-                (_, Some(byte)) => {
-                    out.push(byte);
-                    i += 3;
-                }
-                (b'+', None) => {
-                    out.push(b' ');
-                    i += 1;
-                }
-                (byte, None) => {
-                    out.push(byte);
-                    i += 1;
-                }
-            }
+    query.split('&').filter_map(|pair| pair.split_once('=')).map(|(k, v)| (form_decode(k), form_decode(v))).collect()
+}
+
+/// `+` is a space and `%XY` a byte; a `%` without two hex digits after it stays as it is.
+fn form_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(byte) = hex_byte(&bytes[i + 1..])
+        {
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+            i += 1;
         }
-        String::from_utf8_lossy(&out).into_owned()
-    };
-    query.split('&').filter_map(|pair| pair.split_once('=')).map(|(k, v)| (decode(k), decode(v))).collect()
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The byte the first two hex digits of `pair` spell. Not `from_str_radix`, which also takes a sign: `+1`.
+pub(crate) fn hex_byte(pair: &[u8]) -> Option<u8> {
+    let digit = |index: usize| char::from(*pair.get(index)?).to_digit(16);
+    Some((digit(0)? * 16 + digit(1)?) as u8)
 }
 
 #[cfg(test)]
@@ -301,6 +330,51 @@ mod tests {
         assert_eq!(codex_account_id(&token).as_deref(), Some("acc-1"));
         assert_eq!(codex_account_id("not-a-jwt"), None);
         assert_eq!(parse_query("code=a%2Fb+c&state=x"), [("code".to_string(), "a/b c".to_string()), ("state".to_string(), "x".to_string())]);
+        assert_eq!(parse_query("code=%+1%4"), [("code".to_string(), "% 1%4".to_string())]);
         assert_eq!(form(&[("scope", "a b"), ("u", "http://x/y")]), "scope=a%20b&u=http%3A%2F%2Fx%2Fy");
+    }
+
+    /// Answers one HTTP request on a local port with `response` and returns the port's URL.
+    fn serve_once(response: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.read(&mut [0; 4096]);
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        url
+    }
+
+    #[test]
+    fn post_accepts_201_created_from_client_registration() {
+        let url = serve_once("HTTP/1.1 201 Created\r\ncontent-length: 17\r\n\r\n{\"client_id\":\"c\"}");
+        assert_eq!(post(&url, "application/json", "{}").unwrap(), json!({"client_id": "c"}));
+    }
+
+    #[test]
+    fn a_failed_post_reports_the_body_without_terminal_escapes() {
+        let url = serve_once("HTTP/1.1 400 Bad Request\r\ncontent-length: 14\r\n\r\nbad\x1b]0;x\x07grant");
+        assert_eq!(post(&url, "application/json", "{}").unwrap_err(), "Token request failed (400): bad]0;xgrant.");
+    }
+
+    #[test]
+    fn the_callback_ignores_a_request_without_the_state_and_reports_an_oauth_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let browser = std::thread::spawn(move || {
+            let mut answers = Vec::new();
+            for target in ["/cb?code=forged", "/cb?error=access_denied&state=s"] {
+                let mut stream = std::net::TcpStream::connect(address).unwrap();
+                write!(stream, "GET {target} HTTP/1.1\r\n\r\n").unwrap();
+                let mut answer = String::new();
+                let _ = stream.read_to_string(&mut answer);
+                answers.push(answer.lines().next().unwrap_or_default().to_string());
+            }
+            answers
+        });
+        let result = callback_code(&listener, "/cb?", "s", &AtomicBool::new(false));
+        assert_eq!(result.unwrap_err(), "Login failed: access_denied. Start /login again.");
+        assert_eq!(browser.join().unwrap(), ["HTTP/1.1 400 Bad Request", "HTTP/1.1 200 OK"]);
     }
 }
