@@ -1,6 +1,6 @@
 # Plugins
 
-A plugin is a directory with a `plugin.json` and the program it names. The agent starts each enabled plugin once per process and talks to it in JSON-RPC 2.0 over stdin and stdout, one JSON message per line. Stderr is not part of the protocol. The agent keeps the last stderr line and shows it in `/plugins` when the plugin exits.
+A plugin is a directory with a `plugin.json` and the program it names. The agent starts each enabled plugin at startup, and again after it exits when anything changes in `/plugins`. It talks to it in JSON-RPC 2.0 over stdin and stdout, one JSON message per line. Stderr is not part of the protocol. The agent keeps the last stderr line and shows it in `/plugins` when the plugin exits.
 
 ## Install
 
@@ -37,7 +37,7 @@ The agent runs `command` in the plugin directory. The directory name is the plug
 
 `tools` is optional. While the plugin runs, the model gets each tool as `<plugin>__<name>`, for example `my-plugin__lookup`. A tool name has letters, digits, `_` and `-`, and no `__`. Without `input_schema`, the tool takes no input. The user approves plugin tools like other tools that change state. Plan mode blocks them.
 
-`settings` is optional. Each entry has a `key`, a `description` and a `default`. The default is a boolean or a string. In `/plugins`, Enter opens the plugin's settings. Space toggles a boolean and Enter edits a string. The values are kept in `plugin_settings` in `~/.agents/settings.json`. A value with a type that is not the type of the default is ignored.
+`settings` is optional. Each entry has a `key` and a `default`, and an optional `description`. The default is a boolean or a string. In `/plugins`, Enter opens the plugin's settings. Space or Enter toggles a boolean or edits a string. The values are kept in `plugin_settings` in `~/.agents/settings.json`. A value with a type that is not the type of the default is ignored.
 
 ## Messages from the agent
 
