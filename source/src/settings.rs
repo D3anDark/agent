@@ -36,6 +36,8 @@ pub struct Settings {
     pub provider_sort: String,
     /// Providers listed first when `provider_sort` is "manual"; unlisted ones keep their default order after them.
     pub provider_order: Vec<String>,
+    /// `model_key`s the model picker lists first.
+    pub pinned_models: Vec<String>,
     /// Skill names left out of the prompt and /skill: completion.
     pub disabled_skills: Vec<String>,
     /// Installed plugins that are not started.
@@ -168,6 +170,7 @@ pub fn load(home: &Path) -> Settings {
             .collect(),
         provider_sort: level(&own["provider_sort"], &PROVIDER_SORTS, "default"),
         provider_order: own["provider_order"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
+        pinned_models: own["pinned_models"].as_array().into_iter().flatten().filter_map(|key| Some(key.as_str()?.to_string())).collect(),
         disabled_skills: own["disabled_skills"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
         disabled_plugins: own["disabled_plugins"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
         disabled_mcp: own["disabled_mcp"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
@@ -243,6 +246,7 @@ pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
         "context_windows": settings.context_windows,
         "provider_sort": settings.provider_sort,
         "provider_order": settings.provider_order,
+        "pinned_models": settings.pinned_models,
         "disabled_skills": settings.disabled_skills,
         "disabled_plugins": settings.disabled_plugins,
         "disabled_mcp": settings.disabled_mcp,
@@ -297,6 +301,7 @@ mod tests {
         settings.default_accounts.insert("anthropic".into(), "work".into());
         settings.provider_sort = "manual".into();
         settings.provider_order = vec!["openrouter".into(), "anthropic".into()];
+        settings.pinned_models = vec!["anthropic/claude-haiku-5-5".into()];
         settings.disabled_skills = vec!["remotion-render".into()];
         settings.disabled_plugins = vec!["usagefleet".into()];
         settings.disabled_mcp = vec!["github".into()];

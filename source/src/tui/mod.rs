@@ -2292,6 +2292,18 @@ impl App {
                 self.update_settings(|s| *model_setting(s, row) = id);
                 self.panel = back;
             }
+            KeyCode::Tab => {
+                let Some(Some(model)) = matches.get(*index) else { return };
+                let key = model_key(model);
+                let query = query.text();
+                self.update_settings(|s| match s.pinned_models.iter().position(|pinned| *pinned == key) {
+                    Some(at) => _ = s.pinned_models.remove(at),
+                    None => s.pinned_models.push(key.clone()),
+                });
+                let matches = matching_models(self.client.catalog(), &self.settings, row, &query);
+                let Some(Panel::Models { index, .. }) = self.panel.as_mut() else { return };
+                *index = matches.iter().position(|m| m.is_some_and(|m| model_key(m) == key)).unwrap_or(0);
+            }
             _ => {
                 if query.edit_key(key) {
                     *index = 0;
@@ -2608,7 +2620,10 @@ impl App {
                 let rows: Vec<panel::Row> = matching_models(self.client.catalog(), &self.settings, *row, &query.text())
                     .into_iter()
                     .map(|m| match m {
-                        Some(m) => panel::Row { left: m.id.clone(), right: vec![span(model_owners(m), MUTED)] },
+                        Some(m) => {
+                            let pin = if self.settings.pinned_models.contains(&model_key(m)) { "★ " } else { "" };
+                            panel::Row { left: format!("{pin}{}", m.id), right: vec![span(model_owners(m), MUTED)] }
+                        }
                         None => panel::Row { left: "auto".into(), right: vec![] },
                     })
                     .collect();
@@ -2620,7 +2635,7 @@ impl App {
                     rows: &rows,
                     selected: *index,
                     empty: "No matching models.",
-                    hint: "type to search     ↑↓ navigate     enter select     esc back",
+                    hint: "type to search     ↑↓ navigate     tab pin     enter select     esc back",
                 };
                 view.render(width, PANEL_ROWS)
             }
@@ -4346,14 +4361,14 @@ fn plan_lines(selected: usize) -> Vec<Line> {
     lines
 }
 
-/// Picker rows for settings `row` whose provider or id contains `query`, ignoring case, grouped in provider order.
+/// Picker rows for settings `row` whose provider or id contains `query`, ignoring case: pinned models first, each part grouped in provider order.
 /// `None` is "auto", offered for the optional condense and fallback models.
 fn matching_models<'a>(catalog: &'a [Model], settings: &Settings, row: usize, query: &str) -> Vec<Option<&'a Model>> {
     let query = query.to_lowercase();
     let auto = (row != 0 && "auto".contains(&query)).then_some(None);
     let providers = settings.sort_providers(&models::PROVIDERS);
     let mut matches: Vec<&Model> = catalog.iter().filter(|m| format!("{} {}", model_owners(m), m.id).to_lowercase().contains(&query)).collect();
-    matches.sort_by_key(|m| providers.iter().position(|provider| *provider == m.provider).unwrap_or(usize::MAX));
+    matches.sort_by_key(|m| (!settings.pinned_models.contains(&model_key(m)), providers.iter().position(|provider| *provider == m.provider).unwrap_or(usize::MAX)));
     auto.into_iter().chain(matches.into_iter().map(Some)).collect()
 }
 
@@ -4673,6 +4688,8 @@ mod tests {
         settings.provider_sort = "manual".into();
         settings.provider_order = vec!["openai-codex".into()];
         assert_eq!(ids(&settings, 8, ""), ["auto", "gpt-6-luna", "gpt-6-sol", "claude-haiku-5-5"]);
+        settings.pinned_models = vec!["openai-codex/gpt-6-sol".into()];
+        assert_eq!(ids(&settings, 8, ""), ["auto", "gpt-6-sol", "gpt-6-luna", "claude-haiku-5-5"]);
     }
 
     #[test]
