@@ -1476,12 +1476,26 @@ fn restore_files(snapshots: &Snapshots, checkpoints: &[Checkpoint], index: usize
         return Ok(files);
     }
     let now = snapshots.take()?;
+    let mut deletions = Vec::new();
     for (path, after) in last_after {
         let before = first_before[path];
         let current = snapshots.blob(&now, path);
+        let before_blob = snapshots.blob(before, path);
         if current != snapshots.blob(after, path) {
             files.kept.push(path.into());
-        } else if current != snapshots.blob(before, path) {
+        } else if current != before_blob && before_blob.is_none() {
+            deletions.push((path, before));
+        } else if current != before_blob {
+            snapshots.restore(before, path)?;
+            files.restored.push(path.into());
+        }
+    }
+    // Snapshots skip ignored files, so a path missing from `before` may have been ignored then (an unignored `.env`).
+    // Asked after the restores above, so the ignore files are as they were before.
+    for (path, before) in deletions {
+        if snapshots.ignored(path)? {
+            files.kept.push(path.into());
+        } else {
             snapshots.restore(before, path)?;
             files.restored.push(path.into());
         }
@@ -1795,6 +1809,28 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(files, RestoredFiles { restored: vec!["a.txt".into(), "new.txt".into()], kept: vec!["shared.txt".into()] });
         assert_eq!(state, [Some("v2".into()), None, Some("mine".into()), Some("user".into()), Some("another session".into())]);
+    }
+
+    #[test]
+    fn rewind_keeps_a_file_that_was_ignored_before_the_tool_call() {
+        let _index = SNAPSHOT_INDEX.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("agent-restore-ignored-{}", std::process::id()));
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        assert!(crate::process::command("git").arg("-C").arg(&work).args(["init", "-q"]).output().unwrap().status.success());
+        std::fs::write(work.join(".gitignore"), ".env\n").unwrap();
+        std::fs::write(work.join(".env"), "local").unwrap();
+        let snapshots = Snapshots::open(&root, &work).unwrap();
+        let before = snapshots.take().unwrap();
+        std::fs::write(work.join(".gitignore"), "").unwrap();
+        let after = snapshots.take().unwrap();
+        let checkpoint = Checkpoint { at: 1, paths: snapshots.changed(&before, &after).unwrap(), before, after };
+
+        let files = restore_files(&snapshots, &[checkpoint], 0).unwrap();
+        let env = std::fs::read_to_string(work.join(".env")).ok();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(files, RestoredFiles { restored: vec![".gitignore".into()], kept: vec![".env".into()] });
+        assert_eq!(env, Some("local".into()));
     }
 
     #[test]
