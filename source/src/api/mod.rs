@@ -245,7 +245,13 @@ impl Client {
                 return Err(error.message);
             }
             on_delta(Delta::Notice(&format!("{} Retrying in {}s.", error.message, RETRY_DELAYS_SECS[attempt])));
-            std::thread::sleep(Duration::from_secs(RETRY_DELAYS_SECS[attempt]));
+            let wake = Instant::now() + Duration::from_secs(RETRY_DELAYS_SECS[attempt]);
+            while Instant::now() < wake {
+                if abort.load(Ordering::Relaxed) {
+                    return Err(error.message);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
             attempt += 1;
         }
     }
@@ -329,29 +335,30 @@ impl Client {
         if valid(tokens) {
             return Ok(account);
         }
-        // Another agent process may have refreshed already; its refresh token replaced ours.
-        let saved = accounts::load(&self.home)?.into_iter().find(|a| a.provider == account.provider && a.name == account.name);
-        if let Some(saved) = saved.filter(|a| matches!(&a.secret, Secret::OAuth(t) if valid(t))) {
-            self.reload(accounts::load(&self.home)?);
-            return Ok(saved);
-        }
-        let refreshed = match account.provider.as_str() {
-            "anthropic" => oauth::refresh_claude(&tokens.refresh),
-            _ => oauth::refresh_codex(&tokens.refresh),
-        }
-        .map_err(|e| format!("Cannot refresh {}: {e} Use /login again.", account.name))?;
-        let refreshed = oauth::Tokens { account_id: refreshed.account_id.or_else(|| tokens.account_id.clone()), ..refreshed };
-        let account = Account { secret: Secret::OAuth(refreshed), ..account };
-        let updated = account.clone();
+        // Refresh tokens rotate, so the check and the refresh share the lock: another process or thread may have refreshed first.
+        let mut fresh = None;
         let saved = accounts::update(&self.home, |list| {
-            match list.iter_mut().find(|a| a.provider == updated.provider && a.name == updated.name) {
-                Some(slot) => *slot = updated,
-                None => list.push(updated),
+            let Some(slot) = list.iter_mut().find(|a| a.provider == account.provider && a.name == account.name) else {
+                return Err(format!("{} is no longer saved. Use /login again.", account.name));
+            };
+            let Secret::OAuth(tokens) = &slot.secret else {
+                fresh = Some(slot.clone());
+                return Ok(());
+            };
+            if !valid(tokens) {
+                let refreshed = match slot.provider.as_str() {
+                    "anthropic" => oauth::refresh_claude(&tokens.refresh),
+                    "openai-codex" => oauth::refresh_codex(&tokens.refresh),
+                    other => Err(format!("{other} has no OAuth refresh.")),
+                }
+                .map_err(|e| format!("Cannot refresh {}: {e} Use /login again.", slot.name))?;
+                slot.secret = Secret::OAuth(oauth::Tokens { account_id: refreshed.account_id.clone().or_else(|| tokens.account_id.clone()), ..refreshed });
             }
+            fresh = Some(slot.clone());
             Ok(())
         })?;
         self.reload(saved);
-        Ok(account)
+        Ok(fresh.expect("update ran the closure"))
     }
 
     /// `other-provider`: the same request on `accounts.fallback_model`, or the other provider's default.
@@ -693,7 +700,7 @@ mod tests {
         client.reload(vec![account("home"), account("work")]);
         client.state.lock().unwrap().current.insert("anthropic".into(), "home".into());
 
-        let mut settings = crate::settings::load(&home);
+        let mut settings = crate::settings::load(&home).unwrap();
         settings.default_accounts.insert("anthropic".into(), "work".into());
         client.configure(&settings);
 

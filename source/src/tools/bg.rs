@@ -1,10 +1,9 @@
 use serde_json::Value;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -99,20 +98,13 @@ impl Terminals {
         }
         let title: String = input["title"].as_str().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
         let title = if title.is_empty() { "terminal".to_string() } else { title };
-        static LOGS: AtomicUsize = AtomicUsize::new(0);
-        let dir = super::spill_dir();
-        crate::process::private_dir(&dir)?;
-        let log = LOGS.fetch_add(1, Ordering::Relaxed);
-        let (stdout, stderr) = (dir.join(format!("bg-{log}.stdout")), dir.join(format!("bg-{log}.stderr")));
-        let file = |path: &Path| {
-            let opened = OpenOptions::new().write(true).create_new(true).mode(0o600).open(path);
-            opened.map_err(|e| format!("Cannot create {}: {e}", path.display()))
-        };
+        let (stdout_file, stdout) = super::private_file("bg", "stdout")?;
+        let (stderr_file, stderr) = super::private_file("bg", "stderr")?;
         let pid = crate::process::command("sh")
             .args(["-c", command])
             .current_dir(&cwd)
-            .stdout(file(&stdout)?)
-            .stderr(file(&stderr)?)
+            .stdout(stdout_file)
+            .stderr(stderr_file)
             .spawn()
             .map_err(|e| format!("Cannot start sh: {e}"))?
             .id();

@@ -1,4 +1,5 @@
 use std::fs::OpenOptions;
+use std::os::unix::fs::OpenOptionsExt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -56,7 +57,7 @@ pub fn append(agent_dir: &Path, entry: Entry) -> Result<(), String> {
         let kept: String = entries[entries.len() - KEEP..].iter().map(line).collect();
         return std::fs::write(&path, kept).map_err(|e| format!("Cannot write {}: {e}", path.display()));
     }
-    let mut file = OpenOptions::new().create(true).append(true).open(&path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
+    let mut file = OpenOptions::new().create(true).append(true).mode(0o600).open(&path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
     file.write_all(line(&entries[entries.len() - 1]).as_bytes()).map_err(|e| format!("Cannot write {}: {e}", path.display()))
 }
 

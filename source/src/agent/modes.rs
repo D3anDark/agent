@@ -9,8 +9,9 @@ pub const PONYTAIL_LEVELS: [&str; 4] = ["off", "lite", "full", "ultra"];
 pub const CAVEMAN_LEVELS: [&str; 4] = ["off", "full", "ultra", "wenyan"];
 pub const PONYTAIL_BANNER: &str = "PONYTAIL MODE ACTIVE — level: ";
 pub const CAVEMAN_BANNER: &str = "CAVEMAN MODE ACTIVE — mode: ";
-const PONYTAIL_URL: &str = "https://raw.githubusercontent.com/DietrichGebert/ponytail/main/skills/ponytail/SKILL.md";
-const CAVEMAN_SKILLS_URL: &str = "https://raw.githubusercontent.com/JuliusBrussee/caveman/main/skills";
+// Pinned to commits: the rules go into every system prompt, so upstream changes land only through a reviewed bump here.
+const PONYTAIL_URL: &str = "https://raw.githubusercontent.com/DietrichGebert/ponytail/09c434ab73ca43761c5d8b0c5d341926c2fba710/skills/ponytail/SKILL.md";
+const CAVEMAN_SKILLS_URL: &str = "https://raw.githubusercontent.com/JuliusBrussee/caveman/bad48a0e1df55e05e3f52249afa35ecc1909ee76/skills";
 /// Blocks startup on first run and the TUI on a level change.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 

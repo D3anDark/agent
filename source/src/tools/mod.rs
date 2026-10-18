@@ -223,6 +223,10 @@ fn write(input: &Value, cwd: &Path, anchors: &mut Anchors) -> Result<String, Str
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
     }
+    // Reading a FIFO blocks and /dev/zero never ends; abort cannot stop either.
+    if path.exists() && !path.is_file() {
+        return Err(format!("{} is not a regular file.", path.display()));
+    }
     match std::fs::read(&path) {
         Ok(old) => hashline::write_or_restore(&path, content.as_bytes(), &old)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::write(&path, content).map_err(|e| format!("Cannot write {}: {e}", path.display()))?,
@@ -328,7 +332,7 @@ fn rg_rows(json: &str, cwd: &Path, anchors: &mut Anchors) -> Result<String, Stri
         let path = data["path"]["text"].as_str().unwrap_or("[path is not UTF-8]");
         let separator = match event["type"].as_str() {
             Some("begin") => {
-                tracked = if rows.len() < MAX_LINES { cwd.join(path).canonicalize().ok().filter(|file| anchors.track(file).is_ok()) } else { None };
+                tracked = if rows.len() < MAX_LINES { cwd.join(path).canonicalize().ok().filter(|file| anchors.track(file, MAX_LINES).is_ok()) } else { None };
                 continue;
             }
             Some("match") => ':',
@@ -383,7 +387,9 @@ fn search(program: &str, args: &[String], cwd: &Path, abort: &AtomicBool, ok_cod
     }
     let code = exit_code(status);
     let stdout = String::from_utf8_lossy(&stdout).trim_end_matches('\n').to_string();
-    if !ok_codes.contains(&code) || (code == 2 && stdout.is_empty()) {
+    // rg exits 2 when any path failed; with --json it still prints a summary event, so only a match makes it a partial success.
+    let matched = if args.iter().any(|arg| arg == "--json") { stdout.contains("\"type\":\"match\"") } else { !stdout.is_empty() };
+    if !ok_codes.contains(&code) || (code == 2 && !matched) {
         let stderr = stderr.join().expect("the stderr reader does not panic");
         return Err(format!("{program} failed: {}", if stderr.is_empty() { format!("exit code {code}") } else { stderr }));
     }
@@ -482,13 +488,8 @@ struct SpillFile {
 
 impl SpillFile {
     fn create(label: &str) -> Self {
-        static CREATED: AtomicUsize = AtomicUsize::new(0);
-        let dir = spill_dir();
-        let path = dir.join(format!("{label}-{}.log", CREATED.fetch_add(1, Ordering::Relaxed)));
-        let opened = crate::process::private_dir(&dir)
-            .and_then(|()| std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| e.to_string()));
-        match opened {
-            Ok(file) => Self { file: Some(file), path: path.display().to_string() },
+        match private_file(label, "log") {
+            Ok((file, path)) => Self { file: Some(file), path: path.display().to_string() },
             Err(e) => Self { file: None, path: format!("(not saved: {e})") },
         }
     }
@@ -504,6 +505,16 @@ impl SpillFile {
 
 fn spill_dir() -> PathBuf {
     std::env::temp_dir().join(format!("agent-{}", std::process::id()))
+}
+
+/// A new owner-only `{stem}-{n}.{extension}` in this run's spill dir.
+fn private_file(stem: &str, extension: &str) -> Result<(File, PathBuf), String> {
+    static CREATED: AtomicUsize = AtomicUsize::new(0);
+    let dir = spill_dir();
+    crate::process::private_dir(&dir)?;
+    let path = dir.join(format!("{stem}-{}.{extension}", CREATED.fetch_add(1, Ordering::Relaxed)));
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| format!("Cannot create {}: {e}", path.display()))?;
+    Ok((file, path))
 }
 
 /// Spill files are only for this run, so quitting removes them.
@@ -649,12 +660,28 @@ mod tests {
     }
 
     #[test]
+    fn rg_reports_a_missing_path_instead_of_no_matches() {
+        let error = rg(&json!({"pattern": "needle", "path": "/nonexistent-agent-path"}), Path::new("/tmp"), &mut Anchors::new("t"), &AtomicBool::new(false)).unwrap_err();
+        assert!(error.starts_with("rg failed"), "{error}");
+    }
+
+    #[test]
     fn long_bash_output_keeps_its_end_and_saves_the_full_log() {
         // 19 KB in 2000 lines: under the line and byte caps, over rtk's 12 KB.
         let (out, _) = run("bash", &json!({"command": "awk 'BEGIN { for (i = 1; i <= 2000; i++) print \"line\", i }'"}), Path::new("/tmp"), &mut Anchors::new("t"), &Rtk::ON, &Arc::default());
         assert!(out.contains("\nline 2000\n"), "{}", &out[out.len().saturating_sub(300)..]);
         let path = out.rsplit("Full output: ").next().unwrap().trim_end_matches(']');
         assert_eq!(std::fs::read_to_string(path).unwrap(), (1..=2000).map(|i| format!("line {i}\n")).collect::<String>());
+    }
+
+    #[test]
+    fn rg_hits_in_a_long_file_show_line_numbers_and_mint_no_anchors() {
+        let dir = std::env::temp_dir().join(format!("agent-rg-long-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("long.txt"), format!("needle\n{}", "x\n".repeat(MAX_LINES))).unwrap();
+        let found = rg(&json!({"pattern": "needle"}), &dir, &mut Anchors::new("t"), &AtomicBool::new(false)).unwrap();
+        assert_eq!(found, "long.txt:1:needle");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

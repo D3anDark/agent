@@ -13,7 +13,7 @@ pub const PROVIDERS: [&str; 6] = ["exa", "brave", "tavily", "jina", "perplexity"
 pub struct Query<'a> {
     pub text: &'a str,
     pub num_results: usize,
-    pub recency: Option<&'a str>,
+    pub recency: Option<Recency>,
     pub domains: &'a [String],
     pub include_content: bool,
     pub category: Option<&'a str>,
@@ -339,7 +339,7 @@ fn exa(config: &Value, key: &str, query: &Query) -> Result<Response, String> {
         body["category"] = json!(category);
     }
     if let Some(recency) = query.recency {
-        body["startPublishedDate"] = json!(iso_days_ago(recency_days(recency)));
+        body["startPublishedDate"] = json!(iso_days_ago(recency.days()));
     }
     let agent = http_agent(query.proxy, Duration::from_secs(60))?;
     let data = send(agent.post(format!("{base}/search")).header("x-api-key", key).header("content-type", "application/json").send(body.to_string()), "Exa")?;
@@ -382,8 +382,8 @@ fn brave(config: &Value, key: &str, query: &Query) -> Result<Response, String> {
         .query("count", count.to_string())
         .header("accept", "application/json")
         .header("x-subscription-token", key);
-    if let Some(freshness) = query.recency.and_then(|r| ["pd", "pw", "pm", "py"].get(["day", "week", "month", "year"].iter().position(|x| *x == r)?)) {
-        request = request.query("freshness", *freshness);
+    if let Some(freshness) = query.recency.map(Recency::brave) {
+        request = request.query("freshness", freshness);
     }
     let data = send(request.call(), "Brave Search")?;
     let mut results = Vec::new();
@@ -413,7 +413,7 @@ fn tavily(config: &Value, key: &str, query: &Query) -> Result<Response, String> 
         "include_raw_content": if query.include_content { json!("markdown") } else { json!(false) },
     });
     if let Some(recency) = query.recency {
-        body["time_range"] = json!(recency);
+        body["time_range"] = json!(recency.as_str());
     }
     let (allowed, blocked) = split_domains(query.domains);
     if !allowed.is_empty() {
@@ -453,7 +453,7 @@ fn jina(key: &str, query: &Query) -> Result<Response, String> {
         text.push_str(&format!(" -site:{domain}"));
     }
     if let Some(recency) = query.recency {
-        text.push_str(&format!(" published in the past {recency}"));
+        text.push_str(&format!(" published in the past {}", recency.as_str()));
     }
     let mut request = http_agent(query.proxy, Duration::from_secs(60))?
         .get(format!("https://s.jina.ai/{}", crate::api::oauth::percent_encode(&text)))
@@ -504,7 +504,7 @@ fn perplexity(key: &str, query: &Query) -> Result<Response, String> {
         "search_context_size": "medium",
     });
     if let Some(recency) = query.recency {
-        body["search_recency_filter"] = json!(recency);
+        body["search_recency_filter"] = json!(recency.as_str());
     }
     let domains: Vec<String> = query
         .domains
@@ -539,13 +539,7 @@ fn perplexity(key: &str, query: &Query) -> Result<Response, String> {
 fn xai(config: &Value, key: &str, query: &Query) -> Result<Response, String> {
     let mut lines = vec!["Search the web and answer using only what the web results say.".to_string(), "Cite your sources inline.".to_string()];
     if let Some(recency) = query.recency {
-        let label = match recency {
-            "day" => "past 24 hours",
-            "week" => "past week",
-            "month" => "past month",
-            _ => "past year",
-        };
-        lines.push(format!("Prefer sources from the {label}."));
+        lines.push(format!("Prefer sources from the {}.", recency.phrase()));
     }
     lines.push(format!("Prefer around {} distinct sources.", query.num_results.min(20)));
     let (allowed, blocked) = split_domains(query.domains);
@@ -640,12 +634,60 @@ fn flatten_links(text: &str) -> String {
     out
 }
 
-fn recency_days(recency: &str) -> u64 {
-    match recency {
-        "day" => 1,
-        "week" => 7,
-        "month" => 30,
-        _ => 365,
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Recency {
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+impl Recency {
+    pub fn parse(value: &str) -> Option<Recency> {
+        match value {
+            "day" => Some(Recency::Day),
+            "week" => Some(Recency::Week),
+            "month" => Some(Recency::Month),
+            "year" => Some(Recency::Year),
+            _ => None,
+        }
+    }
+
+    /// The `recencyFilter` word, which Tavily, Perplexity and research artifacts take as is.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Recency::Day => "day",
+            Recency::Week => "week",
+            Recency::Month => "month",
+            Recency::Year => "year",
+        }
+    }
+
+    fn days(self) -> u64 {
+        match self {
+            Recency::Day => 1,
+            Recency::Week => 7,
+            Recency::Month => 30,
+            Recency::Year => 365,
+        }
+    }
+
+    fn brave(self) -> &'static str {
+        match self {
+            Recency::Day => "pd",
+            Recency::Week => "pw",
+            Recency::Month => "pm",
+            Recency::Year => "py",
+        }
+    }
+
+    fn phrase(self) -> &'static str {
+        match self {
+            Recency::Day => "past 24 hours",
+            Recency::Week => "past week",
+            Recency::Month => "past month",
+            Recency::Year => "past year",
+        }
     }
 }
 

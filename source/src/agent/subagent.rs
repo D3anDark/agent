@@ -60,6 +60,10 @@ impl Run {
         }
     }
 
+    pub fn is_running(&self) -> bool {
+        self.state.lock().unwrap().result.is_none()
+    }
+
     pub fn elapsed(&self) -> Duration {
         self.state.lock().unwrap().elapsed.unwrap_or_else(|| self.started.elapsed())
     }
@@ -135,7 +139,12 @@ impl Runs {
             .map_err(|e| format!("Cannot start subagent: {e}"))?;
         let mut stdin = child.stdin.take().expect("stdin is piped");
         let message = format!("{CHILD_BRIEF}\n\n<task>\n{}\n</task>", launch.task);
-        stdin.write_all(message.as_bytes()).map_err(|e| format!("Cannot send the task: {e}"))?;
+        if let Err(e) = stdin.write_all(message.as_bytes()) {
+            // The child leads its own process group, out of reach of stop_all once dropped.
+            crate::process::signal_group(child.id(), crate::process::SIGTERM);
+            let _ = child.wait();
+            return Err(format!("Cannot send the task: {e}"));
+        }
         drop(stdin);
         let stdout = child.stdout.take().expect("stdout is piped");
         let run = Arc::new(Run {
@@ -165,12 +174,12 @@ impl Runs {
     }
 
     pub fn running(&self) -> usize {
-        self.list.iter().filter(|run| run.status() == "running").count()
+        self.list.iter().filter(|run| run.is_running()).count()
     }
 
     /// Moves running runs to the top, each group kept in start order.
     pub fn running_first(&mut self) {
-        self.list.sort_by_key(|run| run.status() != "running");
+        self.list.sort_by_key(|run| !run.is_running());
     }
 }
 
@@ -197,7 +206,7 @@ fn read_events(stdout: impl BufRead, run: &Run) -> Result<String, String> {
 
 /// Waits for foreground runs; setting `abort` (Esc) kills them.
 pub fn wait(runs: &[Arc<Run>], abort: &AtomicBool) {
-    while runs.iter().any(|r| r.status() == "running") {
+    while runs.iter().any(|r| r.is_running()) {
         if abort.load(Ordering::Relaxed) {
             runs.iter().for_each(|r| r.stop());
         }
@@ -223,7 +232,7 @@ fn finish(run: &Run, result: Result<String, String>, follow_ups: &Mutex<Vec<Foll
 /// Esc ends the wait but leaves the runs going, so their answers still arrive as follow-ups.
 pub fn wait_background(runs: &[Arc<Run>], timeout: Duration, abort: &AtomicBool, follow_ups: &Mutex<Vec<FollowUp>>) -> Result<String, String> {
     let deadline = Instant::now() + timeout;
-    while runs.iter().any(|r| r.status() == "running") && Instant::now() < deadline {
+    while runs.iter().any(|r| r.is_running()) && Instant::now() < deadline {
         if abort.load(Ordering::Relaxed) {
             return Err("Operation aborted".into());
         }

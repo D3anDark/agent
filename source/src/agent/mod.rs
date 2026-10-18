@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{File, OpenOptions, TryLockError};
+use std::os::unix::fs::OpenOptionsExt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -390,20 +391,14 @@ impl Agent {
                 let id = call["id"].as_str().unwrap_or_default().to_string();
                 let name = call["name"].as_str().unwrap_or_default().to_string();
                 let input = call["input"].clone();
+                let targets = edit_hooks::edited_files(&name, &input, &self.cwd, &self.anchors);
                 let mut shown = input.clone();
                 // Anchors mean nothing to the user, show the file they resolve to.
-                if let Some(file) = self.edited_file(&input) {
-                    shown["path"] = file.strip_prefix(&self.cwd).unwrap_or(&file).display().to_string().into();
+                if let Some(file) = targets.first() {
+                    shown["path"] = file.strip_prefix(&self.cwd).unwrap_or(file).display().to_string().into();
                 }
                 emit(Event::ToolStart { id: id.clone(), name: name.clone(), input: shown });
                 self.plugins.event(json!({"type": "tool_call", "name": name, "input": input, "context": self.plugin_context()}));
-                let targets = edit_hooks::edited_files(&name, &input, &self.cwd, &self.anchors);
-                // Files outside the project get no baseline, so after_edit skips them too: no server starts for /tmp or node_modules elsewhere.
-                for file in targets.iter().filter(|file| file.starts_with(&self.cwd)) {
-                    if let Err(notice) = self.lsp.before_edit(file, &self.abort) {
-                        emit(Event::Notice(notice));
-                    }
-                }
                 let (mut output, is_error) = self.run_tool_with_checkpoint(&name, &input, text, emit)?;
                 if !is_error {
                     for file in &targets {
@@ -477,6 +472,13 @@ impl Agent {
         }
         if let Some(reason) = self.check_permission(name, input, user_request, emit) {
             return (reason, true);
+        }
+        // After the permission check: starting a language server runs the repo's build scripts.
+        // Files outside the project get no baseline, so after_edit skips them too: no server starts for /tmp or node_modules elsewhere.
+        for file in edit_hooks::edited_files(name, input, &self.cwd, &self.anchors).iter().filter(|file| file.starts_with(&self.cwd)) {
+            if let Err(notice) = self.lsp.before_edit(file, &self.abort) {
+                emit(Event::Notice(notice));
+            }
         }
         let result = match name {
             "context_tree_query" => condense::query(&self.messages, &self.condensed, input),
@@ -608,7 +610,7 @@ impl Agent {
                         subagents.list.iter().find(|r| r.id == id && r.background).cloned().ok_or(format!("No background subagent {id}."))
                     })
                     .collect::<Result<_, _>>()?,
-                None => subagents.list.iter().filter(|r| r.background && r.status() == "running").cloned().collect(),
+                None => subagents.list.iter().filter(|r| r.background && r.is_running()).cloned().collect(),
             }
         };
         if runs.is_empty() {
@@ -807,11 +809,6 @@ impl Agent {
         Ok(())
     }
 
-    fn edited_file(&self, input: &Value) -> Option<PathBuf> {
-        let anchor = ["remove_from", "replace_from", "anchor"].iter().find_map(|key| input[*key].as_str())?;
-        self.anchors.owner_of(anchor).ok()
-    }
-
     /// None when the call may run; otherwise the tool result that explains the refusal.
     /// A user's "No" also stops the turn, like Esc.
     fn check_permission(&mut self, tool: &str, input: &Value, user_request: &str, emit: &mut dyn FnMut(Event)) -> Option<String> {
@@ -926,11 +923,14 @@ impl Agent {
         let max_tokens = (self.reserve_tokens * 4 / 5).min(128_000);
         let request = api::plain_request(&self.model, SUMMARY_SYSTEM, &prompt, max_tokens);
         let reply = self.client.send(&request, &self.abort, &mut |_| {})?;
+        self.usage.add(reply.usage);
         if reply.stop_reason != "end_turn" {
             return Err(format!("Compaction summary stopped with {}.", reply.stop_reason));
         }
-        self.usage.add(reply.usage);
         let summary = text_of(&reply.message);
+        if summary.trim().is_empty() {
+            return Err("The compaction summary came back empty.".into());
+        }
         self.session.append(&json!({"type": "compaction", "summary": summary, "first_kept": first_kept}))?;
         self.messages = compacted(&self.messages, &summary, first_kept);
         shift_checkpoints(&mut self.checkpoints, first_kept);
@@ -1000,7 +1000,7 @@ impl Agent {
         self.grants = Grants::default();
         let from = self.cwd.display();
         self.shell_context.push(format!("Session moved from {from} to {}. Paths and git state from earlier messages refer to the old checkout.", cwd.display()));
-        self.system = prompt::system_prompt(&self.agent_dir, &cwd, &crate::settings::load(&self.home).disabled_skills);
+        self.system = prompt::system_prompt(&self.agent_dir, &cwd, &crate::settings::load(&self.home)?.disabled_skills);
         self.anchors = Anchors::new(&session.id);
         self.nested_instructions.clear();
         // Earlier snapshots belong to the old checkout's snapshot repo.
@@ -1011,12 +1011,14 @@ impl Agent {
         }
         self.cwd = cwd;
         self.session = session;
+        self.announce_session();
         Ok(())
     }
 
     /// /clone: continues in a copy of this session, so the original stays as it was.
     pub fn clone_session(&mut self) -> Result<(), String> {
         self.session = self.copy_session(&self.cwd)?;
+        self.announce_session();
         Ok(())
     }
 
@@ -1045,7 +1047,12 @@ impl Agent {
             let path = self.session.path.as_ref().ok_or("This session is not saved (--no-session); export to a .md path.")?;
             std::fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?
         };
-        std::fs::write(out, text).map_err(|e| format!("Cannot write {}: {e}", out.display()))
+        // create_new: `/export README.md` must not replace a project file that no snapshot covers.
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(out).map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => format!("{} exists.", out.display()),
+            _ => format!("Cannot write {}: {e}", out.display()),
+        })?;
+        std::io::Write::write_all(&mut file, text.as_bytes()).map_err(|e| format!("Cannot write {}: {e}", out.display()))
     }
 
     /// The system prompt and tool schemas the next request sends, with modes, plugin tools and plan mode applied.
@@ -1077,7 +1084,7 @@ impl Agent {
     /// Replaces the conversation state with a saved (or empty) session's.
     pub fn load(&mut self, history: History) {
         self.grants = Grants::default();
-        self.next_ref = history.condensed.iter().map(|batch| batch.refs.len()).sum::<usize>() + 1;
+        self.next_ref = condense::next_ref(&history.condensed);
         self.messages = history.messages;
         self.condensed = history.condensed;
         *self.todos.lock().unwrap() = history.todos;
@@ -1301,7 +1308,7 @@ impl Session {
 
     pub fn append(&self, entry: &Value) -> Result<(), String> {
         let Some(path) = &self.path else { return Ok(()) };
-        let mut file = OpenOptions::new().create(true).append(true).open(path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
+        let mut file = OpenOptions::new().create(true).append(true).mode(0o600).open(path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
         // One write call, so a signal exit on another thread cannot leave half a line; writeln! on a File writes piecewise.
         file.write_all(format!("{entry}\n").as_bytes()).map_err(|e| format!("Cannot write {}: {e}", path.display()))
     }
@@ -1729,6 +1736,43 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(files, RestoredFiles { restored: vec!["a.txt".into(), "new.txt".into()], kept: vec!["shared.txt".into()] });
         assert_eq!(state, [Some("v2".into()), None, Some("mine".into()), Some("user".into()), Some("another session".into())]);
+    }
+
+    #[test]
+    fn restoring_a_path_with_glob_characters_touches_only_that_file() {
+        let _index = SNAPSHOT_INDEX.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("agent-restore-glob-{}", std::process::id()));
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        assert!(crate::process::command("git").arg("-C").arg(&work).args(["init", "-q"]).status().unwrap().success());
+        std::fs::write(work.join("a*.txt"), "v1").unwrap();
+        std::fs::write(work.join("ab.txt"), "v1").unwrap();
+        let snapshots = Snapshots::open(&root, &work).unwrap();
+        let tree = snapshots.take().unwrap();
+        std::fs::write(work.join("a*.txt"), "v2").unwrap();
+        std::fs::write(work.join("ab.txt"), "user").unwrap();
+        snapshots.restore(&tree, "a*.txt").unwrap();
+        let state = [std::fs::read_to_string(work.join("a*.txt")).unwrap(), std::fs::read_to_string(work.join("ab.txt")).unwrap()];
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(state, ["v1", "user"]);
+    }
+
+    #[test]
+    fn snapshots_skip_files_the_project_excludes_locally() {
+        let _index = SNAPSHOT_INDEX.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("agent-snapshot-exclude-{}", std::process::id()));
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        assert!(crate::process::command("git").arg("-C").arg(&work).args(["init", "-q"]).status().unwrap().success());
+        std::fs::write(work.join(".git/info/exclude"), ".env\n").unwrap();
+        std::fs::write(work.join(".env"), "TOKEN=x").unwrap();
+        std::fs::write(work.join("a.txt"), "a").unwrap();
+        let snapshots = Snapshots::open(&root, &work).unwrap();
+        let tree = snapshots.take().unwrap();
+        let git_dir = std::fs::read_dir(root.join(".agents/snapshots")).unwrap().next().unwrap().unwrap().path();
+        let listing = crate::process::command("git").arg("--git-dir").arg(&git_dir).args(["ls-tree", "--name-only", &tree]).output().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(String::from_utf8(listing.stdout).unwrap(), "a.txt\n");
     }
 
     #[test]

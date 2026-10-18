@@ -9,8 +9,30 @@ use crate::api::accounts::{Account, Secret};
 use crate::api::oauth::{self, Pending, Tokens};
 
 const KINDS: [&str; 2] = ["Account (subscription)", "API key"];
-/// Login methods as (is an API key, label); the label is also what `choose` matches on.
-const METHODS: [(bool, &str); 4] = [(false, "Claude Pro/Max"), (true, "Anthropic API key"), (true, "OpenRouter API key"), (false, "ChatGPT Plus/Pro (Codex)")];
+const METHODS: [Method; 4] = [Method::ClaudeMax, Method::AnthropicKey, Method::OpenRouterKey, Method::Codex];
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Method {
+    ClaudeMax,
+    AnthropicKey,
+    OpenRouterKey,
+    Codex,
+}
+
+impl Method {
+    fn label(self) -> &'static str {
+        match self {
+            Method::ClaudeMax => "Claude Pro/Max",
+            Method::AnthropicKey => "Anthropic API key",
+            Method::OpenRouterKey => "OpenRouter API key",
+            Method::Codex => "ChatGPT Plus/Pro (Codex)",
+        }
+    }
+
+    fn is_api_key(self) -> bool {
+        matches!(self, Method::AnthropicKey | Method::OpenRouterKey)
+    }
+}
 
 /// The /login panel: pick account or API key, search and pick a method, sign in or paste a key, then name the account.
 pub enum Login {
@@ -102,22 +124,22 @@ impl Login {
         let Login::Choose { api, query, index } = self else { return Action::None };
         let Some(&method) = methods(*api, query).get(*index) else { return Action::None };
         match method {
-            "Claude Pro/Max" => {
+            Method::ClaudeMax => {
                 let pending = oauth::start_claude();
                 let url = pending.url.clone();
                 oauth::open_browser(&url);
                 *self = Login::ClaudeCode { pending, input: Editor::new() };
                 Action::None
             }
-            "Anthropic API key" => {
-                *self = Login::ApiKey { provider: "anthropic", title: method, input: Editor::new() };
+            Method::AnthropicKey => {
+                *self = Login::ApiKey { provider: "anthropic", title: method.label(), input: Editor::new() };
                 Action::None
             }
-            "OpenRouter API key" => {
-                *self = Login::ApiKey { provider: "openrouter", title: method, input: Editor::new() };
+            Method::OpenRouterKey => {
+                *self = Login::ApiKey { provider: "openrouter", title: method.label(), input: Editor::new() };
                 Action::None
             }
-            _ => {
+            Method::Codex => {
                 let pending = oauth::start_codex();
                 let url = pending.url.clone();
                 oauth::open_browser(&url);
@@ -155,7 +177,7 @@ impl Login {
                 ("Login: add an account or an API key?".into(), rows, "↑↓ navigate     enter choose     esc close")
             }
             Login::Choose { api, query, .. } => {
-                let rows = methods(*api, query).iter().map(|c| panel::Row { left: c.to_string(), right: Vec::new() }).collect();
+                let rows = methods(*api, query).iter().map(|method| panel::Row { left: method.label().to_string(), right: Vec::new() }).collect();
                 (KINDS[*api as usize].into(), rows, "type to search     ↑↓ navigate     enter choose     esc back")
             }
             Login::ClaudeCode { input, .. } => ("Claude login".into(), vec![field("Code", input.field(Some('•')))], "paste the code#state shown after sign-in     enter continue     ctrl+y copy link     esc cancel"),
@@ -187,9 +209,9 @@ impl Login {
 }
 
 /// Methods of the chosen kind whose label matches the search query, see `panel::search`.
-fn methods(api: bool, query: &Editor) -> Vec<&'static str> {
-    let kind = METHODS.iter().filter(|(is_api, _)| *is_api == api).map(|(_, label)| *label);
-    panel::search(kind, query.text().trim(), |label| label.to_string())
+fn methods(api: bool, query: &Editor) -> Vec<Method> {
+    let kind = METHODS.into_iter().filter(|method| method.is_api_key() == api);
+    panel::search(kind, query.text().trim(), |method| method.label().to_string())
 }
 
 fn field(label: &str, value: String) -> panel::Row {
@@ -235,10 +257,10 @@ mod tests {
         let mut login = Login::Kind { index: 0 };
         login.key(KeyCode::Enter.into());
         let Login::Choose { api, query, .. } = &login else { panic!("expected the method list") };
-        assert_eq!(methods(*api, query), ["Claude Pro/Max", "ChatGPT Plus/Pro (Codex)"]);
+        assert_eq!(methods(*api, query), [Method::ClaudeMax, Method::Codex]);
         login.paste("codex");
         let Login::Choose { api, query, .. } = &login else { panic!("expected the method list") };
-        assert_eq!(methods(*api, query), ["ChatGPT Plus/Pro (Codex)"]);
+        assert_eq!(methods(*api, query), [Method::Codex]);
         login.key(KeyCode::Esc.into());
         assert!(matches!(login, Login::Kind { index: 0 }));
     }

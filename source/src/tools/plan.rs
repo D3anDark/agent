@@ -36,7 +36,8 @@ const EDITING_TOOLS: [&str; 8] = ["write", "replace", "replace_match", "insert",
 
 const READ_ONLY_COMMANDS: [&str; 18] = ["ls", "cat", "head", "tail", "wc", "rg", "fd", "pwd", "tree", "file", "stat", "which", "echo", "jq", "diff", "du", "cd", "true"];
 const READ_ONLY_GIT: [&str; 7] = ["status", "log", "diff", "show", "blame", "ls-files", "rev-parse"];
-const RUNS_OTHER_COMMANDS: [&str; 5] = ["-x", "-X", "--exec", "--exec-batch", "--pre"];
+// Matched as prefixes, so attached values (`--pre=sh`, `-xrm`) count too; `--output`/`-o` write a file.
+const RUNS_OTHER_COMMANDS: [&str; 6] = ["-x", "-X", "--exec", "--pre", "--output", "-o"];
 
 pub fn tool() -> Value {
     json!({
@@ -65,7 +66,7 @@ pub fn blocked(tool: &str, input: &Value) -> Option<String> {
 
 // shortcut: splits on | ; & and newlines even inside quotes, so `rg 'a|b'` is refused; a shell parser would fix it.
 fn read_only(command: &str) -> bool {
-    if command.contains(['>', '`']) || command.contains("$(") {
+    if command.contains(['>', '`']) || command.contains("$(") || command.contains("<(") {
         return false;
     }
     let mut segments = command.split(['|', ';', '&', '\n']).map(str::trim).filter(|segment| !segment.is_empty()).peekable();
@@ -74,7 +75,7 @@ fn read_only(command: &str) -> bool {
 
 fn read_only_segment(segment: &str) -> bool {
     let words: Vec<&str> = segment.split_whitespace().collect();
-    if words.iter().any(|word| RUNS_OTHER_COMMANDS.contains(word)) {
+    if words.iter().any(|word| RUNS_OTHER_COMMANDS.iter().any(|flag| word.starts_with(flag))) {
         return false;
     }
     match words[0] {
@@ -100,7 +101,7 @@ mod tests {
         for command in ["rg -n plan src", "git log --oneline | head -5 && git status", "cd . && ls"] {
             assert!(blocked("bash", &json!({ "command": command })).is_none(), "{command}");
         }
-        for command in ["rm -rf x", "cat a > b", "git commit -m x", "fd -x rm", "ls; touch x", "echo $(rm x)", ""] {
+        for command in ["rm -rf x", "cat a > b", "git commit -m x", "fd -x rm", "ls; touch x", "echo $(rm x)", "cat <(rm x)", "rg --pre=sh x", "fd --exec=rm", "git diff --output=f", "tree -o f", ""] {
             assert!(blocked("bash", &json!({ "command": command })).is_some(), "{command}");
         }
     }

@@ -73,12 +73,14 @@ pub struct Span {
     pub style: Style,
     /// The whole URL this text is part of, set by `wrap` so a URL split across rows opens in full.
     pub link: Option<String>,
+    /// Set only on the empty span `wrap` puts after the indent of a row that continues the row above: the text the break removed.
+    pub run_on: Option<&'static str>,
 }
 
 pub type Line = Vec<Span>;
 
 pub fn span(text: impl Into<String>, style: Style) -> Span {
-    Span { text: text.into(), style, link: None }
+    Span { text: text.into(), style, link: None, run_on: None }
 }
 
 pub fn width(text: &str) -> usize {
@@ -110,19 +112,22 @@ pub fn take_cursor(lines: &mut [Line]) -> Option<(usize, usize)> {
 /// Word-wraps styled spans to `max` columns. Each output line starts with `indent`; long words break mid-word.
 pub fn wrap(spans: &[Span], max: usize, indent: &Line) -> Vec<Line> {
     let room = max.saturating_sub(line_width(indent)).max(1);
-    let mut lines: Vec<Line> = Vec::new();
+    let mut rows: Vec<(Option<&'static str>, Line)> = Vec::new();
+    let mut run_on = None;
     let mut current: Line = Vec::new();
     let mut used = 0;
     for piece in spans.iter().flat_map(split_words).flat_map(mark_links) {
         if piece.text == "\n" {
-            lines.push(std::mem::take(&mut current));
+            rows.push((run_on.take(), std::mem::take(&mut current)));
             used = 0;
             continue;
         }
         let piece_width = width(&piece.text);
         let is_space = piece.text.trim().is_empty();
         if used + piece_width > room && used > 0 {
-            lines.push(std::mem::take(&mut current));
+            let ends_in_space = current.last().is_some_and(|s| s.text.ends_with(' '));
+            rows.push((run_on, std::mem::take(&mut current)));
+            run_on = Some(if is_space || ends_in_space { " " } else { "" });
             used = 0;
             if is_space {
                 continue;
@@ -136,17 +141,27 @@ pub fn wrap(spans: &[Span], max: usize, indent: &Line) -> Vec<Line> {
         for ch in piece.text.chars() {
             let w = ch.width().unwrap_or(0);
             if used + w > room {
-                lines.push(std::mem::take(&mut current));
+                rows.push((run_on, std::mem::take(&mut current)));
+                run_on = Some("");
                 used = 0;
             }
             used += w;
             push_span(&mut current, Span { text: ch.to_string(), ..piece.clone() });
         }
     }
-    if !current.is_empty() || lines.is_empty() {
-        lines.push(current);
+    if !current.is_empty() || rows.is_empty() {
+        rows.push((run_on, current));
     }
-    lines.into_iter().map(|line| [indent.clone(), line].concat()).collect()
+    let mut lines = Vec::new();
+    for (run_on, line) in rows {
+        let mut row = indent.clone();
+        if run_on.is_some() {
+            row.push(Span { run_on, ..span("", PLAIN) });
+        }
+        row.extend(line);
+        lines.push(row);
+    }
+    lines
 }
 
 fn split_words(s: &Span) -> Vec<Span> {
@@ -176,7 +191,7 @@ fn mark_links(word: Span) -> Vec<Span> {
         if !before.is_empty() {
             out.push(span(before, word.style));
         }
-        out.push(Span { text: url.to_string(), style: word.style.underline(), link: Some(url.to_string()) });
+        out.push(Span { text: url.to_string(), style: word.style.underline(), link: Some(url.to_string()), run_on: None });
         rest = after;
     }
     if !rest.is_empty() || out.is_empty() {
@@ -250,6 +265,23 @@ pub fn text_in(line: &Line, from: usize, to: usize) -> String {
     inside.iter().map(|s| s.text.as_str()).collect()
 }
 
+/// The text of each row's display columns `from..to`, top to bottom; a row `wrap` broke off rejoins the row above, without its indent.
+pub fn plain_text(rows: &[(&Line, usize, usize)]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for &(row, from, to) in rows {
+        let run_on = row.iter().enumerate().find_map(|(at, s)| Some((at, s.run_on?)));
+        match (run_on, lines.last_mut()) {
+            (Some((at, joiner)), Some(last)) => {
+                let indent = row[..at].iter().map(|s| width(&s.text)).sum();
+                last.push_str(joiner);
+                last.push_str(text_in(row, from.max(indent), to).trim_end());
+            }
+            _ => lines.push(text_in(row, from, to).trim_end().to_string()),
+        }
+    }
+    lines.join("\n")
+}
+
 /// `line` with `overlay` drawn over its last columns up to `width`: a longer line is cut with "…", a shorter one padded.
 pub fn overlay_right(line: &Line, overlay: Line, width: usize) -> Line {
     let start = width.saturating_sub(line_width(&overlay));
@@ -273,7 +305,7 @@ pub fn overlay_center(line: &Line, overlay: Line, width: usize) -> Line {
 fn to_ansi(line: &Line) -> String {
     let mut out = String::new();
     for s in line {
-        let text = s.text.replace('\t', "    ");
+        let text: String = s.text.replace('\t', "    ").chars().filter(|c| !c.is_control()).collect();
         let mut rest = text.as_str();
         while let Some((before, url, after)) = split_link(rest) {
             push_styled(&mut out, s.style, before);
@@ -425,6 +457,11 @@ mod tests {
     }
 
     #[test]
+    fn control_characters_never_reach_the_terminal() {
+        assert_eq!(to_ansi(&vec![span("a\x1b]52;c;eA==\x07b\r\u{9b}2Jc", PLAIN)]), "\x1b[0ma]52;c;eA==b2Jc\x1b[0m");
+    }
+
+    #[test]
     fn link_at_finds_the_url_under_a_column() {
         let line = vec![span("世界 https://a.dev, http://b.dev", PLAIN)];
         assert_eq!(link_at(&line, 5).as_deref(), Some("https://a.dev"));
@@ -455,6 +492,13 @@ mod tests {
     fn wrap_keeps_indent_and_splits_long_words() {
         let lines = wrap(&[span("abcdefgh", PLAIN)], 5, &vec![span(" ", PLAIN)]);
         assert_eq!(text(&lines), [" abcd", " efgh"]);
+    }
+
+    #[test]
+    fn plain_text_rejoins_the_rows_wrap_broke() {
+        let rows = wrap(&[span("go https://a.dev/long\nwide text\nabcd efg h", PLAIN)], 10, &vec![span("│ ", PLAIN)]);
+        let selected: Vec<_> = rows.iter().map(|row| (row, 0, usize::MAX)).collect();
+        assert_eq!(plain_text(&selected), "│ go https://a.dev/long\n│ wide text\n│ abcd efg h");
     }
 
     #[test]

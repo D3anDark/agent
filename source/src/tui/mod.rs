@@ -48,12 +48,15 @@ use crate::tools::rtk::strip_ansi;
 use crate::tools::todo::{Status, Todos};
 use crate::worktree::{self, Worktree};
 use editor::Editor;
-use render::{BRIGHT, Line, MUTED, PLAIN, Screen, Span, Style, line_width, link_at, overlay_center, overlay_right, select, span, take_cursor, text_in, truncate, width, wrap};
+use render::{BRIGHT, Line, MUTED, PLAIN, Screen, Span, Style, line_width, link_at, overlay_center, overlay_right, plain_text, select, span, take_cursor, text_in, truncate, width, wrap};
 use selection::{Point, Selection};
 
 const WORKING: &str = "Working";
 const TRANSCRIBING: &str = "Transcribing";
 const LOADING_MODELS: &str = "loading models";
+// Matched whole: an error hint that mentions Ctrl+C must not arm quitting.
+const EXIT_HINT: &str = "Press Ctrl+C again to exit";
+const REWIND_HINT: &str = "Press Esc again to rewind";
 const MODELS_STILL_LOADING: &str = "The model lists are still loading.";
 pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const TOOL_OUTPUT_LINES: usize = 20;
@@ -362,6 +365,8 @@ struct App {
     scroll: usize,
     home: PathBuf,
     settings: Settings,
+    /// What settings.json holds: `settings` without the command-line flags.
+    saved_settings: Settings,
     context_tokens: u64,
     /// The last request's usage, for /context's cache line.
     last_usage: Usage,
@@ -420,7 +425,9 @@ struct App {
 /// What the TUI needs besides the agent itself.
 pub struct Setup {
     pub home: PathBuf,
+    /// With the command-line flags applied; `saved_settings` is the file without them.
     pub settings: Settings,
+    pub saved_settings: Settings,
     pub skills: Vec<Skill>,
     pub templates: Vec<Template>,
     pub prompt: Option<String>,
@@ -490,7 +497,7 @@ fn enter(out: &mut Stdout) -> std::io::Result<()> {
     )
 }
 
-fn leave(out: &mut Stdout) {
+pub(crate) fn leave(out: &mut Stdout) {
     let _ = execute!(out, PopKeyboardEnhancementFlags, DisableMouseCapture, DisableFocusChange, DisableBracketedPaste, LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();
 }
@@ -766,7 +773,7 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
 
 impl App {
     fn new(agent: &Agent, setup: Setup, commands: Sender<Command>, events: Sender<Msg>) -> App {
-        let Setup { home, settings, skills, templates, modes_error, plugin_updates, .. } = setup;
+        let Setup { home, settings, saved_settings, skills, templates, modes_error, plugin_updates, .. } = setup;
         let mut recent_prompts: Vec<String> = history::load(&home.join(".agents")).into_iter().map(|entry| entry.prompt).collect();
         recent_prompts.drain(..recent_prompts.len().saturating_sub(100));
         let mut slash_commands: Vec<(String, String)> = BUILTIN_COMMANDS.iter().map(|(name, description)| (name.to_string(), description.to_string())).collect();
@@ -787,6 +794,7 @@ impl App {
             scroll: 0,
             home,
             settings,
+            saved_settings,
             context_tokens: 0,
             last_usage: Usage::default(),
             git: git_info(&agent.cwd),
@@ -990,20 +998,20 @@ impl App {
         tail.swap_remove(index)
     }
 
-    /// shortcut: copies wrapped lines as shown, gutters included except the user prompt bar; unwrap to source text if that gets in the way.
+    /// shortcut: copies gutters at the start of each source line, except the user prompt bar; strip them if that gets in the way.
     fn selected_text(&mut self) -> String {
         let Some((start, end)) = self.selection.range() else { return String::new() };
         let (_, width) = self.transcript_view;
         let (tail, _, _) = self.transcript_tail(width, start.line + 1);
-        let mut lines = Vec::new();
+        let mut rows = Vec::new();
         for line in (end.line..=start.line).rev() {
             let Some(index) = tail.len().checked_sub(line + 1) else { continue };
             let row = &tail[index];
             let (from, to) = self.selection.columns(line).expect("line is inside the range");
             let from = if text_in(row, 0, 2) == "┃ " { from.max(2) } else { from };
-            lines.push(text_in(row, from, to).trim_end().to_string());
+            rows.push((row, from, to));
         }
-        lines.join("\n")
+        plain_text(&rows)
     }
 
     fn handle(&mut self, msg: Msg, screen: &mut Screen) {
@@ -1087,7 +1095,7 @@ impl App {
                         self.panel = None;
                     }
                 }
-                Some((plugin, data)) if self.panel.is_none() || matches!(self.panel, Some(Panel::Plugin { .. })) => {
+                Some((plugin, data)) if self.panel.is_none() || matches!(&self.panel, Some(Panel::Plugin { plugin: open, .. }) if *open == plugin) => {
                     let index = match &self.panel {
                         Some(Panel::Plugin { plugin: open, index, .. }) if *open == plugin => *index,
                         _ => 0,
@@ -1217,11 +1225,11 @@ impl App {
                     self.system("agent", "Interrupting...");
                 }
             }
-            KeyCode::Esc if self.hint.as_ref().is_some_and(|(text, _)| text.contains("Esc")) => {
+            KeyCode::Esc if self.hint.as_ref().is_some_and(|(text, _)| text == REWIND_HINT) => {
                 self.hint = None;
                 let _ = self.commands.send(Command::RewindPoints);
             }
-            KeyCode::Esc => self.hint = Some(("Press Esc again to rewind".into(), Instant::now())),
+            KeyCode::Esc => self.hint = Some((REWIND_HINT.into(), Instant::now())),
             KeyCode::Char('c') if ctrl => self.ctrl_c(),
             KeyCode::Char('d') if ctrl && self.editor.is_empty() => self.quit = true,
             KeyCode::Char('o') if ctrl => {
@@ -1309,12 +1317,12 @@ impl App {
             self.editor.set("");
             return;
         }
-        if self.hint.as_ref().is_some_and(|(text, _)| text.contains("Ctrl+C")) {
+        if self.hint.as_ref().is_some_and(|(text, _)| text == EXIT_HINT) {
             self.abort.store(true, Ordering::Relaxed);
             self.quit = true;
             return;
         }
-        self.hint = Some(("Press Ctrl+C again to exit".into(), Instant::now()));
+        self.hint = Some((EXIT_HINT.into(), Instant::now()));
     }
 
     fn cycle_thinking(&mut self) {
@@ -1381,20 +1389,23 @@ impl App {
     }
 
     fn update_settings(&mut self, change: impl FnOnce(&mut Settings)) {
-        let (old_model, old_thinking) = (self.settings.model.clone(), self.settings.thinking.clone());
+        let old = self.settings.clone();
         change(&mut self.settings);
-        if self.working.is_some() && (self.settings.model != old_model || self.settings.thinking != old_thinking) {
+        if self.working.is_some() && (self.settings.model != old.model || self.settings.thinking != old.thinking) {
             self.system("settings", "Model and thinking changes apply from the next turn.");
         }
         self.expanded = self.settings.expand_tools;
         *self.permission_mode.lock().unwrap() = self.settings.permission_mode;
         self.client.configure(&self.settings);
-        // Startup already refreshed the rules; a new level downloads only its missing file.
-        if let Err(error) = modes::fetch(&self.home, &self.settings.ponytail, &self.settings.caveman, false) {
+        // Startup already refreshed the rules; a new level downloads only its missing file, which can take seconds offline.
+        if (self.settings.ponytail != old.ponytail || self.settings.caveman != old.caveman)
+            && let Err(error) = modes::fetch(&self.home, &self.settings.ponytail, &self.settings.caveman, false)
+        {
             self.push(Item::Error(error));
         }
         let _ = self.commands.send(Command::Apply(Box::new(self.settings.clone())));
-        if let Err(error) = settings::save(&self.home, &self.settings) {
+        self.saved_settings = settings::saved_after(&old, &self.settings, &self.saved_settings);
+        if let Err(error) = settings::save(&self.home, &self.saved_settings) {
             self.push(Item::Error(error));
         }
     }
@@ -2026,6 +2037,8 @@ impl App {
                         let Some(prompt) = matches.get(*index).map(|prompt| prompt.to_string()) else { return };
                         self.panel = None;
                         self.editor.set(&prompt);
+                        // The old selection may reach rows a shorter prompt no longer has.
+                        self.input_selection = Selection::default();
                     }
                     KeyCode::Tab | KeyCode::BackTab => {
                         let tabs = history::SCOPES.len();
@@ -4672,7 +4685,7 @@ mod tests {
             model("openai-codex", "gpt-6-luna", &["pro", "plus"]),
             model("openai-codex", "gpt-6-sol", &["pro"]),
         ];
-        let mut settings = settings::load(Path::new("/nonexistent"));
+        let mut settings = settings::load(Path::new("/nonexistent")).unwrap();
         let ids = |settings: &Settings, row, query| {
             matching_models(&catalog, settings, row, query).iter().map(|m| m.map_or("auto", |m| m.id.as_str()).to_string()).collect::<Vec<_>>()
         };

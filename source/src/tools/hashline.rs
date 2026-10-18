@@ -124,8 +124,12 @@ impl Anchors {
     }
 
     /// Syncs a canonical `path` from disk so search rows can carry its anchors.
-    pub fn track(&mut self, path: &Path) -> Result<(), String> {
+    /// Files over `max_lines` stay untracked: anchors are never freed, and a few hits in large generated files would use them all.
+    pub fn track(&mut self, path: &Path, max_lines: usize) -> Result<(), String> {
         let text = Text::load(path)?;
+        if text.lines.len() > max_lines {
+            return Err(format!("{} has more than {max_lines} lines.", path.display()));
+        }
         self.sync(path, text.lines)?;
         Ok(())
     }
@@ -217,13 +221,13 @@ impl Anchors {
     }
 
     pub fn written(&mut self, path: &Path) -> Result<String, String> {
-        self.track(path)?;
+        self.track(path, usize::MAX)?;
         Ok(self.rows(path, 0, None))
     }
 
     pub fn replace(&mut self, input: &Value) -> Result<String, String> {
-        let from = str_arg(input, &["remove_from", "replace_from"])?;
-        let to = str_arg(input, &["remove_to", "replace_to"])?;
+        let from = str_arg(input, &["remove_from"])?;
+        let to = str_arg(input, &["remove_to"])?;
         let text = str_arg(input, &["text"])?;
         let (path, mut file, first, last) = self.resolve_range(from, to)?;
         let at_end = last + 1 == file.lines.len();
@@ -233,8 +237,8 @@ impl Anchors {
     }
 
     pub fn replace_match(&mut self, input: &Value) -> Result<String, String> {
-        let from = str_arg(input, &["replace_from", "remove_from"])?;
-        let to = str_arg(input, &["replace_to", "remove_to"])?;
+        let from = str_arg(input, &["replace_from"])?;
+        let to = str_arg(input, &["replace_to"])?;
         let old = str_arg(input, &["old_string"])?;
         let new = str_arg(input, &["new_string"])?;
         if old.is_empty() {
@@ -244,6 +248,10 @@ impl Anchors {
         let region = file.lines[first..=last].join("\n");
         if !region.contains(old) {
             return Err(format!("[E_NO_MATCH] old_string was not found in lines {}-{} of {}. Copy the fragment exactly from the served rows.", first + 1, last + 1, path.display()));
+        }
+        let matches = region.matches(old).count();
+        if matches > 1 {
+            return Err(format!("[E_AMBIGUOUS] old_string occurs {matches} times in lines {}-{} of {}. Add surrounding text or narrow the range so it occurs once.", first + 1, last + 1, path.display()));
         }
         let new = new.replace("\r\n", "\n");
         let mut lines: Vec<String> = region.replace(old, &new).split('\n').map(String::from).collect();
@@ -637,6 +645,16 @@ mod tests {
         anchors.replace_match(&json!({"replace_from": a[2], "replace_to": a[2], "old_string": "ee", "new_string": "EE"})).unwrap();
         anchors.insert(&json!({"anchor": a[0], "direction": "before", "text": "zero"})).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "zero\none\n2\nthrEE\n");
+    }
+
+    #[test]
+    fn replace_match_refuses_a_fragment_that_occurs_twice() {
+        let path = temp_file("ambiguous", "foo(foo)\n");
+        let mut anchors = Anchors::new("s");
+        let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
+        let error = anchors.replace_match(&json!({"replace_from": a[0], "replace_to": a[0], "old_string": "foo", "new_string": "bar"})).unwrap_err();
+        assert!(error.starts_with("[E_AMBIGUOUS]"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo(foo)\n");
     }
 
     #[test]

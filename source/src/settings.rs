@@ -134,15 +134,45 @@ pub fn model_key(model: &Model) -> String {
     format!("{}/{}", model.provider, model.id)
 }
 
+/// `saved` with the change a /settings edit made from `before` to `after`. The keys the command line sets
+/// (`--model`, `--thinking`, the permission flags, `--account`) keep their saved value unless this edit changed them.
+pub fn saved_after(before: &Settings, after: &Settings, saved: &Settings) -> Settings {
+    let mut next = after.clone();
+    if after.model == before.model {
+        next.model = saved.model.clone();
+    }
+    if after.thinking == before.thinking {
+        next.thinking = saved.thinking.clone();
+    }
+    if after.permission_mode == before.permission_mode {
+        next.permission_mode = saved.permission_mode;
+    }
+    next.default_accounts = saved.default_accounts.clone();
+    for provider in before.default_accounts.keys().chain(after.default_accounts.keys()) {
+        match after.default_accounts.get(provider) {
+            changed if changed == before.default_accounts.get(provider) => {}
+            Some(name) => _ = next.default_accounts.insert(provider.clone(), name.clone()),
+            None => _ = next.default_accounts.remove(provider),
+        }
+    }
+    next
+}
+
 pub fn path(home: &Path) -> PathBuf {
     home.join(".agents/settings.json")
 }
 
-pub fn load(home: &Path) -> Settings {
-    let own: Value = std::fs::read_to_string(path(home)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-    Settings {
+/// Defaults for a missing file; an unreadable or broken one is an error, so the next save cannot write defaults over it.
+pub fn load(home: &Path) -> Result<Settings, String> {
+    let path = path(home);
+    let own: Value = match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{} is broken: {e}. Fix or remove it by hand.", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Null,
+        Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
+    };
+    Ok(Settings {
         model: own["model"].as_str().unwrap_or("claude-opus-5-5").to_string(),
-        thinking: own["thinking"].as_str().unwrap_or("high").to_string(),
+        thinking: level(&own["thinking"], &crate::tui::THINKING_LEVELS, "high"),
         permission_mode: own["permission_mode"].as_str().and_then(Mode::parse).unwrap_or(Mode::Ask),
         auto_compact: own["auto_compact"].as_bool().unwrap_or(true),
         reserve_tokens: own["reserve_tokens"].as_u64().unwrap_or(16_384),
@@ -152,7 +182,7 @@ pub fn load(home: &Path) -> Settings {
         condense_model: own["condense"]["model"].as_str().unwrap_or_default().to_string(),
         condense_min_batch_chars: own["condense"]["min_batch_chars"].as_u64().unwrap_or(CONDENSE_MIN_BATCH_CHARS).max(CONDENSE_MIN_BATCH_CHARS),
         subagent_concurrency: own["subagents"]["concurrency"].as_u64().unwrap_or(4) as usize,
-        subagent_effort: own["subagents"]["implementation_effort"].as_str().unwrap_or("medium").to_string(),
+        subagent_effort: level(&own["subagents"]["implementation_effort"], &crate::tui::THINKING_LEVELS, "medium"),
         switch_at_percent: own["accounts"]["switch_at_percent"].as_u64().unwrap_or(90),
         when_all_over_limit: own["accounts"]["when_all_over_limit"].as_str().and_then(Policy::parse).unwrap_or(Policy::LeastUsed),
         fallback_model: own["accounts"]["fallback_model"].as_str().unwrap_or_default().to_string(),
@@ -169,12 +199,12 @@ pub fn load(home: &Path) -> Settings {
             .filter_map(|(key, window)| Some((key.clone(), window.as_u64()?)))
             .collect(),
         provider_sort: level(&own["provider_sort"], &PROVIDER_SORTS, "default"),
-        provider_order: own["provider_order"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
-        pinned_models: own["pinned_models"].as_array().into_iter().flatten().filter_map(|key| Some(key.as_str()?.to_string())).collect(),
-        disabled_skills: own["disabled_skills"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
-        disabled_plugins: own["disabled_plugins"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
-        disabled_mcp: own["disabled_mcp"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
-        approved_mcp: own["approved_mcp"].as_array().into_iter().flatten().filter_map(|key| Some(key.as_str()?.to_string())).collect(),
+        provider_order: string_list(&own["provider_order"]),
+        pinned_models: string_list(&own["pinned_models"]),
+        disabled_skills: string_list(&own["disabled_skills"]),
+        disabled_plugins: string_list(&own["disabled_plugins"]),
+        disabled_mcp: string_list(&own["disabled_mcp"]),
+        approved_mcp: string_list(&own["approved_mcp"]),
         plugin_settings: if own["plugin_settings"].is_object() { own["plugin_settings"].clone() } else { serde_json::json!({}) },
         ponytail: level(&own["ponytail"], &crate::agent::modes::PONYTAIL_LEVELS, "full"),
         caveman: level(&own["caveman"], &crate::agent::modes::CAVEMAN_LEVELS, "off"),
@@ -184,16 +214,20 @@ pub fn load(home: &Path) -> Settings {
         scroll_lines: own["scroll_lines"].as_u64().unwrap_or(3) as usize,
         menu_rows: own["menu_rows"].as_u64().unwrap_or(6) as usize,
         copy_on_select: own["copy_on_select"].as_bool().unwrap_or(true),
-        update_channel: own["update_channel"].as_str().unwrap_or("latest").to_string(),
+        update_channel: level(&own["update_channel"], &crate::update::CHANNELS, "latest"),
         prune_sessions: own["prune_sessions"].as_str().unwrap_or("never").to_string(),
-        on_start: own["on_start"].as_array().into_iter().flatten().filter_map(|command| Some(command.as_str()?.to_string())).collect(),
+        on_start: string_list(&own["on_start"]),
         lsp: lsp_servers(&own["lsp"]),
-    }
+    })
 }
 
-/// A ponytail or caveman level from settings.json; an unknown one loads as the default, like an unknown permission mode.
+/// A value from settings.json limited to `levels`; an unknown one loads as the default, like an unknown permission mode.
 fn level(value: &Value, levels: &[&str], default: &str) -> String {
     value.as_str().filter(|level| levels.contains(level)).unwrap_or(default).to_string()
+}
+
+fn string_list(value: &Value) -> Vec<String> {
+    value.as_array().into_iter().flatten().filter_map(|item| Some(item.as_str()?.to_string())).collect()
 }
 
 /// The built-in servers, each field replaced by the user's value where one is set; unknown names add a language.
@@ -269,7 +303,8 @@ pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
         "accounts": {"switch_at_percent": settings.switch_at_percent, "when_all_over_limit": settings.when_all_over_limit.label(), "fallback_model": settings.fallback_model, "default": settings.default_accounts},
     });
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| format!("Cannot create {}: {e}", path.display()))?;
-    std::fs::write(&path, format!("{value:#}\n")).map_err(|e| format!("Cannot write {}: {e}", path.display()))
+    // plugin_settings can hold tokens.
+    crate::api::accounts::write_private(&path, &format!("{value:#}\n"))
 }
 
 #[cfg(test)]
@@ -282,15 +317,43 @@ mod tests {
         std::fs::create_dir_all(path(&home).parent().unwrap()).unwrap();
         for (written, loaded) in [(1000, CONDENSE_MIN_BATCH_CHARS), (40_000, 40_000)] {
             std::fs::write(path(&home), json!({"condense": {"min_batch_chars": written}}).to_string()).unwrap();
-            assert_eq!(load(&home).condense_min_batch_chars, loaded);
+            assert_eq!(load(&home).unwrap().condense_min_batch_chars, loaded);
         }
         std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
+    fn a_broken_file_is_an_error_and_unknown_levels_load_as_defaults() {
+        let home = std::env::temp_dir().join(format!("agent-settings-broken-{}", std::process::id()));
+        std::fs::create_dir_all(path(&home).parent().unwrap()).unwrap();
+        std::fs::write(path(&home), "{\"model\": ").unwrap();
+        assert!(load(&home).unwrap_err().contains("is broken"));
+        std::fs::write(path(&home), json!({"thinking": "ultra", "subagents": {"implementation_effort": "x"}, "update_channel": "nightly"}).to_string()).unwrap();
+        let settings = load(&home).unwrap();
+        assert_eq!((settings.thinking.as_str(), settings.subagent_effort.as_str(), settings.update_channel.as_str()), ("high", "medium", "latest"));
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn command_line_values_stay_out_of_the_file_until_settings_change_them() {
+        let saved = load(Path::new("/nonexistent")).unwrap();
+        let mut flagged = saved.clone();
+        flagged.model = "gpt-5.5".into();
+        flagged.permission_mode = Mode::FullAccess;
+        flagged.default_accounts.insert("anthropic".into(), "work".into());
+        let mut edited = flagged.clone();
+        edited.rtk = false;
+        edited.thinking = "low".into();
+        edited.default_accounts.insert("openai".into(), "home".into());
+        let next = saved_after(&flagged, &edited, &saved);
+        assert_eq!((next.model.as_str(), next.permission_mode, next.thinking.as_str(), next.rtk), (saved.model.as_str(), saved.permission_mode, "low", false));
+        assert_eq!(next.default_accounts, HashMap::from([("openai".to_string(), "home".to_string())]));
+    }
+
+    #[test]
     fn settings_survive_a_save() {
         let home = std::env::temp_dir().join(format!("agent-settings-{}", std::process::id()));
-        let mut settings = load(&home);
+        let mut settings = load(&home).unwrap();
         assert_eq!((settings.model.as_str(), settings.thinking.as_str(), settings.reserve_tokens), ("claude-opus-5-5", "high", 16_384));
         assert!(settings.on_start.is_empty());
         settings.thinking = "max".into();
@@ -320,14 +383,14 @@ mod tests {
         settings.on_start = vec!["echo started".into()];
         settings.lsp.get_mut("rust").unwrap().command = "ra-multiplex".into();
         save(&home, &settings).unwrap();
-        assert_eq!(load(&home), settings);
+        assert_eq!(load(&home).unwrap(), settings);
         std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
     fn settings_schema_matches_what_save_writes() {
         let home = std::env::temp_dir().join(format!("agent-settings-schema-{}", std::process::id()));
-        save(&home, &load(&home)).unwrap();
+        save(&home, &load(&home).unwrap()).unwrap();
         let written: Value = serde_json::from_str(&std::fs::read_to_string(path(&home)).unwrap()).unwrap();
         std::fs::remove_dir_all(&home).unwrap();
         let schema: Value = serde_json::from_str(include_str!("settings.schema.json")).unwrap();
@@ -363,7 +426,7 @@ mod tests {
     fn model_window_beats_provider_window_beats_catalog() {
         let model = |id: &str| Model { provider: "anthropic".into(), id: id.into(), context_window: 1_000_000, ..Model::default() };
         let (opus, sonnet) = (&model("claude-opus-4-6"), &model("claude-sonnet-4-6"));
-        let mut settings = load(Path::new("/nonexistent"));
+        let mut settings = load(Path::new("/nonexistent")).unwrap();
         assert_eq!(settings.context_window(opus), opus.context_window);
         settings.context_windows.insert("anthropic".into(), 400_000);
         settings.context_windows.insert("anthropic/claude-opus-4-6".into(), 200_000);
@@ -372,7 +435,7 @@ mod tests {
 
     #[test]
     fn provider_sort_applies_default_alphabetical_and_manual_orders() {
-        let mut settings = load(Path::new("/nonexistent"));
+        let mut settings = load(Path::new("/nonexistent")).unwrap();
         let providers = ["exa", "brave", "tavily"];
         assert_eq!(settings.sort_providers(&providers), ["exa", "brave", "tavily"]);
         settings.provider_sort = "alphabetical".into();
@@ -384,7 +447,7 @@ mod tests {
 
     #[test]
     fn moving_a_provider_keeps_the_shown_order_and_switches_to_manual() {
-        let mut settings = load(Path::new("/nonexistent"));
+        let mut settings = load(Path::new("/nonexistent")).unwrap();
         settings.provider_sort = "alphabetical".into();
         settings.provider_order = vec!["anthropic".into()];
         settings.move_provider(&["exa", "brave", "tavily"], 2, true);

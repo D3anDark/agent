@@ -22,7 +22,7 @@ use tools::hashline::Anchors;
 use tools::rtk;
 
 const USAGE: &str = "Usage: agent [options] [message...]
-       agent plugin install|update <name|path>   Copy a bundled plugin or a plugin directory into ~/.agents/plugins
+       agent plugin install <name|path>          Copy a bundled plugin or a plugin directory into ~/.agents/plugins
        agent plugin remove <name>
        agent plugin list
 
@@ -40,7 +40,8 @@ Options:
   --headless            Run the message, print JSONL events (tool, session, done, error)
   --parent <id>         Run as a subagent of that session: linked to it, no load_tools or ask_user_question
   --account <p>=<name>  Use that saved account first for provider p, like a pin in /account
-  --version             Print the version";
+  --version             Print the version
+  -h, --help            Print this help";
 
 struct Options {
     model: Option<String>,
@@ -65,13 +66,13 @@ enum Resume {
 fn plugin_command(args: &[String]) -> Result<(), String> {
     let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set.")?);
     match args {
-        [action, source] if action == "install" || action == "update" => println!("Installed {}.", plugins::install(&home, source)?),
+        [action, source] if action == "install" => println!("Installed {}.", plugins::install(&home, source)?),
         [action, name] if action == "remove" => {
             plugins::remove(&home, name)?;
             println!("Removed {name}.");
         }
         [action] if action == "list" => {
-            let disabled = settings::load(&home).disabled_plugins;
+            let disabled = settings::load(&home)?.disabled_plugins;
             for view in plugins::Plugins::new(&home).list() {
                 let state = match (view.installed, disabled.contains(&view.name)) {
                     (false, _) => "available",
@@ -87,13 +88,9 @@ fn plugin_command(args: &[String]) -> Result<(), String> {
 }
 
 fn main() {
-    process::exit_on_signal(tools::remove_spills);
+    process::exit_on_signal(clean_up_on_signal);
     // An earlier agent with this pid that crashed left files that the spill and bg log `create_new` would refuse.
     tools::remove_spills();
-    if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("agent {}", env!("CARGO_PKG_VERSION"));
-        return;
-    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|command| command == "plugin") {
         if let Err(message) = plugin_command(&args[1..]) {
@@ -136,7 +133,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
         match arg.as_str() {
             "--model" => options.model = Some(value("--model")?),
             "--thinking" | "--effort" => options.thinking = Some(value("--thinking")?),
-            "--session" | "--resume" => options.resume = Some(Resume::Id(value("--session")?)),
+            "--session" | "--resume" => options.resume = Some(Resume::Id(value("--resume")?)),
             "-c" | "--continue" => options.resume = Some(Resume::Latest),
             "-p" | "--print" => options.print = true,
             "--json" => options.json = true,
@@ -151,7 +148,14 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
             "--auto" => options.permission_mode = Some(Mode::Auto),
             "--full-access" | "--yolo" => options.permission_mode = Some(Mode::FullAccess),
             "--ask" => options.permission_mode = Some(Mode::Ask),
-            "-h" | "--help" => return Err(String::new()),
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                std::process::exit(0);
+            }
+            "--version" => {
+                println!("agent {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "--" => words.extend(args.by_ref()),
             flag if flag.starts_with('-') => return Err(format!("Unknown option {flag}.")),
             _ => words.push(arg),
@@ -166,7 +170,9 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
 fn run(options: Options) -> Result<(), String> {
     let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set.")?);
     let agent_dir = home.join(".agents");
-    let mut settings = settings::load(&home);
+    // The flags below apply to this run only; the TUI saves its changes over `saved_settings`.
+    let saved_settings = settings::load(&home)?;
+    let mut settings = saved_settings.clone();
     if let Some(model) = options.model {
         settings.model = model;
     }
@@ -328,7 +334,15 @@ fn run(options: Options) -> Result<(), String> {
     let templates = prompt::load_templates(&agent_dir, &agent.cwd);
     agent.interactive = true;
     agent.snapshots = snapshots::Snapshots::open(&home, &agent.cwd);
-    tui::run(agent, tui::Setup { home, settings, skills, templates, prompt, modes_error, plugin_updates }, model_lists)
+    tui::run(agent, tui::Setup { home, settings, saved_settings, skills, templates, prompt, modes_error, plugin_updates }, model_lists)
+}
+
+/// The panic hook's terminal restore does not run when a signal ends the process, so a `kill` would leave the shell in raw mode.
+fn clean_up_on_signal() {
+    tools::remove_spills();
+    if std::io::stdout().is_terminal() {
+        tui::leave(&mut std::io::stdout());
+    }
 }
 
 /// Non-interactive run: streams text to stdout (or nothing with --json) and progress to stderr.

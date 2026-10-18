@@ -21,6 +21,10 @@ impl Web {
         if urls.is_empty() {
             return Err("Error: No URL provided. Use the 'url' parameter, or 'urls' for parallel fetches.".into());
         }
+        // One thread per URL, each buffering up to 5 MiB.
+        if urls.len() > super::MAX_FETCHED_PAGES {
+            return Err(format!("Error: at most {} URLs per call.", super::MAX_FETCHED_PAGES));
+        }
         let raw = input["mode"].as_str() == Some("raw");
         let pages = fetch_all(&urls, raw, input["forceClone"].as_bool().unwrap_or(false), input["proxy"].as_str());
         if let [page] = pages.as_slice()

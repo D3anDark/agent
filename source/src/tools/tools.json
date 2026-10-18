@@ -1,7 +1,7 @@
 [
   {
     "name": "read",
-    "description": "Read a text file, or several whole files at once with `paths`, as `anchor│content` rows: a 4-character anchor (letters only, case-sensitive), `│`, then the line. Target edits by anchor, never by content or line number. `offset` takes a 1-indexed line number or a served anchor; with an anchor, `limit` counts lines after it — no line-number math. Page long files with `offset` and `limit`; when output says truncated, continue from the hinted `offset`. A stale anchor is refused; read the file again for fresh anchors. Images, binary files, directories, devices, UTF-16/UTF-32 text and files over 64MB are rejected; an empty file returns one empty row you can replace to seed content.",
+    "description": "Read a text file, or several whole files at once with `paths`, as `anchor│content` rows: a 4-character anchor (letters only, case-sensitive), `│`, then the line. Target edits by anchor, never by content or line number. `offset` takes a 1-indexed line number or a served anchor; with an anchor, `limit` counts lines after it; no line-number math. Page long files with `offset` and `limit`; when output says truncated, continue from the hinted `offset`. A stale anchor is refused; read the file again for fresh anchors. Images, binary files, directories, devices, UTF-16/UTF-32 text and files over 64MB are rejected; an empty file returns one empty row you can replace to seed content.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
@@ -94,7 +94,7 @@
   },
   {
     "name": "replace",
-    "description": "Replace a range of lines (or a single line) in a text file by anchor: `remove_from` and `remove_to` are the 4-character anchors of its first and last line, `text` is the exact replacement text, and `replace_from`/`replace_to` are accepted as aliases. Deleting every line empties the file, and the result names the empty-line anchor, so a follow-up `replace` can seed content without a `read`.\n\nTo change only part of a line without retyping the rest, use `replace_match` instead; it preserves every character the request does not name.",
+    "description": "Replace a range of lines (or a single line) in a text file by anchor: `remove_from` and `remove_to` are the 4-character anchors of its first and last line, `text` is the exact replacement text. Deleting every line empties the file, and the result names the empty-line anchor, so a follow-up `replace` can seed content without a `read`.\n\nTo change only part of a line without retyping the rest, use `replace_match` instead; it preserves every character the request does not name.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
@@ -121,7 +121,7 @@
   },
   {
     "name": "replace_match",
-    "description": "Replace part of a line (or a range of lines) without retyping the rest. `replace_from`/`replace_to` are bare anchors from served `anchor│content` rows marking the range's first and last line (the same anchor for one line), and `old_string` is the exact text to find inside that range. Send only the smallest fragment that contains the change — never text that `new_string` leaves unchanged; for a whole-line or whole-range rewrite use `replace` with the same anchors instead. `remove_from`/`remove_to` are accepted as aliases.\n\nThe two boundary anchors must still match what was last shown; lines strictly inside the range are matched against the file as it is on disk.",
+    "description": "Replace part of a line (or a range of lines) without retyping the rest. `replace_from`/`replace_to` are bare anchors from served `anchor│content` rows marking the range's first and last line (the same anchor for one line), and `old_string` is the exact text to find inside that range. Send only the smallest fragment that contains the change; never text that `new_string` leaves unchanged; for a whole-line or whole-range rewrite use `replace` with the same anchors instead.\n\nThe two boundary anchors must still match what was last shown; lines strictly inside the range are matched against the file as it is on disk.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
@@ -516,7 +516,7 @@
   },
   {
     "name": "ask_user_question",
-    "description": "Ask the user one or more structured questions during execution. Use when you need to:\n1. Gather user preferences or requirements\n2. Clarify ambiguous instructions\n3. Get decisions on implementation choices as you work\n4. Offer choices to the user about what direction to take\n\nUsage notes:\n- Users can type a custom answer via the automatically appended \"Type something.\" row on every question or press Esc to abandon the questionnaire. Do NOT author \"Other\" or \"Type something.\" labels yourself — reserved labels are rejected at runtime.\n- Use multiSelect: true when multiple answers are valid. The \"Type something.\" row is available on every question, including when options carry a `preview`; in preview mode it expands to the full pane width while typing so the custom answer is not cramped into the narrow options column.\n- If you recommend a specific option, make that the first option in the list and add \"(Recommended)\" at the end of the label.\n\nPreview feature:\nUse the optional `preview` field on options when presenting concrete artifacts that users need to visually compare:\n- ASCII mockups of UI layouts or components\n- Code snippets showing different implementations\n- Diagram variations\n- Configuration examples\n\nPreview content is rendered as markdown in a monospace box. Multi-line text with newlines is supported. When any option has a preview, the UI switches to a side-by-side layout with a vertical option list on the left and preview on the right. Do not use previews for simple preference questions where labels and descriptions suffice. Note: previews are only supported for single-select questions (not multiSelect).",
+    "description": "Ask the user one or more structured questions during execution. Use when you need to:\n1. Gather user preferences or requirements\n2. Clarify ambiguous instructions\n3. Get decisions on implementation choices as you work\n4. Offer choices to the user about what direction to take\n\nUsage notes:\n- Users can type a custom answer via the automatically appended \"Type something.\" row on every question or press Esc to abandon the questionnaire. Do NOT author \"Other\", \"Next\" or \"Type something.\" labels yourself; reserved labels are rejected at runtime.\n- Use multiSelect: true when multiple answers are valid. The \"Type something.\" row is available on every question, including when options carry a `preview`; in preview mode it expands to the full pane width while typing so the custom answer is not cramped into the narrow options column.\n- If you recommend a specific option, make that the first option in the list and add \"(Recommended)\" at the end of the label.\n\nPreview feature:\nUse the optional `preview` field on options when presenting concrete artifacts that users need to visually compare:\n- ASCII mockups of UI layouts or components\n- Code snippets showing different implementations\n- Diagram variations\n- Configuration examples\n\nPreview content is rendered as markdown in a monospace box. Multi-line text with newlines is supported. When any option has a preview, the UI switches to a side-by-side layout with a vertical option list on the left and preview on the right. Do not use previews for simple preference questions where labels and descriptions suffice. Note: previews are only supported for single-select questions (not multiSelect).",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
@@ -538,7 +538,7 @@
               "header": {
                 "type": "string",
                 "maxLength": 16,
-                "description": "MAX 16 CHARACTERS — hard limit, requests over the limit are rejected. Very short chip/tag shown next to the question. Examples: \"Auth method\", \"Library\", \"Approach\"."
+                "description": "MAX 16 CHARACTERS; hard limit, requests over the limit are rejected. Very short chip/tag shown next to the question. Examples: \"Auth method\", \"Library\", \"Approach\"."
               },
               "options": {
                 "type": "array",
@@ -552,7 +552,7 @@
                     "label": {
                       "type": "string",
                       "maxLength": 60,
-                      "description": "MAX 60 CHARACTERS — hard limit, requests over the limit are rejected. The display text for this option that the user will see and select. Should be concise (1-5 words) and clearly describe the choice."
+                      "description": "MAX 60 CHARACTERS; hard limit, requests over the limit are rejected. The display text for this option that the user will see and select. Should be concise (1-5 words) and clearly describe the choice."
                     },
                     "description": {
                       "type": "string",
@@ -566,7 +566,7 @@
                 },
                 "minItems": 2,
                 "maxItems": 4,
-                "description": "The available choices for this question. Must have 2-4 options. Each option should be a distinct, mutually exclusive choice (unless multiSelect is enabled). The 'Type something.' row is appended automatically — do NOT author it."
+                "description": "The available choices for this question. Must have 2-4 options. Each option should be a distinct, mutually exclusive choice (unless multiSelect is enabled). The 'Type something.' row is appended automatically; do NOT author it."
               },
               "multiSelect": {
                 "type": "boolean",
@@ -709,6 +709,7 @@
         "context": {
           "type": "integer",
           "description": "Lines of context to show around each match (0-20).",
+          "maximum": 20,
           "minimum": 0
         },
         "limit": {

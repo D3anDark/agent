@@ -29,7 +29,7 @@ pub fn open(cwd: &Path, worktrees: &[Worktree], name: &str) -> Result<PathBuf, S
 }
 
 pub fn remove(cwd: &Path, path: &Path) -> Result<(), String> {
-    git(cwd, &["worktree", "remove", "--force", &path.display().to_string()]).map(|_| ())
+    git(cwd, &["worktree", "remove", &path.display().to_string()]).map(|_| ())
 }
 
 fn parse(porcelain: &str) -> Vec<Worktree> {

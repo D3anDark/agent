@@ -34,12 +34,18 @@ pub fn to_markdown(html: &str, base: &str) -> (String, String) {
             continue;
         }
         if let Some(skipped) = &skip {
-            if tag.closing && tag.name == *skipped {
+            // `</head>` is optional in HTML, so `<body>` ends the head too.
+            if (tag.closing && tag.name == *skipped) || (skipped == "head" && tag.name == "body") {
                 skip = None;
             }
             continue;
         }
         if SKIPPED.contains(&tag.name.as_str()) && !tag.closing && !tag.self_closing {
+            // A `<` in script or style code would parse as a tag and could swallow the closing one.
+            if matches!(tag.name.as_str(), "script" | "style") {
+                let close = format!("</{}", tag.name);
+                rest = &rest[rest.as_bytes().windows(close.len()).position(|w| w.eq_ignore_ascii_case(close.as_bytes())).unwrap_or(rest.len())..];
+            }
             skip = Some(tag.name);
             continue;
         }
@@ -434,6 +440,12 @@ mod tests {
     fn a_form_keeps_its_content_and_an_svg_title_is_not_the_page_title() {
         let html = "<head><title>Docs</title></head><body><svg><title>Close menu</title></svg><form id=f><h1>Guide</h1><p>Text</p></form></body>";
         assert_eq!(to_markdown(html, "https://a.dev/"), ("Docs".into(), "# Guide\n\nText".into()));
+    }
+
+    #[test]
+    fn script_code_and_a_missing_head_end_do_not_swallow_the_body() {
+        assert_eq!(to_markdown("<script>for(i=0;i<n;i++){}</script><p>Body</p>", "https://a.dev/").1, "Body");
+        assert_eq!(to_markdown("<head><title>T</title><body><p>Body</p>", "https://a.dev/").1, "Body");
     }
 
     #[test]

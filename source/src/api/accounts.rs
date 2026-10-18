@@ -79,7 +79,6 @@ pub fn load(home: &Path) -> Result<Vec<Account>, String> {
     Ok(accounts)
 }
 
-/// Writes all accounts through a 0600 temp file and a rename, so a crash never leaves half a file.
 fn save(home: &Path, accounts: &[Account]) -> Result<(), String> {
     let mut file = json!({});
     for account in accounts {
@@ -92,14 +91,19 @@ fn save(home: &Path, accounts: &[Account]) -> Result<(), String> {
             None => file[&account.provider] = json!([entry]),
         }
     }
+    write_private(&path(home), &format!("{file:#}\n"))
+}
+
+/// Writes `text` through a 0600 temp file and a rename, so a crash never leaves half a file.
+pub(crate) fn write_private(path: &Path, text: &str) -> Result<(), String> {
     // Renaming over a symlink would replace a dotfiles link with a plain file.
-    let path = std::fs::canonicalize(path(home)).unwrap_or_else(|_| path(home));
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let temp = path.with_extension("json.tmp");
     let mut out = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temp).map_err(|e| format!("Cannot write {}: {e}", temp.display()))?;
     // mode() applies only on create, so a leftover temp file is made private before the secrets go in.
     let written = out
         .set_permissions(std::fs::Permissions::from_mode(0o600))
-        .and_then(|()| out.write_all(format!("{file:#}\n").as_bytes()))
+        .and_then(|()| out.write_all(text.as_bytes()))
         .and_then(|()| out.sync_all())
         .and_then(|()| std::fs::rename(&temp, &path));
     written.map_err(|e| {
@@ -110,14 +114,21 @@ fn save(home: &Path, accounts: &[Account]) -> Result<(), String> {
 
 /// Reads, changes and writes the file under a lock, so accounts another agent process saves meanwhile survive.
 pub fn update(home: &Path, change: impl FnOnce(&mut Vec<Account>) -> Result<(), String>) -> Result<Vec<Account>, String> {
-    let lock_path = path(home).with_extension("json.lock");
-    std::fs::create_dir_all(lock_path.parent().expect("accounts.json sits in ~/.agents")).map_err(|e| format!("Cannot create {}: {e}", lock_path.display()))?;
+    locked(&path(home), || {
+        let mut accounts = load(home)?;
+        change(&mut accounts)?;
+        save(home, &accounts)?;
+        Ok(accounts)
+    })
+}
+
+/// Runs `change` holding the `<path>.lock` file lock, which every agent process takes before it writes `path`.
+pub(crate) fn locked<T>(path: &Path, change: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let lock_path = path.with_extension("json.lock");
+    std::fs::create_dir_all(lock_path.parent().expect("stores sit in ~/.agents")).map_err(|e| format!("Cannot create {}: {e}", lock_path.display()))?;
     let lock = std::fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600).open(&lock_path).map_err(|e| format!("Cannot open {}: {e}", lock_path.display()))?;
     lock.lock().map_err(|e| format!("Cannot lock {}: {e}", lock_path.display()))?;
-    let mut accounts = load(home)?;
-    change(&mut accounts)?;
-    save(home, &accounts)?;
-    Ok(accounts)
+    change()
 }
 
 

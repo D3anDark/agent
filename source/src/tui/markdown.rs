@@ -105,18 +105,20 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
             Event::Start(Tag::CodeBlock(_)) => {
                 flush(&mut out, &mut spans, &mut item_prefix, base(lists.len(), quote_depth));
                 gap(&mut out);
+                out.push(code_rule(&base(lists.len(), quote_depth), width));
                 in_code = true;
             }
-            Event::End(TagEnd::CodeBlock) => in_code = false,
+            Event::End(TagEnd::CodeBlock) => {
+                out.push(code_rule(&base(lists.len(), quote_depth), width));
+                in_code = false;
+            }
+            // Inside a list item or quote pulldown-cmark sends one Text per line.
             Event::Text(text) if in_code => {
                 let indent = base(lists.len(), quote_depth);
-                let rule_width = width.saturating_sub(super::render::line_width(&indent)).max(1);
-                out.push([indent.clone(), vec![span("─".repeat(rule_width), CODE_BORDER)]].concat());
                 for line in text.trim_end_matches('\n').split('\n') {
                     let line = line.replace('\t', "    ");
                     out.extend(wrap(&[span(line, CODE)], width, &indent));
                 }
-                out.push([indent, vec![span("─".repeat(rule_width), CODE_BORDER)]].concat());
             }
             Event::Text(text) => spans.push(span(text.to_string(), style)),
             Event::Code(text) => spans.push(span(text.to_string(), INLINE_CODE)),
@@ -152,6 +154,11 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
         out.remove(0);
     }
     out
+}
+
+fn code_rule(indent: &Line, width: usize) -> Line {
+    let rule_width = width.saturating_sub(line_width(indent)).max(1);
+    [indent.clone(), vec![span("─".repeat(rule_width), CODE_BORDER)]].concat()
 }
 
 /// Fits the columns into `room`, wraps each cell inside its column, splits columns with `│` and rules off every row from the next.
@@ -218,7 +225,12 @@ mod tests {
     fn list_and_code_block_match_pi_layout() {
         let lines = render("- one `a.txt`\n- two\n\n```\nhello\n```", 10);
         assert_eq!(text(&lines), [" - one", "   a.txt", " - two", "", " ─────────", " hello", " ─────────"]);
-        assert_eq!(lines[1][2].style, INLINE_CODE);
+        assert_eq!(lines[1].last().unwrap().style, INLINE_CODE);
+    }
+
+    #[test]
+    fn a_code_block_in_a_list_item_is_one_box() {
+        assert_eq!(text(&render("- step\n\n  ```\n  a\n  b\n  ```\n", 12)), [" - step", "", " ───────────", " a", " b", " ───────────"]);
     }
 
     #[test]

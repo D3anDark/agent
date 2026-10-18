@@ -154,6 +154,12 @@ fn find_ref<'a>(condensed: &'a [Condensed], id: &str) -> Option<(usize, &'a str)
     condensed.iter().enumerate().find_map(|(index, batch)| batch.refs.iter().find(|(_, tool_id)| tool_id == id).map(|(reference, _)| (index, reference.as_str())))
 }
 
+/// The ref after the highest saved one. Not the count: a batch whose summary failed reserved refs that were never saved.
+pub fn next_ref(condensed: &[Condensed]) -> usize {
+    let highest = condensed.iter().flat_map(|batch| &batch.refs).filter_map(|(short, _)| short.strip_prefix('t')?.parse::<usize>().ok()).max();
+    highest.unwrap_or(0) + 1
+}
+
 fn summary_block(batch: &Condensed) -> String {
     let refs: Vec<String> = batch.refs.iter().map(|(reference, _)| format!("`{reference}`")).collect();
     format!(
@@ -242,6 +248,14 @@ mod tests {
         let batch = condensed("[[1:bash]] ran ls\n[[2:rg]] found x\n[[3:fd]] invented", &calls, 4);
         assert_eq!(batch.summary, "`t4` ran ls\n`t5` found x\n invented");
         assert_eq!(batch.refs, [("t4".to_string(), "a".to_string()), ("t5".to_string(), "b".to_string())]);
+    }
+
+    #[test]
+    fn next_ref_follows_the_highest_saved_ref_across_a_gap() {
+        let calls = [call("a", "bash", json!({}), "")];
+        // Refs t1-t3 belonged to a batch whose summary failed and was never saved.
+        assert_eq!(next_ref(&[condensed("[[1:bash]] ran ls", &calls, 4)]), 5);
+        assert_eq!(next_ref(&[]), 1);
     }
 
     #[test]

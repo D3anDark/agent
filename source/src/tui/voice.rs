@@ -18,7 +18,10 @@ pub fn start(home: &Path) -> Result<Recording, String> {
     if !model.exists() {
         return Err(format!("No whisper model at {}. Download it: curl -L --create-dirs -o {} {MODEL_URL}", model.display(), model.display()));
     }
-    let wav = std::env::temp_dir().join(format!("agent-voice-{}.wav", std::process::id()));
+    // Unique per recording, and created here so ffmpeg -y overwrites our own file, never a planted link.
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock is after 1970").as_nanos();
+    let wav = std::env::temp_dir().join(format!("agent-voice-{}-{nonce}.wav", std::process::id()));
+    std::fs::OpenOptions::new().write(true).create_new(true).open(&wav).map_err(|e| format!("Cannot create {}: {e}", wav.display()))?;
     let ffmpeg = crate::process::command("ffmpeg")
         .args(["-loglevel", "error", "-y"])
         .args(if cfg!(target_os = "macos") { ["-f", "avfoundation", "-i", ":default"] } else { ["-f", "pulse", "-i", "default"] })
@@ -28,7 +31,10 @@ pub fn start(home: &Path) -> Result<Recording, String> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("Cannot run ffmpeg: {e}"))?;
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&wav);
+            format!("Cannot run ffmpeg: {e}")
+        })?;
     Ok(Recording { ffmpeg, wav, model, started: Instant::now() })
 }
 

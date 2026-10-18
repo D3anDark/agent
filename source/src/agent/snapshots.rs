@@ -9,6 +9,8 @@ pub struct Snapshots {
     git_dir: PathBuf,
     work_tree: PathBuf,
     index: PathBuf,
+    /// The project's `.git/info/exclude`; `git add` with our git dir would read our own instead.
+    exclude: PathBuf,
 }
 
 impl Snapshots {
@@ -16,10 +18,11 @@ impl Snapshots {
     pub fn open(home: &Path, cwd: &Path) -> Option<Snapshots> {
         let top = run(crate::process::command("git").arg("-C").arg(cwd).args(["rev-parse", "--show-toplevel"])).ok()?;
         let work_tree = PathBuf::from(top);
+        let exclude = PathBuf::from(run(crate::process::command("git").arg("-C").arg(cwd).args(["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"])).ok()?);
         let git_dir = home.join(".agents/snapshots").join(work_tree.to_string_lossy().replace('/', "-"));
         // One index per process, so two agents in the same repo do not fight over index.lock.
         let index = std::env::temp_dir().join(format!("agent-snapshot-{}.index", std::process::id()));
-        let snapshots = Snapshots { git_dir, work_tree, index };
+        let snapshots = Snapshots { git_dir, work_tree, index, exclude };
         if snapshots.git_dir.exists() {
             // Only costs disk space when it fails, so it never turns snapshots off.
             let _ = snapshots.expire();
@@ -38,12 +41,25 @@ impl Snapshots {
             // into gc.log and skips auto gc for a day. An hour still covers a take between write-tree and update-ref.
             self.git(&["config", "gc.pruneExpire", "1.hour.ago"])?;
         }
+        self.copy_exclude()?;
         self.git(&["add", "-A"])?;
         let tree = self.git(&["write-tree"])?;
         self.git(&["update-ref", &format!("refs/snapshots/{}/{tree}", today()), &tree])?;
         // add and write-tree never start auto gc; it checks a count, and packs in the background.
         self.git(&["gc", "--auto", "--quiet"])?;
         Ok(tree)
+    }
+
+    /// Files hidden only by the project's info/exclude (often `.env`) must stay out of the snapshots too.
+    fn copy_exclude(&self) -> Result<(), String> {
+        let rules = match std::fs::read(&self.exclude) {
+            Ok(rules) => rules,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(format!("Cannot read {}: {e}", self.exclude.display())),
+        };
+        let ours = self.git_dir.join("info/exclude");
+        std::fs::create_dir_all(self.git_dir.join("info")).map_err(|e| format!("Cannot create {}: {e}", ours.display()))?;
+        std::fs::write(&ours, rules).map_err(|e| format!("Cannot write {}: {e}", ours.display()))
     }
 
     /// Deletes the refs of days older than KEEP_DAYS; the next auto gc prunes their objects.
@@ -87,7 +103,7 @@ impl Snapshots {
     /// Writes `path` as it is in `tree`, or deletes it when the tree lacks it.
     pub fn restore(&self, tree: &str, path: &str) -> Result<(), String> {
         if self.blob(tree, path).is_some() {
-            return self.git(&["checkout", tree, "--", path]).map(|_| ());
+            return self.git(&["--literal-pathspecs", "checkout", tree, "--", path]).map(|_| ());
         }
         let file = self.work_tree.join(path);
         if file.exists() {

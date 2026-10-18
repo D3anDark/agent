@@ -67,10 +67,9 @@ fn download(version: &str, path: &Path) -> Result<(), String> {
 
 /// A truncated or wrong download must never replace a working binary.
 fn verify(path: &Path, version: &str) -> Result<(), String> {
-    let output = crate::process::command(path)
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("Cannot run the downloaded agent: {e}"))?;
+    let output = crate::process::output_within(crate::process::command(path).arg("--version"), std::time::Duration::from_secs(10))
+        .map_err(|e| format!("Cannot run the downloaded agent: {e}"))?
+        .ok_or("The downloaded agent did not answer --version within 10 s.")?;
     let reported = String::from_utf8_lossy(&output.stdout);
     if reported.trim() != format!("agent {version}") {
         return Err(format!("The downloaded agent reports {:?}, expected {version}.", reported.trim()));
@@ -78,7 +77,7 @@ fn verify(path: &Path, version: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn is_newer(latest: &str, current: &str) -> bool {
+pub(crate) fn is_newer(latest: &str, current: &str) -> bool {
     match (precedence(latest), precedence(current)) {
         (Some(latest), Some(current)) => latest > current,
         _ => false,

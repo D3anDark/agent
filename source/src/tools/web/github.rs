@@ -96,7 +96,9 @@ fn clone(repo: &Repo, force_clone: bool) -> Result<PathBuf, String> {
     let safe_ref: String = git_ref.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect();
     // Not the shared temp dir: on Linux another user could plant a clone there.
     let home = std::env::var_os("HOME").ok_or("HOME is not set.")?;
-    let dir = PathBuf::from(home).join(".cache/agent-github").join(format!("{}-{}@{safe_ref}", repo.owner, repo.repo));
+    // safe_ref maps `feature/x` and `feature_x` alike, so a hash of the real ref keeps them apart.
+    let ref_id = &super::research::hash(git_ref)["sha256:".len()..][..12];
+    let dir = PathBuf::from(home).join(".cache/agent-github").join(&repo.owner).join(format!("{}@{safe_ref}-{ref_id}", repo.repo));
     // A branch moves, so a clone answers for an hour.
     let age = std::fs::metadata(dir.join(".git")).and_then(|meta| meta.modified()).ok().and_then(|modified| modified.elapsed().ok());
     if age.is_some_and(|age| age < CLONE_REUSE) && !force_clone {
@@ -109,8 +111,12 @@ fn clone(repo: &Repo, force_clone: bool) -> Result<PathBuf, String> {
         _ = std::fs::remove_dir_all(&partial);
         return Err(error);
     }
-    _ = std::fs::remove_dir_all(&dir);
-    if let Err(error) = std::fs::rename(&partial, &dir) {
+    // Moved aside, not deleted in place: a parallel fetch of the same repo may still be reading `dir`.
+    let old = PathBuf::from(format!("{}.old-{}-{:?}", dir.display(), std::process::id(), std::thread::current().id()));
+    _ = std::fs::rename(&dir, &old);
+    let moved = std::fs::rename(&partial, &dir);
+    _ = std::fs::remove_dir_all(&old);
+    if let Err(error) = moved {
         _ = std::fs::remove_dir_all(&partial);
         // A concurrent fetch may have won the rename; its tree serves this request.
         if !dir.join(".git").is_dir() {
@@ -134,6 +140,8 @@ fn git(dir: &Path, args: &[&str], deadline: Instant) -> Result<(), String> {
     let mut git = crate::process::command("git");
     // A link to /etc/passwd or /proc/self/environ must not be followed when the clone is read.
     git.arg("-C").arg(dir).args(["-c", "core.symlinks=false"]).args(args).env("GIT_TERMINAL_PROMPT", "0");
+    // Set inside a git hook, these would point init, fetch and checkout at the user's own repository.
+    git.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE");
     let output = crate::process::output_within(&mut git, deadline.saturating_duration_since(Instant::now()))
         .map_err(|e| format!("git: {e}"))?
         .ok_or_else(|| format!("git {} timed out after {} s.", args[0], CLONE_TIMEOUT.as_secs()))?;

@@ -55,9 +55,9 @@ pub fn logged_in(home: &Path, url: &str) -> bool {
 
 /// Runs the browser login for the server at `url` and stores its tokens.
 pub fn login(home: &Path, url: &str, abort: &AtomicBool) -> Result<(), String> {
-    let challenge = challenge(url);
+    let www_authenticate = challenge(url);
     // MCP 2025-06-18: the 401's `resource_metadata` comes first, then the well-known locations.
-    let resource_urls = auth_param(&challenge, "resource_metadata").map_or_else(|| metadata_urls(url, "oauth-protected-resource"), |found| vec![found]);
+    let resource_urls = auth_param(&www_authenticate, "resource_metadata").map_or_else(|| metadata_urls(url, "oauth-protected-resource"), |found| vec![found]);
     let resource = fetch_first(&resource_urls);
     // Without resource metadata the 2025-03-26 rule applies: the server's origin is the issuer.
     let issuer = resource.as_ref().and_then(|meta| meta["authorization_servers"][0].as_str()).unwrap_or(origin(url)).to_string();
@@ -69,7 +69,7 @@ pub fn login(home: &Path, url: &str, abort: &AtomicBool) -> Result<(), String> {
     let client = register(&endpoints, &redirect)?;
     let (verifier, challenge) = pkce();
     let state = random_hex(16);
-    let scope = auth_param(&challenge, "scope").or_else(|| resource.as_ref().map(scopes)).unwrap_or_default();
+    let scope = auth_param(&www_authenticate, "scope").or_else(|| resource.as_ref().map(scopes)).unwrap_or_default();
     let client_id = client["client_id"].as_str().unwrap_or_default();
     open_browser(&authorize_url(&endpoints.authorization, &[("client_id", client_id), ("redirect_uri", &redirect), ("code_challenge", &challenge), ("state", &state), ("resource", url), ("scope", &scope)]));
     let code = callback_code(&listener, "/callback?", &state, abort)?;
@@ -245,33 +245,11 @@ fn read(home: &Path) -> Result<Map<String, Value>, String> {
 /// Read, change and save under a lock on `mcp-auth.json.lock`, so parallel agents never spend one
 /// refresh token twice or write over each other's logins.
 fn update<T>(home: &Path, change: impl FnOnce(&mut Map<String, Value>) -> Result<T, String>) -> Result<T, String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let lock_path = path(home).with_extension("json.lock");
-    std::fs::create_dir_all(lock_path.parent().expect("mcp-auth.json sits in ~/.agents")).map_err(|e| format!("Cannot create {}: {e}", lock_path.display()))?;
-    let lock = std::fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600).open(&lock_path).map_err(|e| format!("Cannot open {}: {e}", lock_path.display()))?;
-    lock.lock().map_err(|e| format!("Cannot lock {}: {e}", lock_path.display()))?;
-    let mut store = read(home)?;
-    let result = change(&mut store)?;
-    save(home, &store)?;
-    Ok(result)
-}
-
-/// Owner-only from the first byte, synced, and renamed so a crash never leaves half a file.
-fn save(home: &Path, store: &Map<String, Value>) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let path = path(home);
-    let temp = path.with_extension("json.tmp");
-    let write = || -> std::io::Result<()> {
-        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temp)?;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        file.write_all(serde_json::to_string_pretty(store).unwrap().as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temp, &path)
-    };
-    write().map_err(|e| {
-        let _ = std::fs::remove_file(&temp);
-        format!("Cannot save {}: {e}", path.display())
+    crate::api::accounts::locked(&path(home), || {
+        let mut store = read(home)?;
+        let result = change(&mut store)?;
+        crate::api::accounts::write_private(&path(home), &serde_json::to_string_pretty(&store).unwrap())?;
+        Ok(result)
     })
 }
 

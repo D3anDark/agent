@@ -18,9 +18,9 @@ impl Web {
             queries.push(claim.to_string());
         }
         queries.truncate(MAX_QUERIES);
-        let config = providers::load_config(&self.config_path, self.provider_order())?;
+        let config = providers::load_config(&self.config_path, self.provider_order()?)?;
         let domains = string_list(&input["domainFilter"]);
-        let recency = super::recency(&input["recencyFilter"]);
+        let recency = input["recencyFilter"].as_str().and_then(super::providers::Recency::parse);
         let proxy = input["proxy"].as_str();
 
         let mut provider = None;
@@ -102,7 +102,7 @@ impl Web {
             "domain_exclude": domains.iter().filter_map(|d| d.strip_prefix('-')).collect::<Vec<_>>(),
         });
         if let Some(recency) = recency {
-            filters["recency"] = json!(recency);
+            filters["recency"] = json!(recency.as_str());
         }
         let mut artifact = json!({
             "type": "research",

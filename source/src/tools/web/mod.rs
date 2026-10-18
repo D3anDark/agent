@@ -86,8 +86,8 @@ impl Web {
     }
 
     /// The provider order from /settings, read per call like the other settings.
-    fn provider_order(&self) -> Vec<&'static str> {
-        crate::settings::load(&self.home).sort_providers(&providers::PROVIDERS)
+    fn provider_order(&self) -> Result<Vec<&'static str>, String> {
+        Ok(crate::settings::load(&self.home)?.sort_providers(&providers::PROVIDERS))
     }
 
     pub fn run(&mut self, name: &str, input: &Value) -> Result<String, String> {
@@ -128,7 +128,7 @@ impl Web {
             return Err("Error: No query provided. Use 'query' or 'queries' parameter.".into());
         }
         queries.truncate(research::MAX_QUERIES);
-        let config = providers::load_config(&self.config_path, self.provider_order())?;
+        let config = providers::load_config(&self.config_path, self.provider_order()?)?;
         let domains = string_list(&input["domainFilter"]);
         let include_content = input["includeContent"].as_bool().unwrap_or(false);
         let proxy = input["proxy"].as_str();
@@ -136,7 +136,7 @@ impl Web {
             let query = providers::Query {
                 text,
                 num_results: num_results(&input["numResults"]),
-                recency: recency(&input["recencyFilter"]),
+                recency: input["recencyFilter"].as_str().and_then(providers::Recency::parse),
                 domains: &domains,
                 include_content,
                 category: input["category"].as_str(),
@@ -392,10 +392,6 @@ fn string_list(value: &Value) -> Vec<String> {
 
 fn num_results(value: &Value) -> usize {
     value.as_f64().map_or(5, |n| n.floor().clamp(1.0, 20.0) as usize)
-}
-
-fn recency(value: &Value) -> Option<&str> {
-    value.as_str().filter(|r| ["day", "week", "month", "year"].contains(r))
 }
 
 fn fetch_entry(pages: &[Page]) -> Value {
