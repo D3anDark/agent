@@ -225,7 +225,8 @@ fn write(input: &Value, cwd: &Path, anchors: &mut Anchors) -> Result<String, Str
     }
     match std::fs::read(&path) {
         Ok(old) => hashline::write_or_restore(&path, content.as_bytes(), &old)?,
-        Err(_) => std::fs::write(&path, content).map_err(|e| format!("Cannot write {}: {e}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::write(&path, content).map_err(|e| format!("Cannot write {}: {e}", path.display()))?,
+        Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
     }
     let path = path.canonicalize().map_err(|e| e.to_string())?;
     // The write succeeded, so a file that cannot be served as anchors (binary, too big) still reports success.
@@ -673,6 +674,23 @@ mod tests {
         assert!(!is_error, "{replaced}");
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "alpha\nBETA\ngamma\n");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_refuses_to_replace_a_file_it_cannot_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("agent-write-unreadable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("locked.txt");
+        std::fs::write(&file, "keep").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let mut anchors = Anchors::new("");
+        let (text, is_error) = run("write", &json!({"path": file, "content": "lost"}), &dir, &mut anchors, &Rtk::OFF, &Arc::new(AtomicBool::new(false)));
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let kept = std::fs::read_to_string(&file).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(is_error && text.starts_with("Cannot read"), "{text}");
+        assert_eq!(kept, "keep");
     }
 
     #[test]
