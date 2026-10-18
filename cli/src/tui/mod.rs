@@ -228,6 +228,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("subagents", "Show subagent runs"),
     ("goal", "[objective | pause | resume | stop | done] — Set a goal the agent keeps working toward, or manage it"),
     ("plan", "[prompt | export [file] | implement | exit] — Plan mode: read-only until you pick what to do with the plan; /plan again turns it off"),
+    ("grill", "<topic> — Plan mode plus the grilling skill: the agent interviews you about the topic in rounds, changing nothing"),
     ("btw", "<question> — Ask a side question without touching the session"),
     ("worktree", "[name] — Move this session to a git worktree: pick one, or name a branch to open or create"),
     ("worktree-remove", "Remove a git worktree, keeping its branch"),
@@ -1447,6 +1448,16 @@ impl App {
             && self.working.is_none()
         {
             self.plan_command(args);
+            return;
+        }
+        if let Some(topic) = command_args(&text, "/grill")
+            && self.working.is_none()
+        {
+            if topic.is_empty() {
+                self.system("grill", "Usage: /grill <topic>");
+                return;
+            }
+            self.plan_command(&format!("Load the grilling skill, then grill me about: {topic}"));
             return;
         }
         // Panels, settings and local info leave the turn alone, so they run mid-turn too.
