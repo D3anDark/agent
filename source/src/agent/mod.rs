@@ -88,6 +88,8 @@ pub enum Event {
     Text(String),
     Thinking(String),
     Notice(String),
+    /// A foreground subagent finished; the TUI draws its status line from the run.
+    SubagentDone(Arc<subagent::Run>),
     ToolStart {
         id: String,
         name: String,
@@ -681,7 +683,7 @@ impl Agent {
             if !background {
                 subagent::wait(&started, &self.abort);
                 for run in &started {
-                    emit(Event::Notice(run.summary()));
+                    emit(Event::SubagentDone(run.clone()));
                 }
             }
             runs.extend(started);

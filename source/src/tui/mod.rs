@@ -449,6 +449,8 @@ enum Item {
         text: String,
         failed: bool,
     },
+    /// A foreground subagent's end: status, label, tool calls, time, tokens.
+    Subagent(Arc<Run>),
     Error(String),
     User(String),
     Assistant {
@@ -3206,6 +3208,7 @@ impl App {
                 let (source, text) = notice_source(&text);
                 self.system(source, text);
             }
+            Event::SubagentDone(run) => self.push(Item::Subagent(run)),
             Event::ToolStart { id, name, input } => self.push(Item::Tool { id, name, input, result: None }),
             Event::ToolEnd { id, output, is_error } => {
                 let entry = self.entries.iter_mut().rev().find(|e| matches!(&e.item, Item::Tool { id: tool_id, .. } if *tool_id == id));
@@ -3842,6 +3845,7 @@ fn render_item(item: &Item, width: usize, expanded: bool) -> Vec<Line> {
         Item::Lines(lines) => lines.clone(),
         Item::System { source, text, failed: false } => system_lines("⚙", source, text, SYSTEM, width),
         Item::System { source, text, failed: true } => system_lines("✗", source, text, ERROR, width),
+        Item::Subagent(run) => subagent_done_lines(run, width),
         Item::Error(text) => system_lines("✗", "error", text, ERROR, width),
         Item::User(text) => {
             let indent = vec![span("┃", BRIGHT), span(" ", PLAIN)];
@@ -3892,6 +3896,24 @@ fn system_lines(icon: &str, source: &str, text: &str, style: Style, width: usize
     if let Some(first) = lines.first_mut() {
         first.remove(0);
     }
+    lines
+}
+
+fn subagent_done_lines(run: &Run, width: usize) -> Vec<Line> {
+    let elapsed = duration(run.elapsed());
+    let state = run.state.lock().unwrap();
+    let plural = if state.tool_calls == 1 { "" } else { "s" };
+    let mut stats = format!(" · {} tool{plural} · {elapsed}", state.tool_calls);
+    if state.usage != Usage::default() {
+        stats += &format!(" · {}", usage::brief(state.usage));
+    }
+    let (icon, icon_style) = if matches!(state.result, Some(Err(_))) { ("✗", ERROR) } else { ("✓", OK) };
+    let mut spans = vec![span(icon, icon_style), span(" ", PLAIN), span(&run.id, SYSTEM), span(" ", PLAIN), span(&run.label, TOOL_NAME), span(stats, TOOL_ARGS)];
+    if let Some(Err(error)) = &state.result {
+        spans.extend([span(" · ", TOOL_ARGS), span(error, ERROR)]);
+    }
+    let mut lines = wrap(&spans, width, &vec![span("  ", PLAIN)]);
+    lines[0].remove(0);
     lines
 }
 
@@ -4289,7 +4311,7 @@ fn subagent_lines(path: &Path, width: usize) -> Result<Vec<Line>, String> {
 fn transcript_run(item: &Item) -> Option<&'static str> {
     match item {
         Item::Tool { .. } => Some("tool"),
-        Item::System { .. } | Item::Error(_) => Some("log"),
+        Item::System { .. } | Item::Subagent(_) | Item::Error(_) => Some("log"),
         _ => None,
     }
 }
@@ -4612,6 +4634,23 @@ mod tests {
     fn duration_rolls_minutes_into_hours() {
         assert_eq!(duration(Duration::from_secs(59)), "59s");
         assert_eq!(duration(Duration::from_secs(27811)), "7h 43m 31s");
+    }
+
+    #[test]
+    fn a_finished_subagent_shows_its_status_counts_and_error() {
+        let run = crate::agent::subagent::tests::scan_run();
+        *run.state.lock().unwrap() = crate::agent::subagent::RunState {
+            tool_calls: 1,
+            elapsed: Some(Duration::from_secs(319)),
+            result: Some(Ok("found".into())),
+            usage: Usage { input: 108, output: 33_000, ..Usage::default() },
+            ..Default::default()
+        };
+        let rows: Vec<String> = subagent_done_lines(&run, 80).iter().map(text).collect();
+        assert_eq!(rows, ["✓ sa-1 scan · 1 tool · 5m 19s · ↑108 ↓33k cache 0"]);
+        *run.state.lock().unwrap() = crate::agent::subagent::RunState { tool_calls: 31, elapsed: Some(Duration::from_secs(8)), result: Some(Err("Operation aborted".into())), ..Default::default() };
+        let rows: Vec<String> = subagent_done_lines(&run, 30).iter().map(text).collect();
+        assert_eq!(rows, ["✗ sa-1 scan · 31 tools · 8s ", "  · Operation aborted"]);
     }
 
     #[test]

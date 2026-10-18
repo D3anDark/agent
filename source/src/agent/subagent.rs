@@ -273,7 +273,7 @@ pub fn tasks(input: &Value) -> Result<Vec<Task>, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(ids, ["sa-2", "sa-4", "sa-1", "sa-3"]);
     }
 
-    fn scan_run() -> Run {
+    pub(crate) fn scan_run() -> Run {
         Run { id: "sa-1".into(), label: "scan".into(), task: "scan".into(), background: true, started: Instant::now(), child: Mutex::new(None), state: Mutex::default() }
     }
 }
