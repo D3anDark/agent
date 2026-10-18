@@ -83,8 +83,9 @@ pub struct Span {
 
 pub type Line = Vec<Span>;
 
+/// Tabs become four spaces here, so `width` measures what `to_ansi` draws.
 pub fn span(text: impl Into<String>, style: Style) -> Span {
-    Span { text: text.into(), style, link: None, run_on: None }
+    Span { text: text.into().replace('\t', "    "), style, link: None, run_on: None }
 }
 
 pub fn width(text: &str) -> usize {
@@ -317,7 +318,7 @@ pub fn overlay_center(line: &Line, overlay: Line, width: usize) -> Line {
 fn to_ansi(line: &Line) -> String {
     let mut out = String::new();
     for s in line {
-        let text: String = s.text.replace('\t', "    ").chars().filter(|c| !c.is_control()).collect();
+        let text: String = s.text.chars().filter(|c| !c.is_control()).collect();
         let mut rest = text.as_str();
         while let Some((before, url, after)) = split_link(rest) {
             push_styled(&mut out, s.style, before);
@@ -472,6 +473,12 @@ mod tests {
     #[test]
     fn control_characters_never_reach_the_terminal() {
         assert_eq!(to_ansi(&vec![span("a\x1b]52;c;eA==\x07b\r\u{9b}2Jc", PLAIN)]), "\x1b[0ma]52;c;eA==b2Jc\x1b[0m");
+    }
+
+    #[test]
+    fn a_tab_is_measured_as_wide_as_it_is_drawn() {
+        let line = vec![span("a\tb", PLAIN)];
+        assert_eq!((line_width(&line), to_ansi(&line).as_str()), (6, "\x1b[0ma    b\x1b[0m"));
     }
 
     #[test]
