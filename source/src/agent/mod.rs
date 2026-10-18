@@ -428,7 +428,7 @@ impl Agent {
                 }
                 emit(Event::ToolStart { id: id.clone(), name: name.clone(), input: shown });
                 self.plugins.event(json!({"type": "tool_call", "name": name, "input": input, "context": self.plugin_context()}));
-                let (mut output, is_error) = self.run_tool_with_checkpoint(&name, &input, text, emit)?;
+                let (mut output, is_error) = self.run_tool_with_checkpoint(&name, &input, &targets, text, emit)?;
                 if !is_error {
                     for file in &targets {
                         match self.lsp.after_edit(file, &self.cwd, &self.abort) {
@@ -471,7 +471,7 @@ impl Agent {
                 break;
             }
             let input = json!({"command": hook.command, "timeout": 120});
-            if let Some(refusal) = self.check_permission("bash", &input, user_request, emit) {
+            if let Some(refusal) = self.check_permission("bash", &input, &[], user_request, emit) {
                 emit(Event::Notice(format!("[edit-hooks] {} skipped: {refusal}", hook.command)));
                 continue;
             }
@@ -485,7 +485,7 @@ impl Agent {
     }
 
     /// Runs one tool call after the permission check; agent-level tools are handled here, file and shell tools in `tools`.
-    fn run_tool(&mut self, name: &str, input: &Value, user_request: &str, emit: &mut dyn FnMut(Event)) -> (String, bool) {
+    fn run_tool(&mut self, name: &str, input: &Value, targets: &[PathBuf], user_request: &str, emit: &mut dyn FnMut(Event)) -> (String, bool) {
         if self.abort.load(Ordering::Relaxed) {
             return ("Operation aborted".into(), true);
         }
@@ -499,7 +499,7 @@ impl Agent {
         {
             return (reason, true);
         }
-        if let Some(reason) = self.check_permission(name, input, user_request, emit) {
+        if let Some(reason) = self.check_permission(name, input, targets, user_request, emit) {
             return (reason, true);
         }
         // After the permission check: starting a language server runs the repo's build scripts.
@@ -840,9 +840,8 @@ impl Agent {
 
     /// None when the call may run; otherwise the tool result that explains the refusal.
     /// A user's "No" also stops the turn, like Esc.
-    fn check_permission(&mut self, tool: &str, input: &Value, user_request: &str, emit: &mut dyn FnMut(Event)) -> Option<String> {
-        let edited_files = edit_hooks::edited_files(tool, input, &self.cwd, &self.anchors);
-        let request = permissions::request_for(tool, input, &edited_files)?;
+    fn check_permission(&mut self, tool: &str, input: &Value, edited_files: &[PathBuf], user_request: &str, emit: &mut dyn FnMut(Event)) -> Option<String> {
+        let request = permissions::request_for(tool, input, edited_files)?;
         let mode = *self.permission_mode.lock().unwrap();
         if mode == Mode::FullAccess || self.grants.allows(&request) {
             return None;
@@ -913,19 +912,19 @@ impl Agent {
 
     /// Snapshots around a tool that can change files, so a rewind touches only what this session changed.
     /// A file another session edits while this call runs still counts as this session's.
-    fn run_tool_with_checkpoint(&mut self, name: &str, input: &Value, user_request: &str, emit: &mut dyn FnMut(Event)) -> Result<(String, bool), String> {
+    fn run_tool_with_checkpoint(&mut self, name: &str, input: &Value, targets: &[PathBuf], user_request: &str, emit: &mut dyn FnMut(Event)) -> Result<(String, bool), String> {
         const CHANGES_FILES: [&str; 9] = ["write", "replace", "replace_match", "insert", "copy", "move", "undo_last_change", "bash", "subagent"];
         let Some(snapshots) = self.snapshots.as_ref().filter(|_| CHANGES_FILES.contains(&name)) else {
-            return Ok(self.run_tool(name, input, user_request, emit));
+            return Ok(self.run_tool(name, input, targets, user_request, emit));
         };
         let before = match snapshots.take() {
             Ok(before) => before,
             Err(error) => {
                 emit(Event::Notice(format!("File snapshot failed, a rewind will not restore files from this tool call: {error}")));
-                return Ok(self.run_tool(name, input, user_request, emit));
+                return Ok(self.run_tool(name, input, targets, user_request, emit));
             }
         };
-        let result = self.run_tool(name, input, user_request, emit);
+        let result = self.run_tool(name, input, targets, user_request, emit);
         let Some(snapshots) = &self.snapshots else { return Ok(result) };
         let changed = snapshots.take().and_then(|after| Ok((snapshots.changed(&before, &after)?, after)));
         match changed {
