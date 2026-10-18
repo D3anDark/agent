@@ -4212,7 +4212,11 @@ fn subagents_panel(runs: &[Arc<Run>], selected: usize, columns: usize) -> Vec<Li
 
 fn duration(d: Duration) -> String {
     let secs = d.as_secs();
-    if secs < 60 { format!("{secs}s") } else { format!("{}m {}s", secs / 60, secs % 60) }
+    match (secs / 3600, secs / 60 % 60, secs % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, s) => format!("{m}m {s}s"),
+        (h, m, s) => format!("{h}h {m}m {s}s"),
+    }
 }
 
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
@@ -4400,6 +4404,12 @@ mod tests {
     fn bracketed_notice_prefix_becomes_the_source() {
         assert_eq!(notice_source("[lsp] Cannot read a.rs"), ("lsp", "Cannot read a.rs"));
         assert_eq!(notice_source("Operation aborted"), ("agent", "Operation aborted"));
+    }
+
+    #[test]
+    fn duration_rolls_minutes_into_hours() {
+        assert_eq!(duration(Duration::from_secs(59)), "59s");
+        assert_eq!(duration(Duration::from_secs(27811)), "7h 43m 31s");
     }
 
     #[test]
