@@ -8,7 +8,9 @@ pub fn bash(command: &str) -> Option<String> {
         return Some(format!("Use read({path}) with offset/limit instead of bash; its anchors are what edits use."));
     }
     if blind_sleep(command) {
-        return Some("No blind sleep. Server: curl -sf --retry 30 --retry-all-errors --retry-delay 1 URL. CI: gh run watch --exit-status, gh pr checks --watch. Long job: load_tools terminals.".into());
+        return Some(
+            "No blind sleep. Server: curl -sf --retry 30 --retry-all-errors --retry-delay 1 URL. CI: gh run watch --exit-status, gh pr checks --watch. Long job: load_tools terminals.".into(),
+        );
     }
     None
 }
@@ -48,9 +50,7 @@ fn blind_sleep(command: &str) -> bool {
     let words: Vec<&str> = command.split_whitespace().collect();
     let words = &words[..words.iter().position(|word| *word == "do").unwrap_or(words.len())];
     words.iter().enumerate().any(|(index, word)| {
-        let starts_command = index == 0
-            || words[index - 1].ends_with([';', '&', '|', '(', '{'])
-            || matches!(words[index - 1], "then" | "else");
+        let starts_command = index == 0 || words[index - 1].ends_with([';', '&', '|', '(', '{']) || matches!(words[index - 1], "then" | "else");
         *word == "sleep" && starts_command && words.get(index + 1).map_or(0, |arg| sleep_seconds(arg)) >= MIN_BLOCKED_SLEEP_SECS
     })
 }

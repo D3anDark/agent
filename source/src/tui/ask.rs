@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::mpsc::Sender;
 
-use super::editor::Editor;
 use super::OK;
+use super::editor::Editor;
 use super::render::{BRIGHT, Line, MUTED, PLAIN, Style, span, wrap};
 use crate::tools::ask::{Answer, Question, TYPE_SOMETHING};
 
@@ -53,12 +53,10 @@ impl AskPanel {
             KeyCode::Right if !editing => self.current = (self.current + 1).min(self.questions.len() - 1),
             KeyCode::Up => draft.row = draft.row.saturating_sub(1),
             KeyCode::Down => draft.row = (draft.row + 1).min(custom_row),
-            KeyCode::Char(' ') if question.multi && draft.row < custom_row => {
-                match draft.picked.iter().position(|i| *i == draft.row) {
-                    Some(at) => _ = draft.picked.remove(at),
-                    None => draft.picked.push(draft.row),
-                }
-            }
+            KeyCode::Char(' ') if question.multi && draft.row < custom_row => match draft.picked.iter().position(|i| *i == draft.row) {
+                Some(at) => _ = draft.picked.remove(at),
+                None => draft.picked.push(draft.row),
+            },
             KeyCode::Enter => {
                 let answer = match (question.multi, draft.row == custom_row) {
                     (true, _) if draft.picked.is_empty() && draft.typed.is_empty() => return false,

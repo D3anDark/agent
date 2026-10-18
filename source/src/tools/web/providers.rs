@@ -313,10 +313,7 @@ fn collapse(text: &str) -> String {
 
 /// pi's "snippet\nSource: title (url)" answer that search-only providers return.
 fn answer_from_hits(hits: &[Hit]) -> String {
-    let parts: Vec<String> = hits
-        .iter()
-        .map(|h| if h.snippet.is_empty() { format!("Source: {} ({})", h.title, h.url) } else { format!("{}\nSource: {} ({})", h.snippet, h.title, h.url) })
-        .collect();
+    let parts: Vec<String> = hits.iter().map(|h| if h.snippet.is_empty() { format!("Source: {} ({})", h.title, h.url) } else { format!("{}\nSource: {} ({})", h.snippet, h.title, h.url) }).collect();
     parts.join("\n\n")
 }
 

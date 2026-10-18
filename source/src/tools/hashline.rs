@@ -55,14 +55,7 @@ impl Anchors {
         for byte in seed.bytes().chain(crate::process::now_ms().to_le_bytes()) {
             probe = (probe ^ byte as u64).wrapping_mul(0x100_0000_01b3);
         }
-        Anchors {
-            row_starts,
-            probe: (probe % ANCHOR_COUNT as u64) as u32,
-            minted: 0,
-            owner: HashMap::new(),
-            files: HashMap::new(),
-            undo: HashMap::new(),
-        }
+        Anchors { row_starts, probe: (probe % ANCHOR_COUNT as u64) as u32, minted: 0, owner: HashMap::new(), files: HashMap::new(), undo: HashMap::new() }
     }
 
     fn anchor_at(&self, index: u32) -> String {
@@ -251,7 +244,12 @@ impl Anchors {
         }
         let matches = region.matches(old).count();
         if matches > 1 {
-            return Err(format!("[E_AMBIGUOUS] old_string occurs {matches} times in lines {}-{} of {}. Add surrounding text or narrow the range so it occurs once.", first + 1, last + 1, path.display()));
+            return Err(format!(
+                "[E_AMBIGUOUS] old_string occurs {matches} times in lines {}-{} of {}. Add surrounding text or narrow the range so it occurs once.",
+                first + 1,
+                last + 1,
+                path.display()
+            ));
         }
         let new = new.replace("\r\n", "\n");
         let mut lines: Vec<String> = region.replace(old, &new).split('\n').map(String::from).collect();
@@ -325,7 +323,9 @@ impl Anchors {
             Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
         };
         if current.as_ref().is_some_and(|bytes| bytes != after) {
-            return Err(format!("[E_UNDO_STALE] Cannot undo last change on {raw}: the file was modified after the edit, so nothing was reverted and the file was left untouched. The undo record is kept. Do not edit the file to force the undo. Call read() to inspect the current state."));
+            return Err(format!(
+                "[E_UNDO_STALE] Cannot undo last change on {raw}: the file was modified after the edit, so nothing was reverted and the file was left untouched. The undo record is kept. Do not edit the file to force the undo. Call read() to inspect the current state."
+            ));
         }
         write_or_restore(&path, before, after)?;
         self.undo.remove(&path);

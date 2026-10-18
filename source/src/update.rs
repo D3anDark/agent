@@ -52,17 +52,11 @@ fn newest(releases: &Value, include_prereleases: bool) -> Option<&str> {
 fn download(version: &str, path: &Path) -> Result<(), String> {
     let asset = format!("agent-{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let url = format!("{RELEASES}/download/v{version}/{asset}");
-    let http: ureq::Agent =
-        ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(300))).build().into();
-    let bytes = http
-        .get(&url)
-        .call()
-        .and_then(|mut response| response.body_mut().with_config().limit(100 << 20).read_to_vec())
-        .map_err(|e| format!("Cannot download {url}: {e}"))?;
+    let http: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(300))).build().into();
+    let bytes = http.get(&url).call().and_then(|mut response| response.body_mut().with_config().limit(100 << 20).read_to_vec()).map_err(|e| format!("Cannot download {url}: {e}"))?;
     std::fs::write(path, bytes).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .map_err(|e| format!("Cannot make {} executable: {e}", path.display()))
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("Cannot make {} executable: {e}", path.display()))
 }
 
 /// A truncated or wrong download must never replace a working binary.
@@ -97,11 +91,7 @@ fn precedence(version: &str) -> Option<(Vec<u64>, bool, Vec<Identifier>)> {
         None => (version, None),
     };
     let core = core.split('.').map(|n| n.parse().ok()).collect::<Option<Vec<u64>>>()?;
-    let identifiers = pre
-        .into_iter()
-        .flat_map(|pre| pre.split('.'))
-        .map(|id| id.parse().map_or_else(|_| Identifier::Text(id.to_string()), Identifier::Number))
-        .collect();
+    let identifiers = pre.into_iter().flat_map(|pre| pre.split('.')).map(|id| id.parse().map_or_else(|_| Identifier::Text(id.to_string()), Identifier::Number)).collect();
     Some((core, pre.is_none(), identifiers))
 }
 

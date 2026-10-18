@@ -399,12 +399,8 @@ mod tests {
 
     #[test]
     fn an_event_stream_answers_with_the_event_for_the_request() {
-        let stream = concat!(
-            "event: message\n",
-            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n",
-            "data: {\"jsonrpc\":\"2.0\",\n",
-            "data: \"id\":7,\"result\":{\"ok\":true}}\n\n",
-        );
+        let stream =
+            concat!("event: message\n", "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n", "data: {\"jsonrpc\":\"2.0\",\n", "data: \"id\":7,\"result\":{\"ok\":true}}\n\n",);
         assert_eq!(read_reply(Cursor::new(stream), 7).unwrap()["result"]["ok"], true);
         assert!(read_reply(Cursor::new("data: {\"id\":1}\n\n"), 7).is_err());
     }

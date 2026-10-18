@@ -168,10 +168,7 @@ impl Client {
         let account = self.fresh(account.clone())?;
         let http = models_agent();
         let request = match (&account.secret, account.provider.as_str()) {
-            (Secret::ApiKey(key), "anthropic") => http
-                .get(format!("{}/v1/models?limit=1000", self.anthropic_base))
-                .header("anthropic-version", "2023-06-01")
-                .header("x-api-key", key),
+            (Secret::ApiKey(key), "anthropic") => http.get(format!("{}/v1/models?limit=1000", self.anthropic_base)).header("anthropic-version", "2023-06-01").header("x-api-key", key),
             (Secret::OAuth(tokens), "anthropic") => http
                 .get(format!("{}/v1/models?limit=1000", self.anthropic_base))
                 .header("anthropic-version", "2023-06-01")
@@ -280,10 +277,8 @@ impl Client {
         self.refresh_usage(&accounts);
         let mut state = self.state.lock().unwrap();
         let now = Instant::now();
-        let candidates: Vec<Candidate> = accounts
-            .iter()
-            .map(|a| Candidate { usage: state.usage.get(&key(a)).and_then(|(_, u)| u.clone()), limited: state.limited.get(&key(a)).is_some_and(|until| *until > now) })
-            .collect();
+        let candidates: Vec<Candidate> =
+            accounts.iter().map(|a| Candidate { usage: state.usage.get(&key(a)).and_then(|(_, u)| u.clone()), limited: state.limited.get(&key(a)).is_some_and(|until| *until > now) }).collect();
         let pinned = state.pinned.get(provider).and_then(|name| accounts.iter().position(|a| &a.name == name));
         let policy = state.policy.unwrap_or(Policy::LeastUsed);
         // After falling back once, the other provider's accounts are the last resort, so least-used decides.
@@ -675,12 +670,8 @@ fn append(field: &mut Value, text: &str) {
 
 /// Usage fields arrive in message_start and again (cumulative) in message_delta; later values win.
 fn read_usage(raw: &Value, usage: &mut Usage) {
-    let fields = [
-        ("input_tokens", &mut usage.input),
-        ("output_tokens", &mut usage.output),
-        ("cache_read_input_tokens", &mut usage.cache_read),
-        ("cache_creation_input_tokens", &mut usage.cache_write),
-    ];
+    let fields =
+        [("input_tokens", &mut usage.input), ("output_tokens", &mut usage.output), ("cache_read_input_tokens", &mut usage.cache_read), ("cache_creation_input_tokens", &mut usage.cache_write)];
     for (name, slot) in fields {
         if let Some(value) = raw[name].as_u64() {
             *slot = value;

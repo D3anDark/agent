@@ -126,7 +126,11 @@ fn refuse_local(url: &str, proxied: bool) -> Result<(), String> {
     }
     match (host.as_str(), 0).to_socket_addrs() {
         Ok(mut addresses) => {
-            if addresses.any(|address| is_local(&address.ip())) { refused() } else { Ok(()) }
+            if addresses.any(|address| is_local(&address.ip())) {
+                refused()
+            } else {
+                Ok(())
+            }
         }
         Err(error) if !proxied => Err(format!("Cannot resolve the host of {url}: {error}")),
         Err(_) => Ok(()),
@@ -197,10 +201,7 @@ fn fetch_http(agent: &ureq::Agent, url: &str, raw: bool, allow: impl Fn(&str) ->
 }
 
 fn is_text(mime: &str) -> bool {
-    mime.starts_with("text/")
-        || mime.ends_with("+json")
-        || mime.ends_with("+xml")
-        || ["application/json", "application/xml", "application/javascript", "application/x-javascript"].contains(&mime)
+    mime.starts_with("text/") || mime.ends_with("+json") || mime.ends_with("+xml") || ["application/json", "application/xml", "application/javascript", "application/x-javascript"].contains(&mime)
 }
 
 /// pi's extractTextTitle: the first `#` or `##` heading, else the last path segment, else the URL.

@@ -69,9 +69,7 @@ impl Goal {
     }
 
     pub fn entry(goal: Option<&Goal>) -> Value {
-        let goal = goal.map(|g| {
-            json!({"objective": g.objective, "status": g.status.as_str(), "token_budget": g.token_budget, "tokens_used": g.tokens_used, "evidence": g.evidence})
-        });
+        let goal = goal.map(|g| json!({"objective": g.objective, "status": g.status.as_str(), "token_budget": g.token_budget, "tokens_used": g.tokens_used, "evidence": g.evidence}));
         json!({"type": "goal", "goal": goal})
     }
 

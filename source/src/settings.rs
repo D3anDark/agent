@@ -186,18 +186,8 @@ pub fn load(home: &Path) -> Result<Settings, String> {
         switch_at_percent: own["accounts"]["switch_at_percent"].as_u64().unwrap_or(90),
         when_all_over_limit: own["accounts"]["when_all_over_limit"].as_str().and_then(Policy::parse).unwrap_or(Policy::LeastUsed),
         fallback_model: own["accounts"]["fallback_model"].as_str().unwrap_or_default().to_string(),
-        default_accounts: own["accounts"]["default"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .filter_map(|(provider, name)| Some((provider.clone(), name.as_str()?.to_string())))
-            .collect(),
-        context_windows: own["context_windows"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .filter_map(|(key, window)| Some((key.clone(), window.as_u64()?)))
-            .collect(),
+        default_accounts: own["accounts"]["default"].as_object().into_iter().flatten().filter_map(|(provider, name)| Some((provider.clone(), name.as_str()?.to_string()))).collect(),
+        context_windows: own["context_windows"].as_object().into_iter().flatten().filter_map(|(key, window)| Some((key.clone(), window.as_u64()?))).collect(),
         provider_sort: level(&own["provider_sort"], &PROVIDER_SORTS, "default"),
         provider_order: string_list(&own["provider_order"]),
         pinned_models: string_list(&own["pinned_models"]),

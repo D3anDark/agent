@@ -101,11 +101,7 @@ pub(crate) fn write_private(path: &Path, text: &str) -> Result<(), String> {
     let temp = path.with_extension("json.tmp");
     let mut out = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temp).map_err(|e| format!("Cannot write {}: {e}", temp.display()))?;
     // mode() applies only on create, so a leftover temp file is made private before the secrets go in.
-    let written = out
-        .set_permissions(std::fs::Permissions::from_mode(0o600))
-        .and_then(|()| out.write_all(text.as_bytes()))
-        .and_then(|()| out.sync_all())
-        .and_then(|()| std::fs::rename(&temp, &path));
+    let written = out.set_permissions(std::fs::Permissions::from_mode(0o600)).and_then(|()| out.write_all(text.as_bytes())).and_then(|()| out.sync_all()).and_then(|()| std::fs::rename(&temp, &path));
     written.map_err(|e| {
         let _ = std::fs::remove_file(&temp);
         format!("Cannot write {}: {e}", path.display())
@@ -130,7 +126,6 @@ pub(crate) fn locked<T>(path: &Path, change: impl FnOnce() -> Result<T, String>)
     lock.lock().map_err(|e| format!("Cannot lock {}: {e}", lock_path.display()))?;
     change()
 }
-
 
 /// Subscription windows in percent (0-100) and when the fuller one resets.
 #[derive(Clone, Debug, PartialEq)]
@@ -175,10 +170,7 @@ pub fn fetch_usage(account: &Account, base: &str) -> Result<Usage, String> {
     let Secret::OAuth(tokens) = &account.secret else { return Err("API keys have no usage windows.".into()) };
     let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(10))).build().into();
     let request = match account.provider.as_str() {
-        "anthropic" => agent
-            .get(format!("{base}/api/oauth/usage"))
-            .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219")
-            .header("user-agent", crate::api::CLAUDE_CODE_USER_AGENT),
+        "anthropic" => agent.get(format!("{base}/api/oauth/usage")).header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219").header("user-agent", crate::api::CLAUDE_CODE_USER_AGENT),
         _ => agent.get(format!("{base}/wham/usage")).header("chatgpt-account-id", tokens.account_id.as_deref().unwrap_or_default()),
     };
     let response = request.header("authorization", format!("Bearer {}", tokens.access)).header("accept", "application/json").call().map_err(|e| format!("Usage request failed: {e}."))?;
@@ -228,7 +220,9 @@ pub enum Pick {
     Account(usize),
     /// Every account is over the threshold or rate-limited; this one has the most room left.
     OverLimit(usize),
-    Blocked { resets_at: Option<u64> },
+    Blocked {
+        resets_at: Option<u64>,
+    },
     OtherProvider,
 }
 

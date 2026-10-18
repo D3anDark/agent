@@ -113,19 +113,7 @@ fn main() {
 }
 
 fn parse_args(args: Vec<String>) -> Result<Options, String> {
-    let mut options = Options {
-        model: None,
-        thinking: None,
-        permission_mode: None,
-        print: false,
-        json: false,
-        headless: false,
-        parent: None,
-        account: None,
-        save: true,
-        resume: None,
-        prompt: None,
-    };
+    let mut options = Options { model: None, thinking: None, permission_mode: None, print: false, json: false, headless: false, parent: None, account: None, save: true, resume: None, prompt: None };
     let mut words = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -319,11 +307,8 @@ fn run(options: Options) -> Result<(), String> {
         if options.parent.is_some() {
             agent.tools = Value::Array(agent.tools.as_array().into_iter().flatten().filter(|tool| !matches!(tool["name"].as_str(), Some("load_tools" | "ask_user_question"))).cloned().collect());
         }
-        let result = if options.headless {
-            headless_mode(&mut agent, prompt.as_deref().unwrap_or_default())
-        } else {
-            print_mode(&mut agent, &prompt.ok_or("Print mode needs a message.")?, options.json)
-        };
+        let result =
+            if options.headless { headless_mode(&mut agent, prompt.as_deref().unwrap_or_default()) } else { print_mode(&mut agent, &prompt.ok_or("Print mode needs a message.")?, options.json) };
         agent.terminals.lock().unwrap().kill_all();
         agent.subagents.lock().unwrap().stop_all();
         tools::remove_spills();

@@ -100,11 +100,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let now = 100 * DAY_MS;
         let used = |input| Usage { input, output: 1, cache_read: 2, cache_write: 3 };
-        let current = [
-            json!({"type": "message", "message": {"role": "user", "content": "\"type\":\"usage\""}}),
-            entry("opus", used(10), now - 1000),
-            entry("opus", used(20), now - 2 * DAY_MS),
-        ];
+        let current = [json!({"type": "message", "message": {"role": "user", "content": "\"type\":\"usage\""}}), entry("opus", used(10), now - 1000), entry("opus", used(20), now - 2 * DAY_MS)];
         let other = [entry("haiku", used(5), now - 1000), entry("opus", used(40), now - 8 * DAY_MS)];
         for (name, lines) in [("cur", &current[..]), ("old", &other[..])] {
             std::fs::write(dir.join(format!("{name}.jsonl")), lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();

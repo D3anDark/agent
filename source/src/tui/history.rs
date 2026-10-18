@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
-use std::os::unix::fs::OpenOptionsExt;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 /// The file outgrows this many prompts, then drops to `KEEP`; trimming on every append would rewrite it each prompt.

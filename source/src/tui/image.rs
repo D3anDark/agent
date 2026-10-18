@@ -53,11 +53,8 @@ pub fn from_clipboard() -> Result<Value, String> {
     if cfg!(target_os = "macos") {
         return from_macos_clipboard();
     }
-    let (program, args): (&str, &[&str]) = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        ("wl-paste", &["--type", "image/png"])
-    } else {
-        ("xclip", &["-selection", "clipboard", "-target", "image/png", "-out"])
-    };
+    let (program, args): (&str, &[&str]) =
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() { ("wl-paste", &["--type", "image/png"]) } else { ("xclip", &["-selection", "clipboard", "-target", "image/png", "-out"]) };
     let output = crate::process::command(program).args(args).output().map_err(|e| format!("Cannot run {program}: {e}"))?;
     let block = if output.status.success() { bytes_block(&output.stdout) } else { None };
     block.ok_or_else(|| "No image in the clipboard".into())
@@ -66,10 +63,7 @@ pub fn from_clipboard() -> Result<Value, String> {
 /// Saves the clipboard image as PNG and reads it into an API image block.
 fn from_macos_clipboard() -> Result<Value, String> {
     let path = std::env::temp_dir().join(format!("agent-clipboard-{}.png", std::process::id()));
-    let script = format!(
-        "set f to open for access (POSIX file \"{}\") with write permission\nset eof f to 0\nwrite (the clipboard as «class PNGf») to f\nclose access f",
-        path.display()
-    );
+    let script = format!("set f to open for access (POSIX file \"{}\") with write permission\nset eof f to 0\nwrite (the clipboard as «class PNGf») to f\nclose access f", path.display());
     let output = crate::process::command("osascript").arg("-e").arg(script).output().map_err(|e| format!("Cannot run osascript: {e}"))?;
     let block = if output.status.success() { block(&path) } else { Err("No image in the clipboard".into()) };
     let _ = std::fs::remove_file(&path);

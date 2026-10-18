@@ -38,7 +38,9 @@ impl Btw {
         for (index, (question, answer)) in self.turns.iter().enumerate() {
             let prompt = if index == 0 {
                 let context = if self.context.is_empty() { "No prior conversation context was available." } else { &self.context };
-                format!("Answer this side question without modifying the main conversation.\n\n<side_question>\n{question}\n</side_question>\n\n<conversation_context>\n{context}\n</conversation_context>")
+                format!(
+                    "Answer this side question without modifying the main conversation.\n\n<side_question>\n{question}\n</side_question>\n\n<conversation_context>\n{context}\n</conversation_context>"
+                )
             } else {
                 format!("Continue the same side conversation.\n\n<side_question>\n{question}\n</side_question>")
             };

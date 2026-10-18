@@ -52,10 +52,7 @@ pub fn host(url: &str) -> Option<String> {
 /// Redirects come back as responses: ureq would keep custom headers such as `x-api-key` on a cross-host redirect,
 /// and `fetch::fetch_http` vets each hop before following it.
 pub(super) fn http_agent(proxy: Option<&str>, timeout: Duration) -> Result<ureq::Agent, String> {
-    let mut config = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_global(Some(timeout))
-        .max_redirects(0);
+    let mut config = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(timeout)).max_redirects(0);
     if let Some(proxy) = proxy.map(str::trim) {
         // The URL may carry `user:password@`, so the error does not echo it.
         let proxy = if proxy.is_empty() { None } else { Some(ureq::Proxy::new(proxy).map_err(|e| format!("Invalid proxy URL: {e}"))?) };
@@ -248,11 +245,7 @@ impl Web {
                 let page = &urls[index];
                 let (url, content) = (page["url"].as_str().unwrap_or_default(), page["content"].as_str().unwrap_or_default());
                 if let Some(error) = page["error"].as_str() {
-                    return Err(format!(
-                        "Error retrieving URL {} from responseId {}: {error}. Check the stored fetch result and retry with another URL or urlIndex if needed.",
-                        json!(url),
-                        json!(id)
-                    ));
+                    return Err(format!("Error retrieving URL {} from responseId {}: {error}. Check the stored fetch result and retry with another URL or urlIndex if needed.", json!(url), json!(id)));
                 }
                 let title = page["title"].as_str().filter(|t| !t.is_empty()).unwrap_or(url);
                 if let Some(found) = find(content) {

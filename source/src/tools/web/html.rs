@@ -319,9 +319,7 @@ impl Writer {
 
 /// `href` as an absolute URL against the page URL `base`.
 pub fn resolve(base: &str, href: &str) -> String {
-    let has_scheme = href.split_once(':').is_some_and(|(scheme, _)| {
-        scheme.starts_with(|c: char| c.is_ascii_alphabetic()) && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
-    });
+    let has_scheme = href.split_once(':').is_some_and(|(scheme, _)| scheme.starts_with(|c: char| c.is_ascii_alphabetic()) && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)));
     if has_scheme {
         return href.to_string();
     }

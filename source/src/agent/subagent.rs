@@ -317,10 +317,7 @@ mod tests {
     fn the_childs_usage_record_shows_in_the_run_summary() {
         let run = scan_run();
         let usage = Usage { input: 1200, output: 300, cache_read: 40_000, cache_write: 0 };
-        let stdout: String = [json!({"type": "tool", "name": "read"}), usage::entry("opus", usage, 0), json!({"type": "done", "answer": "ok"})]
-            .iter()
-            .map(|event| format!("{event}\n"))
-            .collect();
+        let stdout: String = [json!({"type": "tool", "name": "read"}), usage::entry("opus", usage, 0), json!({"type": "done", "answer": "ok"})].iter().map(|event| format!("{event}\n")).collect();
         assert_eq!(read_events(stdout.as_bytes(), &run), Ok("ok".into()));
         assert_eq!(run.summary(), "sa-1 scan running: 1 tool calls, last read, 0s, ↑1k ↓300 cache 40k");
     }
@@ -363,14 +360,6 @@ mod tests {
     }
 
     fn scan_run() -> Run {
-        Run {
-            id: "sa-1".into(),
-            label: "scan".into(),
-            task: "scan".into(),
-            background: true,
-            started: Instant::now(),
-            child: Mutex::new(None),
-            state: Mutex::default(),
-        }
+        Run { id: "sa-1".into(), label: "scan".into(), task: "scan".into(), background: true, started: Instant::now(), child: Mutex::new(None), state: Mutex::default() }
     }
 }

@@ -28,15 +28,7 @@ impl Web {
         let mut errors = Vec::new();
         let mut hits = Vec::new();
         for text in &queries {
-            let query = providers::Query {
-                text,
-                num_results: super::num_results(&input["numResults"]),
-                recency,
-                domains: &domains,
-                include_content: false,
-                category: None,
-                proxy,
-            };
+            let query = providers::Query { text, num_results: super::num_results(&input["numResults"]), recency, domains: &domains, include_content: false, category: None, proxy };
             match providers::search(&config, &input["provider"], &query) {
                 Ok(response) => {
                     provider = provider.or(response.providers.first().cloned());
@@ -49,9 +41,11 @@ impl Web {
             }
         }
         let mut seen = Vec::new();
-        hits.retain(|hit| !seen.contains(&hit.url) && {
-            seen.push(hit.url.clone());
-            true
+        hits.retain(|hit| {
+            !seen.contains(&hit.url) && {
+                seen.push(hit.url.clone());
+                true
+            }
         });
         hits.truncate(MAX_SOURCES);
         let fetched = if input["fetchContent"].as_bool().unwrap_or(false) {
@@ -91,11 +85,7 @@ impl Web {
         let (status, confidence, rationale) = if passages.is_empty() {
             ("missing-evidence", 0.2, "No passages were retrieved for the claim.")
         } else {
-            (
-                "unclear",
-                0.3,
-                "Passages were retrieved, but automated semantic support or contradiction assessment is unavailable; review the cited passages manually.",
-            )
+            ("unclear", 0.3, "Passages were retrieved, but automated semantic support or contradiction assessment is unavailable; review the cited passages manually.")
         };
         let mut filters = json!({
             "domain_include": domains.iter().filter(|d| !d.starts_with('-')).collect::<Vec<_>>(),
@@ -128,13 +118,7 @@ impl Web {
         }
         let id = self.store(artifact)?;
 
-        let mut lines = vec![
-            format!("# Source check: {claim}"),
-            String::new(),
-            format!("**Status:** {status} (confidence {confidence:.2})"),
-            format!("**Rationale:** {rationale}"),
-            String::new(),
-        ];
+        let mut lines = vec![format!("# Source check: {claim}"), String::new(), format!("**Status:** {status} (confidence {confidence:.2})"), format!("**Rationale:** {rationale}"), String::new()];
         if !hits.is_empty() {
             lines.push("## Sources".into());
             for (source, hit) in sources.iter().zip(&hits) {
@@ -235,26 +219,20 @@ fn classify(url: &str) -> &'static str {
     let slash = |c: Option<char>| c == Some('/');
     let word_end = |c: Option<char>| !c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
     let news_end = |c: Option<char>| c.is_none() || c == Some('/');
-    let path_has = |names: &[&str], next_ok: &dyn Fn(Option<char>) -> bool| {
-        names.iter().any(|name| path.match_indices(&format!("/{name}")).any(|(at, m)| next_ok(path[at + m.len()..].chars().next())))
-    };
+    let path_has =
+        |names: &[&str], next_ok: &dyn Fn(Option<char>) -> bool| names.iter().any(|name| path.match_indices(&format!("/{name}")).any(|(at, m)| next_ok(path[at + m.len()..].chars().next())));
     let host_has = |parts: &[&str]| parts.iter().any(|part| host.contains(part));
 
     if path_has(&["issues", "pull", "pulls"], &slash) {
         return "repo_issue";
     }
-    if path_has(&["doc", "docs", "reference"], &word_end)
-        || ["developers.", "docs.", "learn.", "reference."].iter().any(|p| host.starts_with(p))
-        || host.ends_with(".github.io")
-    {
+    if path_has(&["doc", "docs", "reference"], &word_end) || ["developers.", "docs.", "learn.", "reference."].iter().any(|p| host.starts_with(p)) || host.ends_with(".github.io") {
         return "official_docs";
     }
     if path_has(&["documentation", "doc", "docs"], &slash) {
         return "vendor_docs";
     }
-    if path_has(&["news"], &news_end)
-        || host_has(&["reuters.com", "bloomberg.com", "techcrunch.com", "theverge.com", "arstechnica.com", "wired.com", "cnet.com", "zdnet.com"])
-    {
+    if path_has(&["news"], &news_end) || host_has(&["reuters.com", "bloomberg.com", "techcrunch.com", "theverge.com", "arstechnica.com", "wired.com", "cnet.com", "zdnet.com"]) {
         return "news";
     }
     if path_has(&["forum", "forums", "threads"], &slash) || host_has(&["stackoverflow.com", "serverfault.com", "superuser.com", "discourse.", "community."]) {

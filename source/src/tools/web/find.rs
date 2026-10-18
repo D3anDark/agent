@@ -112,10 +112,7 @@ fn snippet(text: &str, start: usize, end: usize) -> String {
 }
 
 fn context_ranges(text: &str, matches: &[Match]) -> Vec<(usize, usize)> {
-    let mut ranges: Vec<(usize, usize)> = matches
-        .iter()
-        .map(|m| (text.floor_char_boundary(m.start.saturating_sub(CONTEXT_BYTES)), text.ceil_char_boundary(m.end + CONTEXT_BYTES)))
-        .collect();
+    let mut ranges: Vec<(usize, usize)> = matches.iter().map(|m| (text.floor_char_boundary(m.start.saturating_sub(CONTEXT_BYTES)), text.ceil_char_boundary(m.end + CONTEXT_BYTES))).collect();
     ranges.sort();
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for (start, end) in ranges {

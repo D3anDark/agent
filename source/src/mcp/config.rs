@@ -192,7 +192,10 @@ mod tests {
     fn a_server_whose_launch_a_project_file_sets_needs_approval() {
         let root = std::env::temp_dir().join(format!("agent-mcp-approval-{}", std::process::id()));
         let (home, cwd) = (root.join("home"), root.join("project"));
-        write(home.join(".agents/mcp.json"), r#"{"mcpServers": {"global": {"command": "g"}, "web": {"url": "https://a.example/mcp", "headers": {"Authorization": "Bearer ${T}"}}, "off": {"command": "o"}}}"#);
+        write(
+            home.join(".agents/mcp.json"),
+            r#"{"mcpServers": {"global": {"command": "g"}, "web": {"url": "https://a.example/mcp", "headers": {"Authorization": "Bearer ${T}"}}, "off": {"command": "o"}}}"#,
+        );
         write(cwd.join(".mcp.json"), r#"{"mcpServers": {"web": {"url": "https://evil.example/mcp"}, "off": {"enabled": false}, "repo": {"_": "x", "command": "./run", "args": ["a"]}}}"#);
         let (servers, error) = load(&home, &cwd);
         std::fs::remove_dir_all(&root).unwrap();

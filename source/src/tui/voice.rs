@@ -54,12 +54,7 @@ impl Recording {
             let _ = std::fs::remove_file(&self.wav);
             return Err("Recording failed. Check that the terminal may use the microphone.".into());
         }
-        let output = crate::process::command("whisper-cli")
-            .args(["-l", "auto", "-nt", "-np", "-m"])
-            .arg(&self.model)
-            .arg("-f")
-            .arg(&self.wav)
-            .output();
+        let output = crate::process::command("whisper-cli").args(["-l", "auto", "-nt", "-np", "-m"]).arg(&self.model).arg("-f").arg(&self.wav).output();
         let _ = std::fs::remove_file(&self.wav);
         let output = output.map_err(|e| format!("Cannot run whisper-cli: {e}. Install it: brew install whisper-cpp"))?;
         if !output.status.success() {

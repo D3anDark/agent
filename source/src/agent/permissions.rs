@@ -112,8 +112,12 @@ pub fn request_for(tool: &str, input: &Value, edited_files: &[PathBuf]) -> Optio
             detail: input.to_string(),
             grant: format!("subagent:{input}"),
         }),
-        _ if tool.starts_with("mcp__") => Some(Request { kind: Kind::Mcp, question: "Would you like to call the following MCP tool?", detail: format!("{tool} {input}"), grant: format!("mcp:{tool}") }),
-        _ if tool.contains("__") => Some(Request { kind: Kind::Plugin, question: "Would you like to call the following plugin tool?", detail: format!("{tool} {input}"), grant: format!("plugin:{tool}") }),
+        _ if tool.starts_with("mcp__") => {
+            Some(Request { kind: Kind::Mcp, question: "Would you like to call the following MCP tool?", detail: format!("{tool} {input}"), grant: format!("mcp:{tool}") })
+        }
+        _ if tool.contains("__") => {
+            Some(Request { kind: Kind::Plugin, question: "Would you like to call the following plugin tool?", detail: format!("{tool} {input}"), grant: format!("plugin:{tool}") })
+        }
         _ => None,
     }
 }

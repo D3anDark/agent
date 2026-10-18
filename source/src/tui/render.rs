@@ -237,7 +237,13 @@ fn split_columns(line: &Line, from: usize, to: usize) -> [Line; 3] {
     let mut column = 0;
     for s in line {
         for ch in s.text.chars() {
-            let part = if column < from { 0 } else if column < to { 1 } else { 2 };
+            let part = if column < from {
+                0
+            } else if column < to {
+                1
+            } else {
+                2
+            };
             match parts[part].last_mut() {
                 Some(last) if last.style == s.style => last.text.push(ch),
                 _ => parts[part].push(span(ch.to_string(), s.style)),

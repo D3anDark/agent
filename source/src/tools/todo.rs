@@ -144,13 +144,7 @@ impl Todos {
             }
             "list" => {
                 let include_deleted = input["includeDeleted"].as_bool() == Some(true);
-                let lines: Vec<String> = self
-                    .tasks
-                    .iter()
-                    .filter(|t| include_deleted || t.status != Status::Deleted)
-                    .filter(|t| status.is_none_or(|s| t.status == s))
-                    .map(list_line)
-                    .collect();
+                let lines: Vec<String> = self.tasks.iter().filter(|t| include_deleted || t.status != Status::Deleted).filter(|t| status.is_none_or(|s| t.status == s)).map(list_line).collect();
                 Ok((if lines.is_empty() { "No tasks".into() } else { lines.join("\n") }, false))
             }
             "get" => {

@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::sync::mpsc::{self, Sender};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,10 +16,8 @@ use serde_json::{Value, json};
 const INPUT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The repo's `plugins/` directories, built in so `agent plugin install <name>` works offline.
-const BUNDLED: &[(&str, &[(&str, &str)])] = &[(
-    "usagefleet",
-    &[("plugin.json", include_str!("../../plugins/usagefleet/plugin.json")), ("index.ts", include_str!("../../plugins/usagefleet/index.ts"))],
-)];
+const BUNDLED: &[(&str, &[(&str, &str)])] =
+    &[("usagefleet", &[("plugin.json", include_str!("../../plugins/usagefleet/plugin.json")), ("index.ts", include_str!("../../plugins/usagefleet/index.ts"))])];
 
 /// The running plugins. Clones share them.
 #[derive(Clone)]
@@ -113,7 +111,16 @@ impl Plugins {
             let index = match state.plugins.iter().position(|plugin| plugin.name == name) {
                 Some(index) => index,
                 None => {
-                    state.plugins.push(Plugin { name: name.clone(), process: None, commands: Vec::new(), status: None, account_labels: HashMap::new(), error: None, tools: Vec::new(), settings: json!({}) });
+                    state.plugins.push(Plugin {
+                        name: name.clone(),
+                        process: None,
+                        commands: Vec::new(),
+                        status: None,
+                        account_labels: HashMap::new(),
+                        error: None,
+                        tools: Vec::new(),
+                        settings: json!({}),
+                    });
                     state.plugins.len() - 1
                 }
             };
@@ -161,11 +168,15 @@ impl Plugins {
     pub fn tools(&self) -> Vec<Value> {
         let state = self.state.lock().unwrap();
         let running = state.plugins.iter().filter(|plugin| plugin.process.is_some());
-        running.flat_map(|plugin| plugin.tools.iter().map(|tool| {
-            let mut tool = tool.clone();
-            tool["name"] = json!(format!("{}__{}", plugin.name, tool["name"].as_str().unwrap_or_default()));
-            tool
-        })).collect()
+        running
+            .flat_map(|plugin| {
+                plugin.tools.iter().map(|tool| {
+                    let mut tool = tool.clone();
+                    tool["name"] = json!(format!("{}__{}", plugin.name, tool["name"].as_str().unwrap_or_default()));
+                    tool
+                })
+            })
+            .collect()
     }
 
     /// Runs a plugin tool: None when `name` is no running plugin's tool, else the text and
@@ -488,12 +499,8 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
 
 fn installed(dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut names: Vec<String> = entries
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.file_name().to_string_lossy().to_string())
-        .filter(|name| check_name(name).is_ok())
-        .collect();
+    let mut names: Vec<String> =
+        entries.filter_map(|entry| entry.ok()).filter(|entry| entry.path().is_dir()).map(|entry| entry.file_name().to_string_lossy().to_string()).filter(|name| check_name(name).is_ok()).collect();
     names.sort();
     names
 }
@@ -571,7 +578,8 @@ fn message(plugin: &Plugin, id: Option<u64>, method: &str, params: &Value) -> St
 }
 
 fn view(name: String, manifest: Option<Manifest>, installed: bool, running: bool, error: Option<String>) -> View {
-    let manifest = manifest.unwrap_or(Manifest { version: String::new(), description: String::new(), author: None, command: Vec::new(), commands: Vec::new(), tools: Vec::new(), settings: Vec::new() });
+    let manifest =
+        manifest.unwrap_or(Manifest { version: String::new(), description: String::new(), author: None, command: Vec::new(), commands: Vec::new(), tools: Vec::new(), settings: Vec::new() });
     View { name, version: manifest.version, description: manifest.description, author: manifest.author, settings: manifest.settings, installed, running, error }
 }
 
@@ -615,13 +623,7 @@ done"#
 
     #[test]
     fn first_block_refuses_the_prompt_after_earlier_rewrites() {
-        let home = home_with(
-            "block",
-            &[
-                ("a-rewrite", &answering(r#"{"action":"transform","text":"rewritten"}"#)),
-                ("b-block", &answering(r#"{"action":"block","reason":"over budget"}"#)),
-            ],
-        );
+        let home = home_with("block", &[("a-rewrite", &answering(r#"{"action":"transform","text":"rewritten"}"#)), ("b-block", &answering(r#"{"action":"block","reason":"over budget"}"#))]);
         let plugins = Plugins::new(&home);
         plugins.sync(&[], &json!({}));
         assert_eq!(plugins.input("hi", &json!({})), Err("over budget".into()));

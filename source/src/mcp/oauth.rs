@@ -71,7 +71,10 @@ pub fn login(home: &Path, url: &str, abort: &AtomicBool) -> Result<(), String> {
     let state = random_hex(16);
     let scope = auth_param(&www_authenticate, "scope").or_else(|| resource.as_ref().map(scopes)).unwrap_or_default();
     let client_id = client["client_id"].as_str().unwrap_or_default();
-    open_browser(&authorize_url(&endpoints.authorization, &[("client_id", client_id), ("redirect_uri", &redirect), ("code_challenge", &challenge), ("state", &state), ("resource", url), ("scope", &scope)]));
+    open_browser(&authorize_url(
+        &endpoints.authorization,
+        &[("client_id", client_id), ("redirect_uri", &redirect), ("code_challenge", &challenge), ("state", &state), ("resource", url), ("scope", &scope)],
+    ));
     let code = callback_code(&listener, "/callback?", &state, abort)?;
 
     let mut fields = vec![("grant_type", "authorization_code"), ("code", &code), ("redirect_uri", &redirect), ("client_id", client_id), ("code_verifier", &verifier), ("resource", url)];

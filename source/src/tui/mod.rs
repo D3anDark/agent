@@ -1,19 +1,18 @@
 mod ask;
 mod btw;
 mod editor;
+mod history;
 mod image;
+mod login;
 mod markdown;
+mod notify;
 mod panel;
 mod render;
-mod login;
 mod selection;
-mod notify;
-mod history;
 mod voice;
 
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event as Input, KeyCode,
-    KeyEvent, KeyEventKind, KeyModifiers,
+    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event as Input, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -28,18 +27,18 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::agent::{self, Agent, Event, FileChange, RestoredFiles, RewindPoint, Session, SessionInfo, Spent};
-use crate::api::{AccountView, Client, Delta, Usage};
 use crate::agent::FollowUp;
 use crate::agent::modes::{self, CAVEMAN_LEVELS, PONYTAIL_LEVELS};
 use crate::agent::permissions::{Decision, Kind, MODES, Mode, Request};
-use crate::agent::skill_usage;
-use crate::agent::usage::{self, ModelTotal, tokens};
 use crate::agent::prompt::{Skill, Template};
+use crate::agent::skill_usage;
 use crate::agent::subagent::{Run, Runs};
+use crate::agent::usage::{self, ModelTotal, tokens};
+use crate::agent::{self, Agent, Event, FileChange, RestoredFiles, RewindPoint, Session, SessionInfo, Spent};
 use crate::api::accounts::Policy;
 use crate::api::models::{self, Model};
 use crate::api::oauth::Tokens;
+use crate::api::{AccountView, Client, Delta, Usage};
 use crate::settings::{self, PROVIDER_SORTS, PRUNE_SESSIONS, Settings, model_key};
 use crate::tools::bg::Terminals;
 use crate::tools::goal::{Goal, Status as GoalStatus};
@@ -76,13 +75,32 @@ enum Msg {
     Agent(Event),
     Done(Result<String, String>),
     /// The model the worker settled on, with the failed model lists and a swapped model.
-    ModelSettled { model: Result<String, String>, notices: Vec<String> },
-    Resumed { id: String, path: Option<String>, messages: Vec<Value>, spent: Spent, notice: Option<String> },
+    ModelSettled {
+        model: Result<String, String>,
+        notices: Vec<String>,
+    },
+    Resumed {
+        id: String,
+        path: Option<String>,
+        messages: Vec<Value>,
+        spent: Spent,
+        notice: Option<String>,
+    },
     BtwDelta(String),
     BtwDone(Result<(), String>),
-    Moved { id: String, path: Option<String>, cwd: PathBuf },
-    Cloned { id: String, path: Option<String> },
-    LoginFinished { provider: &'static str, result: Result<Tokens, String> },
+    Moved {
+        id: String,
+        path: Option<String>,
+        cwd: PathBuf,
+    },
+    Cloned {
+        id: String,
+        path: Option<String>,
+    },
+    LoginFinished {
+        provider: &'static str,
+        result: Result<Tokens, String>,
+    },
     /// Account usage arrived for /account.
     UsageFetched,
     /// A plugin set its status or exited: redraw the footer and /plugins.
@@ -92,61 +110,153 @@ enum Msg {
     Transcribed(Result<String, String>),
     RewindPoints(Vec<RewindPoint>),
     /// `entry` is where the rewound prompt sits on screen; None redraws from `messages`.
-    Rewound { messages: Vec<Value>, files: Option<RestoredFiles>, entry: Option<usize> },
+    Rewound {
+        messages: Vec<Value>,
+        files: Option<RestoredFiles>,
+        entry: Option<usize>,
+    },
     Changes(Result<Option<Vec<FileChange>>, String>),
-    Context { split: [u64; 5], session: Usage },
+    Context {
+        split: [u64; 5],
+        session: Usage,
+    },
 }
 
 /// The bottom panel that takes over the keys while it is open.
 enum Panel {
-    Resume { all: bool, index: usize, sessions: Vec<SessionInfo> },
+    Resume {
+        all: bool,
+        index: usize,
+        sessions: Vec<SessionInfo>,
+    },
     /// `row` indexes `SETTING_NAMES`. Typing filters the list by name.
-    Settings { row: usize, query: Editor },
+    Settings {
+        row: usize,
+        query: Editor,
+    },
     /// Searchable model list for the settings `row` it edits; Enter and Esc return to `back`.
-    Models { row: usize, query: Editor, index: usize, back: ModelsBack },
+    Models {
+        row: usize,
+        query: Editor,
+        index: usize,
+        back: ModelsBack,
+    },
     /// Context window overrides, tab 0 per provider, tab 1 per model filtered by `query`.
-    ContextWindows { tab: usize, query: Editor, index: usize },
+    ContextWindows {
+        tab: usize,
+        query: Editor,
+        index: usize,
+    },
     /// Manual provider order, tab 0 model providers, tab 1 web search providers.
-    ProviderOrder { tab: usize, index: usize },
+    ProviderOrder {
+        tab: usize,
+        index: usize,
+    },
     /// fx's "Permission needed" prompt; the agent thread waits on `reply`.
-    Permission { request: Request, reply: Sender<Decision>, index: usize },
+    Permission {
+        request: Request,
+        reply: Sender<Decision>,
+        index: usize,
+    },
     Ask(ask::AskPanel),
-    Todos { index: usize },
-    Plugins { index: usize },
+    Todos {
+        index: usize,
+    },
+    Plugins {
+        index: usize,
+    },
     /// Every skill, including the ones `Settings.disabled_skills` leaves out of the prompt.
-    Skills { index: usize },
+    Skills {
+        index: usize,
+    },
     /// `confirm`: space was pressed once on a project server whose entry the panel cuts.
-    Mcp { index: usize, confirm: bool },
+    Mcp {
+        index: usize,
+        confirm: bool,
+    },
     /// Token totals per `usage::SCOPES`, read when /usage opens; the last tab shows subscription limits.
-    Usage { tab: usize, totals: [Vec<ModelTotal>; 4] },
+    Usage {
+        tab: usize,
+        totals: [Vec<ModelTotal>; 4],
+    },
     /// The settings a plugin declares in plugin.json; `edit` holds a string being typed.
-    PluginSettings { plugin: String, index: usize, edit: Option<Editor> },
+    PluginSettings {
+        plugin: String,
+        index: usize,
+        edit: Option<Editor>,
+    },
     /// A panel a plugin opened with `ui.showPanel`; `data` is its params.
-    Plugin { plugin: String, data: Value, index: usize },
-    Terminals { index: usize },
+    Plugin {
+        plugin: String,
+        data: Value,
+        index: usize,
+    },
+    Terminals {
+        index: usize,
+    },
     /// One terminal from /ps, full screen and read-only. `loaded` is the (log size, width) `lines` were built for.
-    Terminal { index: usize, scroll: usize, loaded: Option<(u64, usize)>, lines: Vec<Line> },
-    Subagents { index: usize },
+    Terminal {
+        index: usize,
+        scroll: usize,
+        loaded: Option<(u64, usize)>,
+        lines: Vec<Line>,
+    },
+    Subagents {
+        index: usize,
+    },
     /// One run from /subagents, full screen and read-only. `loaded` is the (file size, width) `lines` were built for.
-    Subagent { index: usize, scroll: usize, loaded: Option<(u64, usize)>, lines: Vec<Line> },
+    Subagent {
+        index: usize,
+        scroll: usize,
+        loaded: Option<(u64, usize)>,
+        lines: Vec<Line>,
+    },
     /// Shows `App::btw`, which outlives the panel so a bare /btw reopens it.
     Btw,
-    Worktrees { remove: bool, index: usize, worktrees: Vec<Worktree>, current: PathBuf },
+    Worktrees {
+        remove: bool,
+        index: usize,
+        worktrees: Vec<Worktree>,
+        current: PathBuf,
+    },
     Login(login::Login),
     /// /account pins the chosen account, /logout removes it. Typing filters by name or provider.
-    Accounts { logout: bool, query: Editor, index: usize },
+    Accounts {
+        logout: bool,
+        query: Editor,
+        index: usize,
+    },
     /// /history: saved prompts, newest first, in the `history::SCOPES` tab `tab`. Typing filters, Enter puts the prompt in the editor.
-    History { entries: Vec<history::Entry>, tab: usize, query: Editor, index: usize },
+    History {
+        entries: Vec<history::Entry>,
+        tab: usize,
+        query: Editor,
+        index: usize,
+    },
     /// Double Esc while idle: the prompts from `agent::rewind_points` to go back to.
-    Rewind { index: usize, points: Vec<RewindPoint> },
+    Rewind {
+        index: usize,
+        points: Vec<RewindPoint>,
+    },
     /// /changes: files this session changed; Enter opens the diff.
-    Changes { files: Vec<FileChange>, index: usize },
+    Changes {
+        files: Vec<FileChange>,
+        index: usize,
+    },
     /// One /changes file's diff filling the screen; Esc goes back to the list.
-    Diff { files: Vec<FileChange>, index: usize, scroll: usize },
+    Diff {
+        files: Vec<FileChange>,
+        index: usize,
+        scroll: usize,
+    },
     /// What to do with the plan from plan_mode_complete, opened when its turn ends or by /plan.
-    Plan { index: usize },
+    Plan {
+        index: usize,
+    },
     /// "Start fresh and implement": the model and thinking level for the new session, then Start.
-    PlanFresh { index: usize },
+    PlanFresh {
+        index: usize,
+    },
 }
 
 /// The panel the model picker returns to: none for /model, the settings list, or the start-fresh panel.
@@ -161,7 +271,10 @@ enum Command {
     /// The prompt text and the image blocks pasted into it.
     Prompt(String, Vec<Value>),
     /// `!cmd` typed by the user; `keep` adds its output to the next prompt.
-    Bash { command: String, keep: bool },
+    Bash {
+        command: String,
+        keep: bool,
+    },
     Compact,
     /// New settings; the worker settles their model and answers with Msg::ModelSettled.
     Apply(Box<Settings>),
@@ -190,7 +303,10 @@ enum Command {
     FollowUps,
     RewindPoints,
     /// Drops the prompt at message `at` and everything after it; `entry` passes through to `Msg::Rewound`.
-    Rewind { at: usize, entry: Option<usize> },
+    Rewind {
+        at: usize,
+        entry: Option<usize>,
+    },
     Changes,
     Context,
 }
@@ -279,13 +395,7 @@ const MODEL_ROWS: [usize; 3] = [0, 8, 12];
 const CONTEXT_WINDOW_ROW: usize = 13;
 const PROVIDER_ORDER_ROW: usize = 25;
 const PROVIDER_LISTS: [&[&str]; 2] = [&models::PROVIDERS, &crate::tools::web::SEARCH_PROVIDERS];
-const CONTEXT_WINDOWS: [Option<u64>; 5] = [
-    None,
-    Some(200_000),
-    Some(272_000),
-    Some(400_000),
-    Some(1_000_000),
-];
+const CONTEXT_WINDOWS: [Option<u64>; 5] = [None, Some(200_000), Some(272_000), Some(400_000), Some(1_000_000)];
 const RESERVE_TOKENS: [u64; 5] = [16_384, 32_768, 65_536, 100_000, 150_000];
 const KEEP_RECENT_TOKENS: [u64; 4] = [10_000, 20_000, 40_000, 80_000];
 const CONDENSE_MIN_CHARS: [u64; 4] = [10_000, 20_000, 40_000, 80_000];
@@ -295,44 +405,56 @@ const SWITCH_AT_PERCENT: [u64; 6] = [70, 80, 90, 95, 100, 0];
 const ALT: &str = if cfg!(target_os = "macos") { "Option" } else { "Alt" };
 
 const HOTKEYS: [(&str, &[(&str, &str)]); 4] = [
-    ("Send", &[
-        ("Enter", "send, queues as steering while working"),
-        ("Shift+Enter", "new line (also Alt+Enter, Ctrl+J)"),
-        ("Tab", "complete a slash command or an @path"),
-        ("Up, Down", "history, menu selection"),
-        ("Ctrl+R", "search previous prompts"),
-        (if cfg!(target_os = "macos") { "Option+Up" } else { "Alt+Up" }, "edit queued messages"),
-    ]),
-    ("Edit", &[
-        (if cfg!(target_os = "macos") { "Cmd+Z, Ctrl+Z" } else { "Ctrl+Z" }, "undo the last edit"),
-        ("Ctrl+A E U K W", "line editing"),
-        ("Ctrl+C", "clear the editor"),
-    ]),
-    ("View", &[
-        ("Ctrl+O", "expand tool output and thinking"),
-        ("Shift+Tab", "cycle thinking level"),
-        ("PageUp, PageDown", "scroll the transcript"),
-        (if cfg!(target_os = "macos") { "Option+Down" } else { "Alt+Down" }, "jump to the latest message"),
-        ("Down", "open running subagents (empty editor)"),
-    ]),
-    ("Stop", &[
-        ("Esc", "abort the running turn"),
-        ("Esc Esc", "rewind to an earlier prompt and its files (idle)"),
-        ("Ctrl+C Ctrl+C", "quit"),
-        ("Ctrl+D", "quit on an empty editor"),
-    ]),
+    (
+        "Send",
+        &[
+            ("Enter", "send, queues as steering while working"),
+            ("Shift+Enter", "new line (also Alt+Enter, Ctrl+J)"),
+            ("Tab", "complete a slash command or an @path"),
+            ("Up, Down", "history, menu selection"),
+            ("Ctrl+R", "search previous prompts"),
+            (if cfg!(target_os = "macos") { "Option+Up" } else { "Alt+Up" }, "edit queued messages"),
+        ],
+    ),
+    ("Edit", &[(if cfg!(target_os = "macos") { "Cmd+Z, Ctrl+Z" } else { "Ctrl+Z" }, "undo the last edit"), ("Ctrl+A E U K W", "line editing"), ("Ctrl+C", "clear the editor")]),
+    (
+        "View",
+        &[
+            ("Ctrl+O", "expand tool output and thinking"),
+            ("Shift+Tab", "cycle thinking level"),
+            ("PageUp, PageDown", "scroll the transcript"),
+            (if cfg!(target_os = "macos") { "Option+Down" } else { "Alt+Down" }, "jump to the latest message"),
+            ("Down", "open running subagents (empty editor)"),
+        ],
+    ),
+    ("Stop", &[("Esc", "abort the running turn"), ("Esc Esc", "rewind to an earlier prompt and its files (idle)"), ("Ctrl+C Ctrl+C", "quit"), ("Ctrl+D", "quit on an empty editor")]),
 ];
 
 enum Item {
     Lines(Vec<Line>),
     /// fx's system line: `* source: text`, for agent, command and extension messages.
-    System { source: String, text: String },
+    System {
+        source: String,
+        text: String,
+    },
     Error(String),
     User(String),
-    Assistant { text: String, thinking: String },
-    Tool { id: String, name: String, input: Value, result: Option<(String, bool)> },
+    Assistant {
+        text: String,
+        thinking: String,
+    },
+    Tool {
+        id: String,
+        name: String,
+        input: Value,
+        result: Option<(String, bool)>,
+    },
     /// fx's line after each answer: elapsed time, the prompt's uncached input and output tokens, and the session's total time.
-    Done { took: Duration, usage: Usage, total: Duration },
+    Done {
+        took: Duration,
+        usage: Usage,
+        total: Duration,
+    },
 }
 
 /// A transcript item with its rendered lines cached for one (width, expanded) pair.
@@ -487,14 +609,7 @@ pub fn run(agent: Agent, setup: Setup, model_lists: JoinHandle<Vec<String>>) -> 
 
 fn enter(out: &mut Stdout) -> std::io::Result<()> {
     terminal::enable_raw_mode()?;
-    execute!(
-        out,
-        EnterAlternateScreen,
-        EnableBracketedPaste,
-        EnableMouseCapture,
-        EnableFocusChange,
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    )
+    execute!(out, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture, EnableFocusChange, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES))
 }
 
 pub(crate) fn leave(out: &mut Stdout) {
@@ -727,9 +842,7 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
         screen.draw(out, rows, Some(cursor)).map_err(|e| e.to_string())?;
         let wait = if app.edge_drag.is_some() {
             EDGE_SCROLL
-        } else if app.working.is_some() || app.hint.is_some() || app.transcribing.is_some()
-            || matches!(app.panel, Some(Panel::Subagents { .. })) && app.subagents.lock().unwrap().running() > 0
-        {
+        } else if app.working.is_some() || app.hint.is_some() || app.transcribing.is_some() || matches!(app.panel, Some(Panel::Subagents { .. })) && app.subagents.lock().unwrap().running() > 0 {
             Duration::from_millis(80)
         } else if app.recording.is_some() {
             Duration::from_secs(1)
@@ -1273,12 +1386,7 @@ impl App {
         let mut kept = Vec::new();
         for (index, block) in std::mem::take(&mut self.images).into_iter().enumerate() {
             if text.contains(&format!("[Image #{}]", index + 1)) {
-                self.push(Item::Tool {
-                    id: String::new(),
-                    name: "read_image".into(),
-                    input: serde_json::json!({"image": image_note(index + 1, &block)}),
-                    result: Some((String::new(), false)),
-                });
+                self.push(Item::Tool { id: String::new(), name: "read_image".into(), input: serde_json::json!({"image": image_note(index + 1, &block)}), result: Some((String::new(), false)) });
                 kept.push(block);
             }
         }
@@ -1477,8 +1585,32 @@ impl App {
         // Panels, settings and local info leave the turn alone, so they run mid-turn too.
         // Settings changes reach the agent through Command::Apply, which the worker takes after the turn.
         let local = [
-            "/subagents", "/ps", "/todos", "/help", "/hotkeys", "/session", "/copy", "/voice", "/settings", "/model", "/thinking", "/ponytail",
-            "/caveman", "/permissions", "/context-window", "/plugins", "/skills", "/skill-usage", "/rtk", "/login", "/logout", "/account", "/rename-title", "/export", "/quit", "/exit",
+            "/subagents",
+            "/ps",
+            "/todos",
+            "/help",
+            "/hotkeys",
+            "/session",
+            "/copy",
+            "/voice",
+            "/settings",
+            "/model",
+            "/thinking",
+            "/ponytail",
+            "/caveman",
+            "/permissions",
+            "/context-window",
+            "/plugins",
+            "/skills",
+            "/skill-usage",
+            "/rtk",
+            "/login",
+            "/logout",
+            "/account",
+            "/rename-title",
+            "/export",
+            "/quit",
+            "/exit",
         ]
         .iter()
         .any(|name| command_args(&text, name).is_some());
@@ -1486,9 +1618,7 @@ impl App {
         let plugin = self.plugins.commands().iter().any(|(name, _)| command_args(&text, &format!("/{name}")).is_some());
         if self.working.is_some() && !local && !plugin {
             // Steering reaches the model as plain text, so commands wait for the turn to end and run then.
-            let command = text.starts_with('!')
-                || text.trim().starts_with("/skill:")
-                || self.slash_commands.iter().any(|(name, _)| command_args(&text, &format!("/{name}")).is_some());
+            let command = text.starts_with('!') || text.trim().starts_with("/skill:") || self.slash_commands.iter().any(|(name, _)| command_args(&text, &format!("/{name}")).is_some());
             if command {
                 self.queued_commands.push(text);
             } else {
@@ -1617,9 +1747,7 @@ impl App {
                 }
             }
             "thinking" => self.push(Item::Error(format!("Unknown thinking level {args}. Levels: {}", THINKING_LEVELS.join(", ")))),
-            "context-window" if args.is_empty() => {
-                self.system("context-window", format!("{}. Set 100k to 1M or auto for this model, per provider in /settings", tokens(self.context_window())))
-            }
+            "context-window" if args.is_empty() => self.system("context-window", format!("{}. Set 100k to 1M or auto for this model, per provider in /settings", tokens(self.context_window()))),
             "context-window" if args == "auto" => {
                 let Some(key) = self.loaded_model_key() else { return };
                 self.update_settings(|s| {
@@ -1658,8 +1786,9 @@ impl App {
                 let sessions: Vec<SessionInfo> = Session::list(&self.sessions_dir).into_iter().filter(|s| s.id != self.session_id).collect();
                 self.panel = Some(Panel::Resume { all: false, index: 0, sessions });
             }
-            skill if let Some(skill) = skill.strip_prefix("skill:")
-                && self.enabled_skills().any(|s| s.name == skill) =>
+            skill
+                if let Some(skill) = skill.strip_prefix("skill:")
+                    && self.enabled_skills().any(|s| s.name == skill) =>
             {
                 match crate::agent::prompt::expand_skill(trimmed, &self.skills) {
                     Ok(expanded) => {
@@ -1676,16 +1805,14 @@ impl App {
             name if self.plugins.commands().iter().any(|(command, _)| command == name) => {
                 let _ = self.commands.send(Command::Plugin(name.to_string(), args.to_string()));
             }
-            name if let Some(template) = self.templates.iter().find(|t| t.name == name) => {
-                match crate::agent::prompt::expand_template(template, args) {
-                    Ok(expanded) => {
-                        self.push(Item::User(expanded.clone()));
-                        let images = self.take_images(&text);
-                        self.start(Command::Prompt(expanded, images));
-                    }
-                    Err(error) => self.push(Item::Error(error)),
+            name if let Some(template) = self.templates.iter().find(|t| t.name == name) => match crate::agent::prompt::expand_template(template, args) {
+                Ok(expanded) => {
+                    self.push(Item::User(expanded.clone()));
+                    let images = self.take_images(&text);
+                    self.start(Command::Prompt(expanded, images));
                 }
-            }
+                Err(error) => self.push(Item::Error(error)),
+            },
             _ => {
                 self.push(Item::User(text.clone()));
                 let images = self.take_images(&text);
@@ -2067,7 +2194,15 @@ impl App {
                                 s.default_accounts.insert(provider, name);
                             });
                             let _ = self.commands.send(Command::AccountPicked);
-                            self.system("account", format!("Default {} account: {}{}.", account.provider, account.name, if self.settings.switch_at_percent == 0 { String::new() } else { format!(", until it reaches {}%", self.settings.switch_at_percent) }));
+                            self.system(
+                                "account",
+                                format!(
+                                    "Default {} account: {}{}.",
+                                    account.provider,
+                                    account.name,
+                                    if self.settings.switch_at_percent == 0 { String::new() } else { format!(", until it reaches {}%", self.settings.switch_at_percent) }
+                                ),
+                            );
                             return;
                         }
                         match self.client.remove(&account.provider, &account.name) {
@@ -2082,7 +2217,24 @@ impl App {
                     }
                 }
             }
-            Some(Panel::Permission { .. } | Panel::Ask(_) | Panel::Btw | Panel::Login(_) | Panel::Models { .. } | Panel::ContextWindows { .. } | Panel::ProviderOrder { .. } | Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Diff { .. } | Panel::Plan { .. } | Panel::PlanFresh { .. } | Panel::PluginSettings { .. } | Panel::Plugin { .. } | Panel::Usage { .. }) | None => {}
+            Some(
+                Panel::Permission { .. }
+                | Panel::Ask(_)
+                | Panel::Btw
+                | Panel::Login(_)
+                | Panel::Models { .. }
+                | Panel::ContextWindows { .. }
+                | Panel::ProviderOrder { .. }
+                | Panel::Subagent { .. }
+                | Panel::Terminal { .. }
+                | Panel::Diff { .. }
+                | Panel::Plan { .. }
+                | Panel::PlanFresh { .. }
+                | Panel::PluginSettings { .. }
+                | Panel::Plugin { .. }
+                | Panel::Usage { .. },
+            )
+            | None => {}
         }
     }
 
@@ -2669,16 +2821,11 @@ impl App {
                 view.render(width, PANEL_ROWS)
             }
             Panel::Ask(ask) => ask.render(width),
-            Panel::Subagents { index } => {
-                subagents_panel(&self.subagents.lock().unwrap().list, *index, width)
-            }
+            Panel::Subagents { index } => subagents_panel(&self.subagents.lock().unwrap().list, *index, width),
             Panel::Terminals { index } => {
                 let terminals = self.terminals.lock().unwrap();
-                let rows: Vec<panel::Row> = terminals
-                    .list
-                    .iter()
-                    .map(|t| panel::Row { left: format!("{} {}", t.id, t.title), right: vec![span(format!("{} {}", t.status().as_str(), t.elapsed()), MUTED)] })
-                    .collect();
+                let rows: Vec<panel::Row> =
+                    terminals.list.iter().map(|t| panel::Row { left: format!("{} {}", t.id, t.title), right: vec![span(format!("{} {}", t.status().as_str(), t.elapsed()), MUTED)] }).collect();
                 let view = panel::Panel {
                     title: format!("Background terminals {}", rows.len()),
                     tabs: &[],
@@ -2693,10 +2840,7 @@ impl App {
             }
             Panel::Todos { index } => {
                 let todos = self.todos.lock().unwrap();
-                let rows: Vec<panel::Row> = todos
-                    .visible()
-                    .map(|t| panel::Row { left: format!("#{} {}", t.id, t.subject), right: vec![span(t.status.as_str(), todo_style(t.status))] })
-                    .collect();
+                let rows: Vec<panel::Row> = todos.visible().map(|t| panel::Row { left: format!("#{} {}", t.id, t.subject), right: vec![span(t.status.as_str(), todo_style(t.status))] }).collect();
                 let view = panel::Panel {
                     title: format!("Todos {}", rows.len()),
                     tabs: &[],
@@ -2869,16 +3013,8 @@ impl App {
                     .map(|row| panel::Row { left: row["left"].as_str().unwrap_or_default().to_string(), right: vec![span(row["right"].as_str().unwrap_or_default().to_string(), PLAIN)] })
                     .collect();
                 let hint = format!("↑↓ navigate     {}     esc close", data["hint"].as_str().unwrap_or("enter select"));
-                let view = panel::Panel {
-                    title: data["title"].as_str().unwrap_or(plugin).to_string(),
-                    tabs: &[],
-                    tab: 0,
-                    search: None,
-                    rows: &rows,
-                    selected: *index,
-                    empty: "Nothing here.",
-                    hint: &hint,
-                };
+                let view =
+                    panel::Panel { title: data["title"].as_str().unwrap_or(plugin).to_string(), tabs: &[], tab: 0, search: None, rows: &rows, selected: *index, empty: "Nothing here.", hint: &hint };
                 view.render(width, PANEL_ROWS)
             }
             Panel::Btw => self.btw.as_ref().expect("the btw panel opens with a thread").render(width),
@@ -2907,10 +3043,7 @@ impl App {
             }
             Panel::Login(login) => login.render(width, PANEL_ROWS),
             Panel::Rewind { index, points } => {
-                let rows: Vec<panel::Row> = points
-                    .iter()
-                    .map(|point| panel::Row { left: point.text.lines().next().unwrap_or_default().chars().take(60).collect(), right: Vec::new() })
-                    .collect();
+                let rows: Vec<panel::Row> = points.iter().map(|point| panel::Row { left: point.text.lines().next().unwrap_or_default().chars().take(60).collect(), right: Vec::new() }).collect();
                 let view = panel::Panel {
                     title: "Rewind".into(),
                     tabs: &[],
@@ -2925,16 +3058,8 @@ impl App {
             }
             Panel::Changes { files, index } => {
                 let rows: Vec<panel::Row> = files.iter().map(|file| panel::Row { left: file.path.clone(), right: diff_stat(&file.diff) }).collect();
-                let view = panel::Panel {
-                    title: "Changes".into(),
-                    tabs: &[],
-                    tab: 0,
-                    search: None,
-                    rows: &rows,
-                    selected: *index,
-                    empty: "",
-                    hint: "↑↓ navigate     enter show diff     esc close",
-                };
+                let view =
+                    panel::Panel { title: "Changes".into(), tabs: &[], tab: 0, search: None, rows: &rows, selected: *index, empty: "", hint: "↑↓ navigate     enter show diff     esc close" };
                 view.render(width, PANEL_ROWS)
             }
             Panel::History { entries, tab, query, index } => {
@@ -3597,12 +3722,7 @@ fn account_rows(accounts: &[AccountView], labels: &[(String, HashMap<String, Str
             (false, _) => String::new(),
         };
         let mark = if a.current { "✓ " } else { "  " };
-        let mut cells = vec![
-            a.provider.clone(),
-            percent(a.usage.as_ref().map(|u| u.five_hour)),
-            percent(a.usage.as_ref().map(|u| u.seven_day)),
-            if a.pinned { "pinned" } else { "" }.to_string(),
-        ];
+        let mut cells = vec![a.provider.clone(), percent(a.usage.as_ref().map(|u| u.five_hour)), percent(a.usage.as_ref().map(|u| u.seven_day)), if a.pinned { "pinned" } else { "" }.to_string()];
         for (_, by_account) in labels {
             cells.push(a.account_id.as_ref().and_then(|id| by_account.get(id)).cloned().unwrap_or_default());
         }
@@ -4168,9 +4288,7 @@ fn history_items(messages: &[Value]) -> Vec<Item> {
         for block in message["content"].as_array().into_iter().flatten() {
             match (message["role"].as_str(), block["type"].as_str()) {
                 (Some("user"), Some("text")) => items.push(Item::User(block["text"].as_str().unwrap_or_default().to_string())),
-                (Some("assistant"), Some("text")) => {
-                    items.push(Item::Assistant { text: block["text"].as_str().unwrap_or_default().to_string(), thinking: String::new() })
-                }
+                (Some("assistant"), Some("text")) => items.push(Item::Assistant { text: block["text"].as_str().unwrap_or_default().to_string(), thinking: String::new() }),
                 (Some("assistant"), Some("tool_use")) => items.push(Item::Tool {
                     id: block["id"].as_str().unwrap_or_default().to_string(),
                     name: block["name"].as_str().unwrap_or_default().to_string(),
@@ -4197,9 +4315,7 @@ fn history_items(messages: &[Value]) -> Vec<Item> {
 }
 
 fn git_info(cwd: &Path) -> Git {
-    let run = |args: &[&str]| {
-        crate::process::command("git").args(args).current_dir(cwd).stderr(std::process::Stdio::null()).output().ok().filter(|o| o.status.success())
-    };
+    let run = |args: &[&str]| crate::process::command("git").args(args).current_dir(cwd).stderr(std::process::Stdio::null()).output().ok().filter(|o| o.status.success());
     let branch = run(&["branch", "--show-current"]).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).map(|b| if b.is_empty() { "detached".to_string() } else { b });
     let changed = run(&["status", "--porcelain", "--untracked-files=all"]).map_or(0, |o| o.stdout.split(|b| *b == b'\n').filter(|l| !l.is_empty()).count());
     let (worktrees, current) = worktree::list(cwd).unwrap_or_default();
@@ -4287,13 +4403,7 @@ fn subagents_panel(runs: &[Arc<Run>], selected: usize, columns: usize) -> Vec<Li
         };
         let label_style = if index == selected { BRIGHT.bold() } else { label_style };
         let tokens = if state.usage == Usage::default() { String::new() } else { usage::brief(state.usage) };
-        vec![
-            icon,
-            span(format!(" {} ", pad(&run.id, id_width)), DIM),
-            span(pad(&run.label, label_width), label_style),
-            span(format!("  {elapsed:<8}"), time_style),
-            span(tokens, DIM),
-        ]
+        vec![icon, span(format!(" {} ", pad(&run.id, id_width)), DIM), span(pad(&run.label, label_width), label_style), span(format!("  {elapsed:<8}"), time_style), span(tokens, DIM)]
     })
 }
 
@@ -4329,12 +4439,7 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
 fn open_in_browser(url: &str) -> Result<(), String> {
     if !cfg!(target_os = "macos") {
         // Not waited for: xdg-open runs a browser without a desktop handler in the foreground.
-        crate::process::command("xdg-open")
-            .arg(url)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Cannot run xdg-open: {e}"))?;
+        crate::process::command("xdg-open").arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map_err(|e| format!("Cannot run xdg-open: {e}"))?;
         return Ok(());
     }
     // output() and not status(): open's stderr would draw over the alternate screen.
@@ -4476,11 +4581,7 @@ fn star(distance: usize) -> Span {
 
 fn recording_line(elapsed: Duration) -> Line {
     let seconds = elapsed.as_secs();
-    vec![
-        span(" ●", ERROR),
-        span(format!(" {}:{:02}", seconds / 60, seconds % 60), BRIGHT),
-        span("  Enter to transcribe · Esc to cancel", DIM),
-    ]
+    vec![span(" ●", ERROR), span(format!(" {}:{:02}", seconds / 60, seconds % 60), BRIGHT), span("  Enter to transcribe · Esc to cancel", DIM)]
 }
 
 #[cfg(test)]
@@ -4674,21 +4775,10 @@ mod tests {
 
     #[test]
     fn model_search_matches_provider_account_or_id_ignoring_case() {
-        let model = |provider: &str, id: &str, accounts: &[&str]| Model {
-            provider: provider.into(),
-            id: id.into(),
-            accounts: accounts.iter().map(|a| a.to_string()).collect(),
-            ..Model::default()
-        };
-        let catalog = [
-            model("anthropic", "claude-haiku-5-5", &["work"]),
-            model("openai-codex", "gpt-6-luna", &["pro", "plus"]),
-            model("openai-codex", "gpt-6-sol", &["pro"]),
-        ];
+        let model = |provider: &str, id: &str, accounts: &[&str]| Model { provider: provider.into(), id: id.into(), accounts: accounts.iter().map(|a| a.to_string()).collect(), ..Model::default() };
+        let catalog = [model("anthropic", "claude-haiku-5-5", &["work"]), model("openai-codex", "gpt-6-luna", &["pro", "plus"]), model("openai-codex", "gpt-6-sol", &["pro"])];
         let mut settings = settings::load(Path::new("/nonexistent")).unwrap();
-        let ids = |settings: &Settings, row, query| {
-            matching_models(&catalog, settings, row, query).iter().map(|m| m.map_or("auto", |m| m.id.as_str()).to_string()).collect::<Vec<_>>()
-        };
+        let ids = |settings: &Settings, row, query| matching_models(&catalog, settings, row, query).iter().map(|m| m.map_or("auto", |m| m.id.as_str()).to_string()).collect::<Vec<_>>();
         assert_eq!(ids(&settings, 0, "HAIKU"), ["claude-haiku-5-5"]);
         assert_eq!(ids(&settings, 0, "codex"), ["gpt-6-luna", "gpt-6-sol"]);
         assert_eq!(ids(&settings, 0, "plus"), ["gpt-6-luna"]);
@@ -4763,10 +4853,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("agent-subagent-lines-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let session = dir.join("abc123.jsonl");
-        let messages = [
-            json!({"role": "user", "content": [{"type": "text", "text": "review auth"}]}),
-            json!({"role": "assistant", "content": [{"type": "text", "text": "Token stays cached."}]}),
-        ];
+        let messages = [json!({"role": "user", "content": [{"type": "text", "text": "review auth"}]}), json!({"role": "assistant", "content": [{"type": "text", "text": "Token stays cached."}]})];
         let entries: Vec<String> = messages.iter().map(|message| json!({"type": "message", "message": message}).to_string()).collect();
         std::fs::write(&session, entries.join("\n")).unwrap();
         let lines = subagent_lines(&session, 60);
@@ -4817,11 +4904,7 @@ mod tests {
             current: name == "claudescom",
             pinned: name == "rokartur",
         };
-        let accounts = [
-            account("claudescom", true, Some("uuid-1"), Some((21.0, 73.0))),
-            account("rokartur", true, Some("uuid-2"), None),
-            account("claudescom-api", false, None, None),
-        ];
+        let accounts = [account("claudescom", true, Some("uuid-1"), Some((21.0, 73.0))), account("rokartur", true, Some("uuid-2"), None), account("claudescom-api", false, None, None)];
         let labels = [("usagefleet".to_string(), HashMap::from([("uuid-1".to_string(), "uf_tVdC…".to_string())]))];
         let (rows, account_rows) = account_rows(&accounts, &labels);
         let table: Vec<(&str, String)> = rows.iter().map(|row| (row.left.as_str(), text(&row.right))).collect();

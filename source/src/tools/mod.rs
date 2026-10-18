@@ -20,9 +20,9 @@ pub mod rtk;
 pub mod todo;
 pub mod web;
 
+use crate::process;
 use hashline::{Anchors, resolve, str_arg};
 use rtk::Rtk;
-use crate::process;
 
 pub const MAX_LINES: usize = 2000;
 pub const MAX_BYTES: usize = 50 * 1024;
@@ -31,18 +31,13 @@ const MAX_COLUMNS: usize = 500;
 const SCHEMAS: &str = include_str!("tools.json");
 
 /// pi's tool-loader groups: their tools stay out of requests until load_tools asks for the group.
-pub const GROUPS: [(&str, &[&str]); 3] = [
-    ("agents", &["subagent", "bg_wait"]),
-    ("terminals", &["bg_start", "bg_status", "bg_list", "bg_kill"]),
-    ("web", &["web_search", "source_check", "fetch_content", "get_search_content"]),
-];
+pub const GROUPS: [(&str, &[&str]); 3] =
+    [("agents", &["subagent", "bg_wait"]), ("terminals", &["bg_start", "bg_status", "bg_list", "bg_kill"]), ("web", &["web_search", "source_check", "fetch_content", "get_search_content"])];
 
 /// The base tools plus those of the `loaded` groups, in tools.json order; `subagent` carries the swarm prompt like jcode's `swarm`.
 pub fn schemas(loaded: &[String], swarm_prompt: &str, context_tree_query: bool) -> Value {
     let all: Vec<Value> = serde_json::from_str(SCHEMAS).expect("tools.json is valid JSON");
-    let hidden = |name: &str| {
-        (name == "context_tree_query" && !context_tree_query) || GROUPS.iter().any(|(group, names)| names.contains(&name) && !loaded.iter().any(|l| l == group))
-    };
+    let hidden = |name: &str| (name == "context_tree_query" && !context_tree_query) || GROUPS.iter().any(|(group, names)| names.contains(&name) && !loaded.iter().any(|l| l == group));
     let mut tools: Vec<Value> = all.into_iter().filter(|tool| !hidden(tool["name"].as_str().expect("tools.json names every tool"))).collect();
     if let Some(tool) = tools.iter_mut().find(|tool| tool["name"] == "subagent") {
         let base = tool["description"].as_str().expect("tools.json describes subagent");
@@ -83,13 +78,7 @@ fn bash(input: &Value, cwd: &Path, rtk: &Rtk, abort: &AtomicBool) -> Result<Stri
     let timeout = input["timeout"].as_f64().filter(|s| *s > 0.0);
     // A timeout too large for an Instant is no timeout.
     let deadline = timeout.and_then(|secs| Instant::now().checked_add(Duration::try_from_secs_f64(secs).ok()?));
-    let child = process::command("bash")
-        .arg("-c")
-        .arg(format!("exec 2>&1; {command}"))
-        .current_dir(cwd)
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Cannot start bash: {e}"))?;
+    let child = process::command("bash").arg("-c").arg(format!("exec 2>&1; {command}")).current_dir(cwd).stdout(Stdio::piped()).spawn().map_err(|e| format!("Cannot start bash: {e}"))?;
     let mut capture = Capture::default();
     let (status, killed) = wait_streaming(child, abort, deadline, |chunk| capture.push(chunk))?;
     let output = truncate_tail(rtk.strip(String::from_utf8_lossy(&capture.text).into_owned()), rtk.max_bytes, capture.spilled());
@@ -367,13 +356,7 @@ fn fd(input: &Value, cwd: &Path, abort: &AtomicBool) -> Result<String, String> {
 const RG_OK: &[i32] = &[0, 1, 2];
 
 fn search(program: &str, args: &[String], cwd: &Path, abort: &AtomicBool, ok_codes: &[i32]) -> Result<String, String> {
-    let mut child = process::command(program)
-        .args(args)
-        .current_dir(cwd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Cannot run {program}: {e}"))?;
+    let mut child = process::command(program).args(args).current_dir(cwd).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("Cannot run {program}: {e}"))?;
     let mut stderr = child.stderr.take().expect("stderr is piped");
     let stderr = std::thread::spawn(move || {
         let mut text = Vec::new();
@@ -723,10 +706,7 @@ mod tests {
     #[test]
     fn search_arguments_match_pi_file_search() {
         let rg = rg_args(&json!({"pattern": "-x", "path": "@src", "context": 50, "limit": 5000, "case_sensitive": false, "glob": "*.rs"})).unwrap();
-        assert_eq!(
-            rg.join(" "),
-            "--json --ignore-case --context 20 --glob *.rs --max-count 1000 -- -x src"
-        );
+        assert_eq!(rg.join(" "), "--json --ignore-case --context 20 --glob *.rs --max-count 1000 -- -x src");
         let fd = fd_args(&json!({"type": "file", "extension": ".rs", "max_depth": 0, "limit": 0})).unwrap();
         assert_eq!(fd.join(" "), "--color=never --type f --extension rs --max-depth 1 --max-results 1 -- ");
     }

@@ -36,14 +36,34 @@ impl Method {
 
 /// The /login panel: pick account or API key, search and pick a method, sign in or paste a key, then name the account.
 pub enum Login {
-    Kind { index: usize },
-    Choose { api: bool, query: Editor, index: usize },
+    Kind {
+        index: usize,
+    },
+    Choose {
+        api: bool,
+        query: Editor,
+        index: usize,
+    },
     /// Anthropic shows `code#state` after sign-in; the user pastes it here.
-    ClaudeCode { pending: Pending, input: Editor },
-    ApiKey { provider: &'static str, title: &'static str, input: Editor },
+    ClaudeCode {
+        pending: Pending,
+        input: Editor,
+    },
+    ApiKey {
+        provider: &'static str,
+        title: &'static str,
+        input: Editor,
+    },
     /// A token exchange or the Codex browser callback is running; Esc sets `cancel`. `url` is the Codex sign-in page.
-    Waiting { cancel: Arc<AtomicBool>, url: Option<String> },
-    Name { provider: &'static str, secret: Secret, input: Editor },
+    Waiting {
+        cancel: Arc<AtomicBool>,
+        url: Option<String>,
+    },
+    Name {
+        provider: &'static str,
+        secret: Secret,
+        input: Editor,
+    },
 }
 
 type Exchange = Box<dyn FnOnce(&AtomicBool) -> Result<Tokens, String> + Send>;
@@ -55,7 +75,11 @@ pub enum Action {
     /// Copies the sign-in URL to the clipboard.
     Copy(String),
     /// Runs `exchange` off the UI thread with `cancel`, then hands its result to `finished`.
-    Exchange { provider: &'static str, cancel: Arc<AtomicBool>, exchange: Exchange },
+    Exchange {
+        provider: &'static str,
+        cancel: Arc<AtomicBool>,
+        exchange: Exchange,
+    },
     Save(Account),
 }
 
@@ -180,9 +204,15 @@ impl Login {
                 let rows = methods(*api, query).iter().map(|method| panel::Row { left: method.label().to_string(), right: Vec::new() }).collect();
                 (KINDS[*api as usize].into(), rows, "type to search     ↑↓ navigate     enter choose     esc back")
             }
-            Login::ClaudeCode { input, .. } => ("Claude login".into(), vec![field("Code", input.field(Some('•')))], "paste the code#state shown after sign-in     enter continue     ctrl+y copy link     esc cancel"),
+            Login::ClaudeCode { input, .. } => {
+                ("Claude login".into(), vec![field("Code", input.field(Some('•')))], "paste the code#state shown after sign-in     enter continue     ctrl+y copy link     esc cancel")
+            }
             Login::ApiKey { title, input, .. } => ((*title).into(), vec![field("Key", input.field(Some('•')))], "paste the key     enter continue     esc cancel"),
-            Login::Waiting { url, .. } => ("Login".into(), vec![panel::Row { left: "Waiting for the sign-in to finish...".into(), right: Vec::new() }], if url.is_some() { "ctrl+y copy link     esc cancel" } else { "esc cancel" }),
+            Login::Waiting { url, .. } => (
+                "Login".into(),
+                vec![panel::Row { left: "Waiting for the sign-in to finish...".into(), right: Vec::new() }],
+                if url.is_some() { "ctrl+y copy link     esc cancel" } else { "esc cancel" },
+            ),
             Login::Name { input, .. } => ("Account name".into(), vec![field("Name", input.field(None))], "enter save     esc cancel"),
         };
         let selected = if let Login::Kind { index } | Login::Choose { index, .. } = self { *index } else { 0 };

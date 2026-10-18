@@ -100,14 +100,7 @@ impl Terminals {
         let title = if title.is_empty() { "terminal".to_string() } else { title };
         let (stdout_file, stdout) = super::private_file("bg", "stdout")?;
         let (stderr_file, stderr) = super::private_file("bg", "stderr")?;
-        let pid = crate::process::command("sh")
-            .args(["-c", command])
-            .current_dir(&cwd)
-            .stdout(stdout_file)
-            .stderr(stderr_file)
-            .spawn()
-            .map_err(|e| format!("Cannot start sh: {e}"))?
-            .id();
+        let pid = crate::process::command("sh").args(["-c", command]).current_dir(&cwd).stdout(stdout_file).stderr(stderr_file).spawn().map_err(|e| format!("Cannot start sh: {e}"))?.id();
         self.counter += 1;
         let id = format!("bt-{}", self.counter);
         let terminal = Arc::new(Terminal { id, title, cwd, pid, started: Instant::now(), stdout, stderr, state: Mutex::default() });

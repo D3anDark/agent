@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{File, OpenOptions, TryLockError};
-use std::os::unix::fs::OpenOptionsExt;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -17,14 +17,16 @@ pub mod lsp;
 pub mod modes;
 pub mod permissions;
 pub mod prompt;
-pub mod snapshots;
 pub mod skill_usage;
+pub mod snapshots;
 pub mod subagent;
 pub mod usage;
 
 use crate::api::models::Model;
 use crate::api::{self, Client, Delta, Usage};
+use crate::process::now_ms;
 use crate::settings::Settings;
+use crate::tools;
 use crate::tools::ask::{self, Answer, Question};
 use crate::tools::bg::{self, Terminals};
 use crate::tools::goal::{AfterTurn, Goal, Status as GoalStatus};
@@ -33,15 +35,13 @@ use crate::tools::hashline::Anchors;
 use crate::tools::plan::{self, Plan};
 use crate::tools::rtk::Rtk;
 use crate::tools::todo::Todos;
-use crate::process::now_ms;
-use crate::tools;
 use condense::Condensed;
 use permissions::{Decision, Grants, Mode, Request};
 use snapshots::Snapshots;
 use subagent::{Launch, Runs};
 
-
-const SUMMARY_SYSTEM: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
+const SUMMARY_SYSTEM: &str =
+    "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
 
@@ -81,28 +81,57 @@ Keep each section concise. Preserve exact file paths, function names, and error 
 const SUMMARY_PREFIX: &str = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 const SUMMARY_SUFFIX: &str = "\n</summary>";
 const TOOL_RESULT_SUMMARY_CHARS: usize = 2000;
-const NAMING_SYSTEM: &str = "Name a coding session from the user's first message. Reply with the name only: 3 to 6 words naming the concrete task, in the language of the message, one line, no quotes, no markdown.";
+const NAMING_SYSTEM: &str =
+    "Name a coding session from the user's first message. Reply with the name only: 3 to 6 words naming the concrete task, in the language of the message, one line, no quotes, no markdown.";
 /// What the agent reports while it works; the TUI renders these, print mode writes them to stdout.
 pub enum Event {
     Text(String),
     Thinking(String),
     Notice(String),
-    ToolStart { id: String, name: String, input: Value },
-    ToolEnd { id: String, output: String, is_error: bool },
+    ToolStart {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    ToolEnd {
+        id: String,
+        output: String,
+        is_error: bool,
+    },
     Steered(String),
     /// Finished background work handed to the model.
-    FollowUp { source: String, text: String },
-    TurnEnd { usage: Usage },
-    Compacted { summary: String },
-    SessionStarted { id: String, path: Option<String> },
+    FollowUp {
+        source: String,
+        text: String,
+    },
+    TurnEnd {
+        usage: Usage,
+    },
+    Compacted {
+        summary: String,
+    },
+    SessionStarted {
+        id: String,
+        path: Option<String>,
+    },
     /// The session's `project｜topic` name, saved to `session_info`.
     Titled(String),
     /// Ask mode: the agent waits for one Decision on `reply`.
-    Permission { request: Request, reply: Sender<Decision> },
+    Permission {
+        request: Request,
+        reply: Sender<Decision>,
+    },
     /// Auto mode: what the reviewer decided.
-    Reviewed { allowed: bool, detail: String, reason: String },
+    Reviewed {
+        allowed: bool,
+        detail: String,
+        reason: String,
+    },
     /// ask_user_question: the agent waits for one answer slot per question; all None means declined.
-    Ask { questions: Vec<Question>, reply: Sender<Vec<Option<Answer>>> },
+    Ask {
+        questions: Vec<Question>,
+        reply: Sender<Vec<Option<Answer>>>,
+    },
 }
 
 /// Work that finished in the background; it reaches the model after the current tool batch or turn, or starts a turn when idle.
@@ -862,7 +891,6 @@ impl Agent {
         Ok(())
     }
 
-
     /// Files this session changed, with diffs; None when the work tree is not snapshotted.
     pub fn changes(&self) -> Result<Option<Vec<FileChange>>, String> {
         let Some(snapshots) = &self.snapshots else { return Ok(None) };
@@ -1338,11 +1366,7 @@ fn resolve_id(dir: &Path, prefix: &str) -> Result<String, String> {
         return Ok(prefix.to_string());
     }
     let entries = std::fs::read_dir(dir).map_err(|e| format!("Cannot read {}: {e}", dir.display()))?;
-    let ids: Vec<String> = entries
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".jsonl")).map(String::from))
-        .filter(|id| id.starts_with(prefix))
-        .collect();
+    let ids: Vec<String> = entries.filter_map(|e| e.ok()).filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".jsonl")).map(String::from)).filter(|id| id.starts_with(prefix)).collect();
     match ids.as_slice() {
         [id] => Ok(id.clone()),
         [] => Err(format!("No saved session {prefix}.")),
@@ -1530,7 +1554,6 @@ fn session_title(cwd: &Path, topic: &str) -> String {
     let project = cwd.file_name().unwrap_or_default().to_string_lossy();
     format!("{project}｜{topic}").chars().take(80).collect()
 }
-
 
 #[cfg(test)]
 mod tests {

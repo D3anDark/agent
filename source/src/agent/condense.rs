@@ -162,11 +162,7 @@ pub fn next_ref(condensed: &[Condensed]) -> usize {
 
 fn summary_block(batch: &Condensed) -> String {
     let refs: Vec<String> = batch.refs.iter().map(|(reference, _)| format!("`{reference}`")).collect();
-    format!(
-        "Pruner summary:\n\n{}\n\n---\n**Summarized tool refs**: {}\nUse `context_tree_query` with these refs to retrieve the original full outputs.",
-        batch.summary,
-        refs.join(", ")
-    )
+    format!("Pruner summary:\n\n{}\n\n---\n**Summarized tool refs**: {}\nUse `context_tree_query` with these refs to retrieve the original full outputs.", batch.summary, refs.join(", "))
 }
 
 /// context_tree_query: the original outputs for short refs or raw tool_use ids.
@@ -227,11 +223,8 @@ mod tests {
     fn selection_skips_small_batches_and_protected_calls() {
         assert!(select(vec![call("a", "bash", json!({}), &"x".repeat(999))], 1000, MIN_CONTEXT_TOKENS).is_empty());
         let skill = json!({"path": "/u/.pi/agent/skills/tdd/SKILL.md"});
-        let picked = select(
-            vec![call("a", "read", skill, &"x".repeat(5000)), call("b", "todo", json!({}), &"x".repeat(5000)), call("c", "bash", json!({}), &"x".repeat(1000))],
-            1000,
-            MIN_CONTEXT_TOKENS,
-        );
+        let picked =
+            select(vec![call("a", "read", skill, &"x".repeat(5000)), call("b", "todo", json!({}), &"x".repeat(5000)), call("c", "bash", json!({}), &"x".repeat(1000))], 1000, MIN_CONTEXT_TOKENS);
         assert_eq!(picked.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["c"]);
     }
 

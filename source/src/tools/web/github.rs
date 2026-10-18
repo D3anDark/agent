@@ -5,10 +5,7 @@ use std::time::{Duration, Instant};
 
 const CLONE_REUSE: Duration = Duration::from_secs(3600);
 const CLONE_TIMEOUT: Duration = Duration::from_secs(120);
-const NOISE: [&str; 15] = [
-    "node_modules", "vendor", ".next", "dist", "build", "__pycache__", ".venv", "venv", ".tox", ".mypy_cache", ".pytest_cache", "target", ".gradle", ".idea",
-    ".vscode",
-];
+const NOISE: [&str; 15] = ["node_modules", "vendor", ".next", "dist", "build", "__pycache__", ".venv", "venv", ".tox", ".mypy_cache", ".pytest_cache", "target", ".gradle", ".idea", ".vscode"];
 const TREE_LIMIT: usize = 200;
 const README_CHARS: usize = 8192;
 const FILE_CHARS: usize = 100_000;
@@ -39,11 +36,7 @@ pub fn parse(url: &str) -> Option<Repo> {
     let segments: Vec<String> = path.split('/').skip(1).filter(|s| !s.is_empty()).map(percent_decode).collect::<Option<_>>()?;
     let [owner, repo, rest @ ..] = segments.as_slice() else { return None };
     let repo = repo.strip_suffix(".git").unwrap_or(repo);
-    let owner_ok = owner.len() <= 39
-        && !owner.contains("--")
-        && !owner.starts_with('-')
-        && !owner.ends_with('-')
-        && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    let owner_ok = owner.len() <= 39 && !owner.contains("--") && !owner.starts_with('-') && !owner.ends_with('-') && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
     let repo_ok = (1..=100).contains(&repo.len()) && repo != "." && repo != ".." && repo.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
     if !owner_ok || !repo_ok {
         return None;

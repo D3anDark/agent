@@ -440,10 +440,7 @@ mod tests {
         let templates = load_templates(&root.join("home"), &root.join("repo"));
         let expanded: Vec<(String, String, String)> = templates.iter().map(|t| (t.name.clone(), t.description.clone(), expand_template(t, "HEAD~2").unwrap())).collect();
         std::fs::remove_dir_all(&root).unwrap();
-        assert_eq!(
-            expanded,
-            [("commit".into(), "Commit".into(), "Commit. Context: HEAD~2".into()), ("review".into(), String::new(), "Review HEAD~2".into())]
-        );
+        assert_eq!(expanded, [("commit".into(), "Commit".into(), "Commit. Context: HEAD~2".into()), ("review".into(), String::new(), "Review HEAD~2".into())]);
     }
 
     #[test]
