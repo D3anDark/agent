@@ -154,17 +154,16 @@ fn fuzzy_matches(text: &str, query: &str) -> Vec<(usize, usize)> {
     let required = if query_words.len() == 1 { 1 } else { (query_words.len() * 3).div_ceil(5) };
     let mut matches = Vec::new();
     for (offset, paragraph) in paragraphs(text) {
-        let tokens: Vec<(usize, Vec<char>)> = words(paragraph).into_iter().map(|(at, word)| (at, normalize(word).chars().collect())).collect();
-        let matched: Vec<&Vec<char>> = query_words.iter().filter(|q| tokens.iter().any(|(_, t)| close(q, t))).collect();
+        let tokens: Vec<(usize, &str, Vec<char>)> = words(paragraph).into_iter().map(|(at, word)| (at, word, normalize(word).chars().collect())).collect();
+        let matched: Vec<&Vec<char>> = query_words.iter().filter(|q| tokens.iter().any(|(_, _, t)| close(q, t))).collect();
         if matched.len() < required {
             continue;
         }
-        let Some((at, token)) = tokens.iter().find(|(_, t)| matched.iter().any(|q| close(q, t))) else {
+        let Some((at, word, _)) = tokens.iter().find(|(_, _, t)| matched.iter().any(|q| close(q, t))) else {
             continue;
         };
         let start = offset + at;
-        let word_len = words(&paragraph[*at..]).first().map_or(token.len(), |(_, w)| w.len());
-        matches.push((start, start + word_len));
+        matches.push((start, start + word.len()));
     }
     matches
 }

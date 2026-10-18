@@ -1,7 +1,11 @@
+use super::html::strip_tags;
 use super::{Hit, Page, host, http_agent};
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
+
+const CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// pi's auto chain order (exa, brave, tavily, jina, perplexity); xai joins last since pi only reaches it when configured.
 pub const PROVIDERS: [&str; 6] = ["exa", "brave", "tavily", "jina", "perplexity", "xai"];
@@ -24,16 +28,25 @@ pub struct Response {
     pub providers: Vec<String>,
 }
 
-/// `~/.pi/agent/web-search.json`, shared with pi; a missing file is an empty config.
-pub fn load_config(path: &Path) -> Result<Value, String> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{} is not valid JSON: {e}", path.display())),
-        Err(_) => Ok(json!({})),
-    }
+/// `~/.pi/agent/web-search.json` for one tool call, with each provider's key resolved at most once.
+pub struct Config {
+    path: PathBuf,
+    settings: Value,
+    keys: [OnceLock<Result<Option<String>, String>>; PROVIDERS.len()],
+}
+
+/// Shared with pi; a missing file is an empty config.
+pub fn load_config(path: &Path) -> Result<Config, String> {
+    let settings = match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
+    };
+    Ok(Config { path: path.to_path_buf(), settings, keys: Default::default() })
 }
 
 /// Runs `query` against the providers `requested` names: "auto" (or absent), "all", one name, or a list.
-pub fn search(config: &Value, config_path: &Path, requested: &Value, query: &Query) -> Result<Response, String> {
+pub fn search(config: &Config, requested: &Value, query: &Query) -> Result<Response, String> {
     let requested = match requested {
         Value::Null => Value::from("auto"),
         Value::String(s) if s.trim().is_empty() => Value::from("auto"),
@@ -44,20 +57,23 @@ pub fn search(config: &Value, config_path: &Path, requested: &Value, query: &Que
         for name in list {
             names.push(known(name.as_str().unwrap_or_default())?);
         }
-        return search_parallel(config, config_path, &names, query, "Selected-provider");
+        if names.is_empty() {
+            return Err(format!("The provider list is empty. Use auto, all, or one of: {}.", PROVIDERS.join(", ")));
+        }
+        return search_parallel(config, &names, query, "Selected-provider");
     }
     match requested.as_str().unwrap_or_default().trim().to_lowercase().as_str() {
-        "auto" => search_auto(config, config_path, query),
+        "auto" => search_auto(config, query),
         "all" => {
-            let available: Vec<&str> = PROVIDERS.into_iter().filter(|p| has_key(config, p)).collect();
+            let available: Vec<&str> = PROVIDERS.into_iter().filter(|p| has_key(&config.settings, p)).collect();
             if available.is_empty() {
-                return Err(format!("No configured search provider available for provider \"all\". {}", missing_keys_hint(config_path)));
+                return Err(format!("No configured search provider available for provider \"all\". {}", missing_keys_hint(&config.path)));
             }
-            search_parallel(config, config_path, &available, query, "All-provider")
+            search_parallel(config, &available, query, "All-provider")
         }
         name => {
             let name = known(name)?;
-            let mut response = search_one(config, config_path, name, query)?;
+            let mut response = search_one(config, name, query)?;
             response.providers = vec![name.to_string()];
             Ok(response)
         }
@@ -70,17 +86,17 @@ fn known(name: &str) -> Result<&'static str, String> {
 }
 
 /// The provider web-search.json names goes first, then pi's chain; an empty answer keeps the chain going.
-fn search_auto(config: &Value, config_path: &Path, query: &Query) -> Result<Response, String> {
-    let configured = config["searchProvider"].as_str().or(config["provider"].as_str()).and_then(|name| known(name).ok());
+fn search_auto(config: &Config, query: &Query) -> Result<Response, String> {
+    let configured = config.settings["searchProvider"].as_str().or(config.settings["provider"].as_str()).and_then(|name| known(name).ok());
     let mut order: Vec<&str> = configured.into_iter().collect();
     order.extend(PROVIDERS.into_iter().filter(|p| Some(*p) != configured));
     let mut errors = Vec::new();
     let mut first_empty = None;
     for provider in order {
-        if !has_key(config, provider) {
+        if !has_key(&config.settings, provider) {
             continue;
         }
-        match search_one(config, config_path, provider, query) {
+        match search_one(config, provider, query) {
             Ok(mut response) => {
                 response.providers = vec![provider.to_string()];
                 if !response.results.is_empty() || !response.answer.trim().is_empty() {
@@ -97,12 +113,12 @@ fn search_auto(config: &Value, config_path: &Path, query: &Query) -> Result<Resp
     if !errors.is_empty() {
         return Err(format!("Auto provider search failed:\n  - {}", errors.join("\n  - ")));
     }
-    Err(format!("No search provider available. {}", missing_keys_hint(config_path)))
+    Err(format!("No search provider available. {}", missing_keys_hint(&config.path)))
 }
 
-fn search_parallel(config: &Value, config_path: &Path, providers: &[&'static str], query: &Query, kind: &str) -> Result<Response, String> {
+fn search_parallel(config: &Config, providers: &[&'static str], query: &Query, kind: &str) -> Result<Response, String> {
     let outcomes: Vec<(&str, Result<Response, String>)> = std::thread::scope(|scope| {
-        let handles: Vec<_> = providers.iter().map(|p| (*p, scope.spawn(move || search_one(config, config_path, p, query)))).collect();
+        let handles: Vec<_> = providers.iter().map(|p| (*p, scope.spawn(move || search_one(config, p, query)))).collect();
         handles.into_iter().map(|(p, handle)| (p, handle.join().unwrap_or_else(|_| Err("search thread panicked".into())))).collect()
     });
     let mut merged = Response::default();
@@ -139,17 +155,17 @@ fn search_parallel(config: &Value, config_path: &Path, providers: &[&'static str
     Ok(merged)
 }
 
-fn search_one(config: &Value, config_path: &Path, provider: &str, query: &Query) -> Result<Response, String> {
+fn search_one(config: &Config, provider: &str, query: &Query) -> Result<Response, String> {
     let Some(key) = api_key(config, provider)? else {
-        return Err(format!("Providers without credentials: {} (set {} or {}ApiKey in {}).", label(provider), env_name(provider), provider, config_path.display()));
+        return Err(format!("Providers without credentials: {} (set {} or {}ApiKey in {}).", label(provider), env_name(provider), provider, config.path.display()));
     };
     let result = match provider {
-        "exa" => exa(config, &key, query),
-        "brave" => brave(config, &key, query),
-        "tavily" => tavily(config, &key, query),
+        "exa" => exa(&config.settings, &key, query),
+        "brave" => brave(&config.settings, &key, query),
+        "tavily" => tavily(&config.settings, &key, query),
         "jina" => jina(&key, query),
         "perplexity" => perplexity(&key, query),
-        _ => xai(config, &key, query),
+        _ => xai(&config.settings, &key, query),
     };
     result.map_err(|e| e.replace(&key, "[redacted]"))
 }
@@ -175,17 +191,28 @@ fn missing_keys_hint(config_path: &Path) -> String {
     format!("Providers without credentials: set {} or {} in {}.", envs.join(", "), fields.join(", "), config_path.display())
 }
 
-fn raw_key(config: &Value, provider: &str) -> Option<String> {
-    let configured = config[format!("{provider}ApiKey")].as_str().map(str::to_string);
-    configured.or_else(|| std::env::var(env_name(provider)).ok()).filter(|k| !k.trim().is_empty())
+/// Blank values on either side count as unset, so an empty `exaApiKey` does not hide `EXA_API_KEY`.
+fn configured_key<'a>(config: &'a Value, provider: &str) -> Option<&'a str> {
+    config[format!("{provider}ApiKey")].as_str().map(str::trim).filter(|key| !key.is_empty())
+}
+
+fn env_key(provider: &str) -> Option<String> {
+    std::env::var(env_name(provider)).ok().filter(|key| !key.trim().is_empty())
 }
 
 fn has_key(config: &Value, provider: &str) -> bool {
-    raw_key(config, provider).is_some()
+    configured_key(config, provider).is_some() || env_key(provider).is_some()
 }
 
-fn api_key(config: &Value, provider: &str) -> Result<Option<String>, String> {
-    raw_key(config, provider).map(|raw| resolve_credential(raw.trim(), label(provider))).transpose()
+/// Only web-search.json values use the credential syntax; an env value is the key itself.
+/// The key is resolved once per `Config`, so a `!cmd` with an unlock prompt asks once per tool call.
+fn api_key(config: &Config, provider: &str) -> Result<Option<String>, String> {
+    let slot = PROVIDERS.iter().position(|p| *p == provider).expect("provider comes from PROVIDERS");
+    let resolve = || match configured_key(&config.settings, provider) {
+        Some(raw) => resolve_credential(raw, label(provider)).map(Some),
+        None => Ok(env_key(provider)),
+    };
+    config.keys[slot].get_or_init(resolve).clone()
 }
 
 /// pi's credential syntax: `$NAME`/`${NAME}` reads the env, `!cmd` runs a shell command, `$$x`/`$!x` escape a literal.
@@ -194,11 +221,16 @@ fn resolve_credential(raw: &str, provider: &str) -> Result<String, String> {
         return Ok(raw[1..].to_string());
     }
     if let Some(command) = raw.strip_prefix('!') {
-        let output = crate::process::command("sh").arg("-c").arg(command).output().map_err(|e| format!("{provider} credential command failed: {e}"))?;
+        // From `/`, so a relative command never runs out of the project the agent was opened in.
+        let mut shell = crate::process::command("sh");
+        shell.arg("-c").arg(command).current_dir("/");
+        let output = crate::process::output_within(&mut shell, CREDENTIAL_TIMEOUT)
+            .map_err(|e| format!("{provider} credential command failed: {e}"))?
+            .ok_or_else(|| format!("{provider} credential command timed out after {} seconds.", CREDENTIAL_TIMEOUT.as_secs()))?;
         let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // Its stderr is not shown: it may hold the secret or a long dump.
         if !output.status.success() || key.is_empty() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("{provider} credential command produced no key (exit {}): {}", output.status, stderr.trim()));
+            return Err(format!("{provider} credential command produced no key ({}).", output.status));
         }
         return Ok(key);
     }
@@ -294,8 +326,7 @@ fn exa(config: &Value, key: &str, query: &Query) -> Result<Response, String> {
         "numResults": query.num_results,
         "contents": if query.include_content { json!({"text": true, "highlights": true}) } else { json!({"highlights": true}) },
     });
-    let include: Vec<&str> = query.domains.iter().map(|d| d.trim()).filter(|d| !d.is_empty() && !d.starts_with('-')).collect();
-    let exclude: Vec<&str> = query.domains.iter().filter_map(|d| d.strip_prefix('-')).map(str::trim).filter(|d| !d.is_empty()).collect();
+    let (include, exclude) = split_domains(query.domains);
     if !include.is_empty() {
         body["includeDomains"] = json!(include);
     }
@@ -368,21 +399,6 @@ fn brave(config: &Value, key: &str, query: &Query) -> Result<Response, String> {
         }
     }
     Ok(Response { answer: answer_from_hits(&results), results, ..Default::default() })
-}
-
-/// Brave wraps matched terms in `<strong>`.
-fn strip_tags(text: &str) -> String {
-    let mut out = String::new();
-    let mut in_tag = false;
-    for c in text.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' if in_tag => in_tag = false,
-            _ if !in_tag => out.push(c),
-            _ => {}
-        }
-    }
-    out
 }
 
 fn tavily(config: &Value, key: &str, query: &Query) -> Result<Response, String> {
@@ -494,7 +510,7 @@ fn perplexity(key: &str, query: &Query) -> Result<Response, String> {
         .filter_map(|raw| {
             let raw = raw.trim();
             let (sign, domain) = raw.strip_prefix('-').map_or(("", raw), |d| ("-", d));
-            normalize_domain(domain).filter(|d| d == &domain.to_lowercase()).map(|_| format!("{sign}{domain}"))
+            normalize_domain(domain).map(|d| format!("{sign}{d}"))
         })
         .collect();
     if !domains.is_empty() {
@@ -711,7 +727,42 @@ mod tests {
                 return;
             }
         }
-        let error = search(&json!({}), Path::new("/cfg.json"), &Value::Null, &query).unwrap_err();
+        let error = search(&load_config(Path::new("/cfg.json")).unwrap(), &Value::Null, &query).unwrap_err();
         assert!(error.starts_with("No search provider available. Providers without credentials: set EXA_API_KEY"), "{error}");
+    }
+
+    #[test]
+    fn a_credential_command_runs_once_and_env_keys_are_literal() {
+        let dir = std::env::temp_dir().join(format!("agent-web-keys-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("runs");
+        let settings = json!({"exaApiKey": format!("!echo run >> {}; echo k1", log.display()), "tavilyApiKey": " "});
+        std::fs::write(dir.join("web-search.json"), settings.to_string()).unwrap();
+        unsafe { std::env::set_var("TAVILY_API_KEY", "!from-env") };
+        let config = load_config(&dir.join("web-search.json")).unwrap();
+        let keys = [api_key(&config, "exa"), api_key(&config, "exa"), api_key(&config, "tavily")];
+        let runs = std::fs::read_to_string(&log).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(keys, [Ok(Some("k1".into())), Ok(Some("k1".into())), Ok(Some("!from-env".into()))]);
+        assert_eq!(runs, "run\n");
+    }
+
+    #[test]
+    fn a_provider_redirect_is_not_followed_with_the_key() {
+        let leak = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let location = format!("http://{}/search", leak.local_addr().unwrap());
+        let api_base = format!("http://{}", api.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = api.accept().unwrap();
+            _ = std::io::Read::read(&mut stream, &mut [0; 4096]);
+            let reply = format!("HTTP/1.1 302 Found\r\nlocation: {location}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            _ = std::io::Write::write_all(&mut stream, reply.as_bytes());
+        });
+        leak.set_nonblocking(true).unwrap();
+        let query = Query { text: "q", num_results: 5, recency: None, domains: &[], include_content: false, category: None, proxy: Some("") };
+        let error = exa(&json!({"exaBaseUrl": api_base}), "SECRETKEY", &query).unwrap_err();
+        assert!(error.starts_with("Exa API error 302"), "{error}");
+        assert!(leak.accept().is_err(), "the redirect target got the request");
     }
 }

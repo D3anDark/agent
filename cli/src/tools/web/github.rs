@@ -1,11 +1,10 @@
 //! GitHub code URLs: a shallow clone the agent can explore, summarised as tree, listing, README or file.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-const NON_CODE: [&str; 21] = [
-    "issues", "pull", "pulls", "discussions", "releases", "wiki", "actions", "settings", "security", "projects", "graphs", "compare", "commits", "tags",
-    "branches", "stargazers", "watchers", "network", "forks", "milestone", "labels",
-];
+const CLONE_REUSE: Duration = Duration::from_secs(3600);
+const CLONE_TIMEOUT: Duration = Duration::from_secs(120);
 const NOISE: [&str; 15] = [
     "node_modules", "vendor", ".next", "dist", "build", "__pycache__", ".venv", "venv", ".tox", ".mypy_cache", ".pytest_cache", "target", ".gradle", ".idea",
     ".vscode",
@@ -13,7 +12,7 @@ const NOISE: [&str; 15] = [
 const TREE_LIMIT: usize = 200;
 const README_CHARS: usize = 8192;
 const FILE_CHARS: usize = 100_000;
-const FOOTER: &str = "Use `read` and `bash` tools at the path above to explore further.";
+const FOOTER: &str = "Use `read` and `bash` tools at the path above to explore further. The clone is a cache that forceClone replaces; do not edit it.";
 
 #[derive(Debug, PartialEq)]
 pub enum Kind {
@@ -31,7 +30,7 @@ pub struct Repo {
     pub path: String,
 }
 
-/// pi's parseGitHubUrl: None for non-GitHub URLs and for pages that are not code (issues, pulls, ...).
+/// pi's parseGitHubUrl: None for non-GitHub URLs and for pages other than `tree` or `blob` (issues, pulls, ...).
 pub fn parse(url: &str) -> Option<Repo> {
     if !matches!(super::host(url)?.as_str(), "github.com" | "www.github.com") {
         return None;
@@ -51,16 +50,14 @@ pub fn parse(url: &str) -> Option<Repo> {
     }
     let (owner, repo) = (owner.clone(), repo.to_string());
     let Some(kind) = rest.first() else { return Some(Repo { owner, repo, kind: Kind::Root, git_ref: None, path: String::new() }) };
-    if NON_CODE.contains(&kind.to_lowercase().as_str()) {
-        return None;
-    }
     let kind = match kind.as_str() {
         "tree" => Kind::Tree,
         "blob" => Kind::Blob,
         _ => return None,
     };
     let git_ref = rest.get(1)?;
-    if git_ref.len() > 1024 || git_ref.chars().any(char::is_control) {
+    // A leading `-` would reach `git fetch` as an option.
+    if git_ref.len() > 1024 || git_ref.starts_with('-') || git_ref.chars().any(char::is_control) {
         return None;
     }
     let path = rest[2..].join("/");
@@ -77,7 +74,7 @@ fn percent_decode(segment: &str) -> Option<String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' {
-            out.push(u8::from_str_radix(segment.get(i + 1..i + 3)?, 16).ok()?);
+            out.push(crate::api::oauth::hex_byte(&bytes[i + 1..])?);
             i += 3;
         } else {
             out.push(bytes[i]);
@@ -93,25 +90,53 @@ pub fn fetch(repo: &Repo, force_clone: bool) -> Result<String, String> {
     Ok(describe(repo, &dir))
 }
 
-/// shortcut: plain `git clone`, no `gh` auth and no repository size check; private repos fall back to the page fetch.
+/// shortcut: plain git, no `gh` auth and no repository size check; private repos fall back to the page fetch.
 fn clone(repo: &Repo, force_clone: bool) -> Result<PathBuf, String> {
-    let safe_ref: String = repo.git_ref.as_deref().unwrap_or("HEAD").chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect();
-    let dir = std::env::temp_dir().join("agent-github").join(format!("{}-{}@{safe_ref}", repo.owner, repo.repo));
-    if dir.join(".git").is_dir() && !force_clone {
+    let git_ref = repo.git_ref.as_deref().unwrap_or("HEAD");
+    let safe_ref: String = git_ref.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect();
+    // Not the shared temp dir: on Linux another user could plant a clone there.
+    let home = std::env::var_os("HOME").ok_or("HOME is not set.")?;
+    let dir = PathBuf::from(home).join(".cache/agent-github").join(format!("{}-{}@{safe_ref}", repo.owner, repo.repo));
+    // A branch moves, so a clone answers for an hour.
+    let age = std::fs::metadata(dir.join(".git")).and_then(|meta| meta.modified()).ok().and_then(|modified| modified.elapsed().ok());
+    if age.is_some_and(|age| age < CLONE_REUSE) && !force_clone {
         return Ok(dir);
     }
-    _ = std::fs::remove_dir_all(&dir);
-    let mut git = crate::process::command("git");
-    git.args(["clone", "--depth", "1", "--single-branch"]).env("GIT_TERMINAL_PROMPT", "0");
-    if let Some(git_ref) = &repo.git_ref {
-        git.args(["--branch", git_ref]);
+    // Each fetch checks out into its own dir, so a concurrent or interrupted one never leaves a half tree at `dir`.
+    let partial = PathBuf::from(format!("{}.partial-{}-{:?}", dir.display(), std::process::id(), std::thread::current().id()));
+    let url = format!("https://github.com/{}/{}.git", repo.owner, repo.repo);
+    if let Err(error) = checkout(&url, git_ref, &partial) {
+        _ = std::fs::remove_dir_all(&partial);
+        return Err(error);
     }
-    let output = git.arg(format!("https://github.com/{}/{}.git", repo.owner, repo.repo)).arg(&dir).output().map_err(|e| format!("git: {e}"))?;
-    if !output.status.success() {
-        _ = std::fs::remove_dir_all(&dir);
-        return Err(format!("git clone failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    _ = std::fs::remove_dir_all(&dir);
+    if std::fs::rename(&partial, &dir).is_err() {
+        _ = std::fs::remove_dir_all(&partial);
     }
     Ok(dir)
+}
+
+/// Fetches `git_ref` (branch, tag, commit or HEAD) at depth 1 into `dir`.
+fn checkout(remote: &str, git_ref: &str, dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
+    let deadline = Instant::now() + CLONE_TIMEOUT;
+    for args in [&["init", "-q"][..], &["fetch", "-q", "--depth", "1", remote, git_ref], &["checkout", "-q", "FETCH_HEAD"]] {
+        git(dir, args, deadline)?;
+    }
+    Ok(())
+}
+
+fn git(dir: &Path, args: &[&str], deadline: Instant) -> Result<(), String> {
+    let mut git = crate::process::command("git");
+    // A link to /etc/passwd or /proc/self/environ must not be followed when the clone is read.
+    git.arg("-C").arg(dir).args(["-c", "core.symlinks=false"]).args(args).env("GIT_TERMINAL_PROMPT", "0");
+    let output = crate::process::output_within(&mut git, deadline.saturating_duration_since(Instant::now()))
+        .map_err(|e| format!("git: {e}"))?
+        .ok_or_else(|| format!("git {} timed out after {} s.", args[0], CLONE_TIMEOUT.as_secs()))?;
+    if !output.status.success() {
+        return Err(format!("git {} failed: {}", args[0], String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    Ok(())
 }
 
 fn describe(repo: &Repo, dir: &Path) -> String {
@@ -231,6 +256,9 @@ mod tests {
         assert!(parse("https://github.com/a--b/c").is_none());
         assert!(parse("https://github.com/a/..").is_none());
         assert!(parse("https://github.com/a/b/blob/main/%2e%2e/%2e%2e/etc/passwd").is_none());
+        assert!(parse("https://github.com/a/b/tree/--upload-pack=x/src").is_none());
+        assert!(parse("https://github.com/a/b/tree/%2D%2Dupload-pack=x").is_none());
+        assert!(parse("https://github.com/a/b/blob/main/x%+1").is_none());
         assert!(parse("https://github.com/a").is_none());
         assert!(parse("https://gitlab.com/a/b").is_none());
     }
@@ -249,5 +277,31 @@ mod tests {
         let tree = Repo { kind: Kind::Tree, path: "src".into(), git_ref: Some("main".into()), ..repo };
         assert!(describe(&tree, &dir).contains("## src\n  main.rs  (12 B)\n"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn checkout_fetches_a_branch_or_a_commit_and_keeps_symlinks_as_plain_files() {
+        let root = std::env::temp_dir().join(format!("agent-github-checkout-{}", std::process::id()));
+        let remote = root.join("remote");
+        std::fs::create_dir_all(&remote).unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", remote.join("README.md")).unwrap();
+        let run = |args: &[&str]| {
+            let output = crate::process::command("git").arg("-C").arg(&remote).args(args).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            String::from_utf8(output.stdout).unwrap()
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["add", "."]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]);
+        let sha = run(&["rev-parse", "HEAD"]);
+
+        for git_ref in ["main", sha.trim()] {
+            let dir = root.join(git_ref);
+            checkout(remote.to_str().unwrap(), git_ref, &dir).unwrap();
+            assert!(std::fs::symlink_metadata(dir.join("README.md")).unwrap().is_file());
+            assert_eq!(std::fs::read_to_string(dir.join("README.md")).unwrap(), "/etc/passwd");
+        }
+        assert!(checkout(remote.to_str().unwrap(), "missing", &root.join("missing")).unwrap_err().starts_with("git fetch failed:"));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

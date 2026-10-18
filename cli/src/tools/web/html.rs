@@ -1,7 +1,7 @@
 // shortcut: no Readability scoring; the whole body minus page chrome is converted. Port a scorer if menus or ads swamp real pages.
 // shortcut: tag scanner, not an HTML5 parser; unclosed block tags simply end at the next block.
 
-const SKIPPED: [&str; 13] = ["script", "style", "nav", "header", "footer", "aside", "noscript", "svg", "template", "head", "iframe", "form", "button"];
+const SKIPPED: [&str; 12] = ["script", "style", "nav", "header", "footer", "aside", "noscript", "svg", "template", "head", "iframe", "button"];
 
 /// The page `<title>` and the body as Markdown. `base` resolves relative links.
 pub fn to_markdown(html: &str, base: &str) -> (String, String) {
@@ -28,7 +28,8 @@ pub fn to_markdown(html: &str, base: &str) -> (String, String) {
         let tag = Tag::parse(&rest[1..gt]);
         rest = &rest[gt + 1..];
         let Some(tag) = tag else { continue };
-        if tag.name == "title" {
+        // `<title>` lives in the skipped `<head>`; one inside an `<svg>` icon is not the page's.
+        if tag.name == "title" && matches!(skip.as_deref(), None | Some("head")) {
             in_title = !tag.closing;
             continue;
         }
@@ -43,7 +44,7 @@ pub fn to_markdown(html: &str, base: &str) -> (String, String) {
             continue;
         }
         if tag.name == "pre" && !tag.closing {
-            let end = rest.to_ascii_lowercase().find("</pre").unwrap_or(rest.len());
+            let end = rest.as_bytes().windows(5).position(|w| w.eq_ignore_ascii_case(b"</pre")).unwrap_or(rest.len());
             out.code_block(&decode(&strip_tags(&rest[..end])));
             rest = &rest[end..];
             continue;
@@ -114,7 +115,8 @@ fn attribute(inner: &str, name: &str) -> Option<String> {
     None
 }
 
-fn strip_tags(html: &str) -> String {
+/// Also cleans Brave snippets, which wrap matched terms in `<strong>`.
+pub(super) fn strip_tags(html: &str) -> String {
     let mut out = String::new();
     let mut in_tag = false;
     let mut chars = html.chars().peekable();
@@ -247,7 +249,9 @@ impl Writer {
             }
             "a" => {
                 if let Some((start, Some(href))) = self.links.pop() {
-                    let label = self.out[start..].trim().to_string();
+                    // A `</td>` inside the link may have trimmed `out` below `start`.
+                    let start = self.out.floor_char_boundary(start.min(self.out.len()));
+                    let label = self.out[start..].split_whitespace().collect::<Vec<_>>().join(" ");
                     self.out.truncate(start);
                     if !label.is_empty() {
                         self.out.push_str(&format!("[{label}]({href})"));
@@ -263,6 +267,7 @@ impl Writer {
             }
             "blockquote" => {
                 if let Some(start) = self.quotes.pop() {
+                    let start = self.out.floor_char_boundary(start.min(self.out.len()));
                     let quoted: Vec<String> = self.out[start..].trim().lines().map(|line| format!("> {line}").trim_end().to_string()).collect();
                     self.out.truncate(start);
                     self.out.push_str(&quoted.join("\n"));
@@ -308,7 +313,10 @@ impl Writer {
 
 /// `href` as an absolute URL against the page URL `base`.
 pub fn resolve(base: &str, href: &str) -> String {
-    if href.contains("://") || href.starts_with("mailto:") {
+    let has_scheme = href.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic()) && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+    });
+    if has_scheme {
         return href.to_string();
     }
     let scheme_end = base.find("://").map_or(0, |i| i + 3);
@@ -320,6 +328,9 @@ pub fn resolve(base: &str, href: &str) -> String {
         return format!("{}{href}", &base[..origin_end]);
     }
     let path = base[origin_end..].split(['?', '#']).next().unwrap_or_default();
+    if href.starts_with('?') {
+        return format!("{}{path}{href}", &base[..origin_end]);
+    }
     let dir = path.rfind('/').map_or("/", |i| &path[..=i]);
     format!("{}{dir}{href}", &base[..origin_end])
 }
@@ -351,9 +362,11 @@ pub fn decode(text: &str) -> String {
 
 fn entity_char(name: &str) -> Option<char> {
     if let Some(number) = name.strip_prefix('#') {
+        // Digits only: `from_str_radix` and `parse` also take a sign, `&#+65;`.
         let code = match number.strip_prefix(['x', 'X']) {
-            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-            None => number.parse().ok()?,
+            Some(hex) if hex.bytes().all(|b| b.is_ascii_hexdigit()) => u32::from_str_radix(hex, 16).ok()?,
+            None if number.bytes().all(|b| b.is_ascii_digit()) => number.parse().ok()?,
+            _ => return None,
         };
         return char::from_u32(code);
     }
@@ -408,5 +421,33 @@ mod tests {
         let (_, markdown) = to_markdown(&format!("{table}<p>After</p>{table}"), "https://example.com/");
         let expected = "| Name | Size |\n| --- | --- |\n| a.rs | 3 KB |";
         assert_eq!(markdown, format!("{expected}\n\nAfter\n\n{expected}"));
+    }
+
+    #[test]
+    fn misnested_tags_do_not_panic_and_links_stay_on_one_line() {
+        assert_eq!(to_markdown("<table><tr><td>t<br><br><br><a href=x></td></a>", "https://a.dev/").1, "| t |");
+        assert_eq!(to_markdown("x<a href=\"/y\"><blockquote></a></blockquote>", "https://a.dev/").1, "x");
+        assert_eq!(to_markdown("<a href=/p><h3>Title</h3><p>Desc</p></a>", "https://a.dev/").1, "[### Title Desc](https://a.dev/p)");
+    }
+
+    #[test]
+    fn a_form_keeps_its_content_and_an_svg_title_is_not_the_page_title() {
+        let html = "<head><title>Docs</title></head><body><svg><title>Close menu</title></svg><form id=f><h1>Guide</h1><p>Text</p></form></body>";
+        assert_eq!(to_markdown(html, "https://a.dev/"), ("Docs".into(), "# Guide\n\nText".into()));
+    }
+
+    #[test]
+    fn numeric_entities_take_digits_only() {
+        assert_eq!(decode("&#65;&#x41;&#+65;&#x+41;"), "AA&#+65;&#x+41;");
+    }
+
+    #[test]
+    fn hrefs_resolve_like_a_browser() {
+        let base = "https://a.dev/docs/page?x=1";
+        assert_eq!(resolve(base, "/out?to=https://x.dev"), "https://a.dev/out?to=https://x.dev");
+        assert_eq!(resolve(base, "tel:123"), "tel:123");
+        assert_eq!(resolve(base, "?page=2"), "https://a.dev/docs/page?page=2");
+        assert_eq!(resolve(base, "guide.html"), "https://a.dev/docs/guide.html");
+        assert_eq!(resolve(base, "//b.dev/x"), "https://b.dev/x");
     }
 }

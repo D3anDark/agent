@@ -3,7 +3,7 @@
 use super::{Page, Web, fetch, providers, string_list};
 use serde_json::{Map, Value, json};
 
-const MAX_QUERIES: usize = 8;
+pub(super) const MAX_QUERIES: usize = 8;
 const MAX_SOURCES: usize = 20;
 const FETCHED_SOURCES: usize = 5;
 
@@ -37,7 +37,7 @@ impl Web {
                 category: None,
                 proxy,
             };
-            match providers::search(&config, &self.config_path, &input["provider"], &query) {
+            match providers::search(&config, &input["provider"], &query) {
                 Ok(response) => {
                     provider = provider.or(response.providers.first().cloned());
                     if !response.answer.is_empty() {
@@ -154,7 +154,7 @@ impl Web {
 /// pi's buildPassages for one source: the snippet, then the fetched sentences that share the most terms with it.
 fn source_passages(rank: usize, url: &str, snippet: &str, page: Option<&Page>, claim: &str) -> Vec<Value> {
     let mut passages = Vec::new();
-    if !snippet.is_empty() {
+    if !snippet.trim().is_empty() {
         passages.push(json!({"passage_id": format!("p-{rank}-0"), "source_url": url, "source_rank": rank, "text": snippet, "content_hash": hash(snippet)}));
     }
     let Some(page) = page.filter(|p| p.error.is_none() && !p.content.is_empty()) else { return passages };
@@ -176,8 +176,8 @@ fn source_passages(rank: usize, url: &str, snippet: &str, page: Option<&Page>, c
 fn relevant_spans(content: &str, hint: &str) -> Vec<(String, usize, usize)> {
     let mut terms: Vec<&str> = Vec::new();
     let hint = hint.to_lowercase();
-    for term in hint.split(|c: char| !c.is_ascii_lowercase() && !c.is_ascii_digit()) {
-        if term.len() > 3 && !terms.contains(&term) {
+    for term in hint.split(|c: char| !c.is_alphanumeric()) {
+        if term.chars().count() > 3 && !terms.contains(&term) {
             terms.push(term);
         }
     }
@@ -297,6 +297,8 @@ mod tests {
         assert_eq!(texts, ["Rust memory safety matters.", "Rust is fast."]);
         assert_eq!((spans[1].1, spans[1].2), (0, 13));
         assert_eq!(sentences(content)[1].0, "14 shipped today!");
+        let texts: Vec<String> = relevant_spans("Inne zdanie. Zażółć gęślą jaźń dziś.", "zażółć jaźń").into_iter().map(|(text, ..)| text).collect();
+        assert_eq!(texts, ["Zażółć gęślą jaźń dziś."]);
     }
 
     #[test]

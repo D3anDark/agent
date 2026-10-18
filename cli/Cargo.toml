@@ -9,7 +9,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 ring = "0.17"
 serde_json = "1"
 unicode-width = "0.2"
-ureq = { version = "3", default-features = false, features = ["rustls"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "socks-proxy"] }
 
 [profile.release]
 opt-level = "s"

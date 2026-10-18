@@ -16,6 +16,7 @@ use std::time::Duration;
 /// pi's maxInlineContentChars: the most one tool result or content page carries.
 const MAX_INLINE_CHARS: usize = 30_000;
 const STORED_RESPONSES: usize = 20;
+const MAX_FETCHED_PAGES: usize = 20;
 const STORED_SOURCES: &str = "web_search, source_check, or fetch_content";
 
 #[derive(Clone, Debug)]
@@ -46,10 +47,16 @@ pub fn host(url: &str) -> Option<String> {
 }
 
 /// `proxy` None keeps ureq's env proxy, an empty string connects directly.
-pub fn http_agent(proxy: Option<&str>, timeout: Duration) -> Result<ureq::Agent, String> {
-    let mut config = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(timeout));
+/// Redirects come back as responses: ureq would keep custom headers such as `x-api-key` on a cross-host redirect,
+/// and `fetch::fetch_http` vets each hop before following it.
+pub(super) fn http_agent(proxy: Option<&str>, timeout: Duration) -> Result<ureq::Agent, String> {
+    let mut config = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(timeout))
+        .max_redirects(0);
     if let Some(proxy) = proxy.map(str::trim) {
-        let proxy = if proxy.is_empty() { None } else { Some(ureq::Proxy::new(proxy).map_err(|e| format!("Invalid proxy {proxy}: {e}"))?) };
+        // The URL may carry `user:password@`, so the error does not echo it.
+        let proxy = if proxy.is_empty() { None } else { Some(ureq::Proxy::new(proxy).map_err(|e| format!("Invalid proxy URL: {e}"))?) };
         config = config.proxy(proxy);
     }
     Ok(config.build().into())
@@ -88,7 +95,7 @@ impl Web {
     fn store(&mut self, mut entry: Value) -> Result<String, String> {
         let id = format!("{}{}", base36(crate::now_ms()), crate::api::oauth::random_hex(3));
         entry["id"] = json!(id);
-        std::fs::create_dir_all(&self.dir).map_err(|e| format!("Cannot create {}: {e}", self.dir.display()))?;
+        crate::process::private_dir(&self.dir)?;
         std::fs::write(self.dir.join(format!("{id}.json")), entry.to_string()).map_err(|e| format!("Cannot store web result: {e}"))?;
         self.ids.push_back(id.clone());
         while self.ids.len() > STORED_RESPONSES {
@@ -108,18 +115,16 @@ impl Web {
     }
 
     fn web_search(&mut self, input: &Value) -> Result<String, String> {
-        let queries = search_queries(input);
+        let mut queries = search_queries(input);
         if queries.is_empty() {
             return Err("Error: No query provided. Use 'query' or 'queries' parameter.".into());
         }
+        queries.truncate(research::MAX_QUERIES);
         let config = providers::load_config(&self.config_path)?;
         let domains = string_list(&input["domainFilter"]);
         let include_content = input["includeContent"].as_bool().unwrap_or(false);
         let proxy = input["proxy"].as_str();
-        let mut stored = Vec::new();
-        let mut inline: Vec<Page> = Vec::new();
-        let mut urls: Vec<String> = Vec::new();
-        for text in &queries {
+        let search = |text: &str| {
             let query = providers::Query {
                 text,
                 num_results: num_results(&input["numResults"]),
@@ -129,7 +134,17 @@ impl Web {
                 category: input["category"].as_str(),
                 proxy,
             };
-            match providers::search(&config, &self.config_path, &input["provider"], &query) {
+            providers::search(&config, &input["provider"], &query)
+        };
+        let outcomes: Vec<Result<providers::Response, String>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = queries.iter().map(|text| scope.spawn(|| search(text))).collect();
+            handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| Err("search thread panicked".into()))).collect()
+        });
+        let mut stored = Vec::new();
+        let mut inline: Vec<Page> = Vec::new();
+        let mut urls: Vec<String> = Vec::new();
+        for (text, outcome) in queries.iter().zip(outcomes) {
+            match outcome {
                 Ok(response) => {
                     let hits: Vec<Value> = response.results.iter().map(|h| json!({"title": h.title, "url": h.url, "snippet": h.snippet})).collect();
                     for hit in &response.results {
@@ -150,15 +165,15 @@ impl Web {
 
         let output = search_presentation(&stored);
         let mut guidance = String::new();
-        let missing: Vec<String> = urls.iter().filter(|u| !inline.iter().any(|p| &p.url == *u)).cloned().collect();
+        let missing: Vec<String> = urls.iter().filter(|u| !inline.iter().any(|p| &p.url == *u)).take(MAX_FETCHED_PAGES).cloned().collect();
         if include_content && !missing.is_empty() {
             inline.extend(fetch::fetch_all(&missing, false, false, proxy));
         }
-        if !inline.is_empty() && urls.iter().all(|u| inline.iter().any(|p| &p.url == u)) {
+        if include_content && !inline.is_empty() {
             let fetch_id = self.store(fetch_entry(&inline))?;
             guidance.push_str(&format!(
                 "\n---\nFull content for {} sources is ready as responseId \"{fetch_id}\". Use get_search_content({{ responseId: \"{fetch_id}\", urlIndex: 0, offset: 0, limit: {MAX_INLINE_CHARS} }}) to retrieve the first bounded page.",
-                inline.len()
+                inline.iter().filter(|p| p.error.is_none()).count()
             ));
         }
         let count = stored.len();
@@ -351,7 +366,7 @@ fn select_url(urls: &[Value], input: &Value, id: &str) -> Result<usize, String> 
 
 /// `query` and `queries`, trimmed; a `query` holding a JSON array of strings expands into several, as in pi.
 fn search_queries(input: &Value) -> Vec<String> {
-    let mut queries = string_list(&input["queries"]);
+    let mut queries: Vec<String> = string_list(&input["queries"]).into_iter().filter(|q| !q.trim().is_empty()).collect();
     if queries.is_empty()
         && let Some(query) = input["query"].as_str()
     {
@@ -466,6 +481,7 @@ mod tests {
 
     fn web(name: &str) -> Web {
         let dir = std::env::temp_dir().join(format!("agent-web-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
         Web::new(&dir, dir.join("store"))
     }
 
@@ -510,6 +526,7 @@ mod tests {
     fn search_queries_expand_a_json_array_and_drop_blanks() {
         assert_eq!(search_queries(&json!({"query": r#"["a", " b ", ""]"#})), ["a", "b"]);
         assert_eq!(search_queries(&json!({"queries": [" x ", 3], "query": "ignored"})), ["x"]);
+        assert_eq!(search_queries(&json!({"queries": [" "], "query": "rust"})), ["rust"]);
         assert!(search_queries(&json!({})).is_empty());
     }
 
@@ -517,5 +534,11 @@ mod tests {
     fn host_lowercases_and_strips_userinfo_and_port() {
         assert_eq!(host("https://user@Docs.RS:443/x?y").as_deref(), Some("docs.rs"));
         assert_eq!(host("not a url"), None);
+    }
+
+    #[test]
+    fn a_socks_proxy_is_used_not_a_crash() {
+        let agent = http_agent(Some("socks5://127.0.0.1:1"), Duration::from_secs(5)).unwrap();
+        assert!(agent.get("http://example.com/").call().is_err());
     }
 }
