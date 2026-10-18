@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 
 use super::editor::Editor;
 use super::markdown;
-use super::render::{Line, PLAIN, Style, span, wrap};
+use super::render::{BRIGHT, Line, MUTED, PLAIN, Style, span, wrap};
 use crate::api;
 
 /// pi-btw's side-question prompt.
@@ -12,8 +12,6 @@ const SYSTEM: &str = "You answer quick side questions for a coding-agent user.
 
 Use the provided conversation context only as background. Answer the user's side question directly and concisely. Do not claim to have changed files, run tools, or affected the main task. If the context is insufficient, say what is unknown and give the best next step.";
 const MAX_CONTEXT_CHARS: usize = 40_000;
-const BRIGHT: Style = Style::fg(255);
-const MUTED: Style = Style::fg(245);
 const ERROR: Style = Style::rgb(0xff7b72);
 const VISIBLE_LINES: usize = 14;
 

@@ -48,7 +48,7 @@ use crate::tools::rtk::strip_ansi;
 use crate::tools::todo::{Status, Todos};
 use crate::worktree::{self, Worktree};
 use editor::Editor;
-use render::{Line, PLAIN, Screen, Span, Style, line_width, link_at, overlay_center, overlay_right, select, span, take_cursor, text_in, truncate, width, wrap};
+use render::{BRIGHT, Line, MUTED, PLAIN, Screen, Span, Style, line_width, link_at, overlay_center, overlay_right, select, span, take_cursor, text_in, truncate, width, wrap};
 use selection::{Point, Selection};
 
 const WORKING: &str = "Working";
@@ -61,8 +61,6 @@ const TOOL_OUTPUT_LINES: usize = 20;
 const EDGE_SCROLL: Duration = Duration::from_millis(40);
 
 const DIM: Style = Style::fg(241);
-const MUTED: Style = Style::fg(245);
-const BRIGHT: Style = Style::fg(255);
 const WARN: Style = Style::fg(179);
 const SYSTEM: Style = Style::rgb(0x79c0ff);
 const OK: Style = Style::rgb(0x7ee787);

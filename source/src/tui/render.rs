@@ -64,6 +64,8 @@ impl Style {
 }
 
 pub const PLAIN: Style = Style { fg: Color::Default, bg: None, bold: false, italic: false, underline: false, selected: false };
+pub const BRIGHT: Style = Style::fg(255);
+pub const MUTED: Style = Style::fg(245);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Span {

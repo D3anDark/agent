@@ -4,12 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::editor::Editor;
 use super::panel;
-use super::render::{Line, Style, span, wrap};
+use super::render::{BRIGHT, Line, MUTED, span, wrap};
 use crate::api::accounts::{Account, Secret};
 use crate::api::oauth::{self, Pending, Tokens};
 
-const BRIGHT: Style = Style::fg(255).bold();
-const MUTED: Style = Style::fg(245);
 const KINDS: [&str; 2] = ["Account (subscription)", "API key"];
 /// Login methods as (is an API key, label); the label is also what `choose` matches on.
 const METHODS: [(bool, &str); 4] = [(false, "Claude Pro/Max"), (true, "Anthropic API key"), (true, "OpenRouter API key"), (false, "ChatGPT Plus/Pro (Codex)")];
@@ -171,7 +169,7 @@ impl Login {
         let mut lines = view.render(width, max_rows);
         if let Some(url) = self.url() {
             // The whole link, wrapped, so it can be read or copied even when the browser did not open.
-            let link = wrap(&[span("Sign in at: ", MUTED), span(url, BRIGHT)], width, &Vec::new());
+            let link = wrap(&[span("Sign in at: ", MUTED), span(url, BRIGHT.bold())], width, &Vec::new());
             let hint = lines.len().saturating_sub(1);
             lines.splice(hint..hint, link);
         }
@@ -195,7 +193,7 @@ fn methods(api: bool, query: &Editor) -> Vec<&'static str> {
 }
 
 fn field(label: &str, value: String) -> panel::Row {
-    panel::Row { left: label.into(), right: vec![span(value, BRIGHT)] }
+    panel::Row { left: label.into(), right: vec![span(value, BRIGHT.bold())] }
 }
 
 #[cfg(test)]

@@ -1,8 +1,6 @@
 use super::OK;
-use super::render::{Line, PLAIN, Style, span, truncate, width};
+use super::render::{BRIGHT, Line, MUTED, PLAIN, Style, span, truncate, width};
 
-const BRIGHT: Style = Style::fg(255).bold();
-const MUTED: Style = Style::fg(245);
 const COUNT: Style = Style::fg(241);
 
 pub struct Row {
@@ -43,14 +41,14 @@ pub struct Panel<'a> {
 
 impl Panel<'_> {
     pub fn render(&self, columns: usize, max_rows: usize) -> Vec<Line> {
-        let mut header = vec![span(self.title.clone(), BRIGHT)];
+        let mut header = vec![span(self.title.clone(), BRIGHT.bold())];
         for (index, tab) in self.tabs.iter().enumerate() {
             header.push(span("  ", PLAIN));
-            header.push(if index == self.tab { span(format!("[{tab}]"), BRIGHT) } else { span(*tab, MUTED) });
+            header.push(if index == self.tab { span(format!("[{tab}]"), BRIGHT.bold()) } else { span(*tab, MUTED) });
         }
         let mut head = vec![header];
         if let Some(search) = &self.search {
-            head.push(vec![span(format!("> {search}"), BRIGHT)]);
+            head.push(vec![span(format!("> {search}"), BRIGHT.bold())]);
         }
         if self.rows.is_empty() {
             head.push(vec![span(format!("  {}", self.empty), MUTED)]);
@@ -58,7 +56,7 @@ impl Panel<'_> {
         let left_width = self.rows.iter().map(|r| width(&r.left)).max().unwrap_or(0);
         frame(head, self.rows.len(), self.selected, self.hint, columns, max_rows, |index| {
             let row = &self.rows[index];
-            let style = if index == self.selected { BRIGHT } else { MUTED };
+            let style = if index == self.selected { BRIGHT.bold() } else { MUTED };
             let pad = " ".repeat(left_width - width(&row.left));
             let mut line = vec![span(format!("{}{pad}", row.left), style), span("    ", PLAIN)];
             line.extend(row.right.iter().cloned());
@@ -102,7 +100,7 @@ mod tests {
         assert_eq!(text(&lines[2]), "  a      x");
         assert_eq!(text(&lines[3]), "→ abc    y");
         assert_eq!(lines[3][0].style, OK);
-        assert_eq!(lines[3][1].style, BRIGHT);
+        assert_eq!(lines[3][1].style, BRIGHT.bold());
         assert_eq!(text(&lines[4]), "esc close");
     }
 

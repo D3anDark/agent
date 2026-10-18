@@ -3,11 +3,9 @@ use std::sync::mpsc::Sender;
 
 use super::editor::Editor;
 use super::OK;
-use super::render::{Line, PLAIN, Style, span, wrap};
+use super::render::{BRIGHT, Line, MUTED, PLAIN, Style, span, wrap};
 use crate::tools::ask::{Answer, Question, TYPE_SOMETHING};
 
-const BRIGHT: Style = Style::fg(255);
-const MUTED: Style = Style::fg(245);
 const PREVIEW_LINES: usize = 8;
 
 /// The ask_user_question panel: one question at a time, the agent thread waits on `reply`.
