@@ -651,7 +651,7 @@ fn recency_days(recency: &str) -> u64 {
 
 /// `YYYY-MM-DDTHH:MM:SS.mmmZ` for now minus `days`, like JS `toISOString`.
 fn iso_days_ago(days: u64) -> String {
-    iso_from_ms(crate::now_ms() - days * 86_400_000)
+    iso_from_ms(crate::process::now_ms() - days * 86_400_000)
 }
 
 fn iso_from_ms(ms: u64) -> String {

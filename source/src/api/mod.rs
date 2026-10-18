@@ -124,7 +124,7 @@ impl Client {
             chatgpt_base: base("CHATGPT_BASE_URL", "https://chatgpt.com/backend-api"),
             openrouter_base: base("OPENROUTER_BASE_URL", "https://openrouter.ai/api"),
             catalog: Arc::default(),
-            cache_key: format!("agent-{}-{}", std::process::id(), crate::now_ms()),
+            cache_key: format!("agent-{}-{}", std::process::id(), crate::process::now_ms()),
             state: Arc::new(Mutex::new(State { threshold: 90.0, ..State::default() })),
         };
         client.reload(accounts::load(home)?);
@@ -197,7 +197,7 @@ impl Client {
         // A new pin from /account wins over the account the last request used.
         state.current.retain(|provider, _| state.pinned.get(provider) == settings.default_accounts.get(provider));
         state.pinned = settings.default_accounts.clone();
-        state.headroom = settings.headroom && crate::installed("headroom");
+        state.headroom = settings.headroom && crate::process::installed("headroom");
         state.provider_order = settings.sort_providers(&models::PROVIDERS);
     }
 
@@ -325,7 +325,7 @@ impl Client {
     /// The account with tokens valid for five more minutes, refreshing and saving them when needed.
     fn fresh(&self, account: Account) -> Result<Account, String> {
         let Secret::OAuth(tokens) = &account.secret else { return Ok(account) };
-        let valid = |t: &oauth::Tokens| t.expires > crate::now_ms() + oauth::REFRESH_MARGIN_MS;
+        let valid = |t: &oauth::Tokens| t.expires > crate::process::now_ms() + oauth::REFRESH_MARGIN_MS;
         if valid(tokens) {
             return Ok(account);
         }

@@ -249,7 +249,7 @@ pub fn pick(candidates: &[Candidate], threshold: f64, policy: Policy, pinned: Op
 
 /// "in 2h 13m" for a unix-millisecond time.
 pub fn resets_in(resets_at: u64) -> String {
-    let minutes = resets_at.saturating_sub(crate::now_ms()) / 60_000;
+    let minutes = resets_at.saturating_sub(crate::process::now_ms()) / 60_000;
     if minutes >= 60 { format!("in {}h {}m", minutes / 60, minutes % 60) } else { format!("in {minutes}m") }
 }
 

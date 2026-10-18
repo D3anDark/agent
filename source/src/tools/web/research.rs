@@ -61,7 +61,7 @@ impl Web {
             Vec::new()
         };
 
-        let now = crate::now_ms();
+        let now = crate::process::now_ms();
         let mut sources = Vec::new();
         let mut passages = Vec::new();
         for (index, hit) in hits.iter().enumerate() {

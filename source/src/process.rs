@@ -175,10 +175,27 @@ fn hang_up_children() {
     }
 }
 
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+/// Whether `binary` is an executable file in some PATH directory; rtk and headroom are optional installs.
+pub fn installed(binary: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(path) = std::env::var_os("PATH") else { return false };
+    std::env::split_paths(&path).any(|dir| std::fs::metadata(dir.join(binary)).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn installed_finds_only_executables_on_path() {
+        assert!(installed("sh"));
+        assert!(!installed("agent-no-such-binary"));
+    }
 
     #[test]
     fn private_dir_refuses_an_existing_shared_directory() {

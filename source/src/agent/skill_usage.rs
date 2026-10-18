@@ -4,7 +4,7 @@ use std::path::Path;
 
 /// Appends one use of `skill` to `<agent_dir>/skill-usage.jsonl`; `by` is "agent" (read its SKILL.md) or "user" (typed /skill:).
 pub fn record(agent_dir: &Path, skill: &str, by: &str, cwd: &Path) -> Result<(), String> {
-    let line = json!({"at": crate::now_ms(), "skill": skill, "by": by, "cwd": cwd});
+    let line = json!({"at": crate::process::now_ms(), "skill": skill, "by": by, "cwd": cwd});
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(agent_dir.join("skill-usage.jsonl")).map_err(|e| e.to_string())?;
     writeln!(file, "{line}").map_err(|e| e.to_string())
 }

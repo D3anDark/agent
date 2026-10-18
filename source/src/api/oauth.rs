@@ -4,7 +4,7 @@ use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::now_ms;
+use crate::process::now_ms;
 
 // Client ids, endpoints and scopes are pi-ai's (auth/oauth/anthropic.js and openai-codex.js).
 const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";

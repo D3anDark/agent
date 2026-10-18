@@ -101,7 +101,7 @@ impl Web {
 
     /// Stores `entry` under a fresh responseId, dropping the oldest past the limit.
     fn store(&mut self, mut entry: Value) -> Result<String, String> {
-        let id = format!("{}{}", base36(crate::now_ms()), crate::api::oauth::random_hex(3));
+        let id = format!("{}{}", base36(crate::process::now_ms()), crate::api::oauth::random_hex(3));
         entry["id"] = json!(id);
         crate::process::private_dir(&self.dir)?;
         std::fs::write(self.dir.join(format!("{id}.json")), entry.to_string()).map_err(|e| format!("Cannot store web result: {e}"))?;

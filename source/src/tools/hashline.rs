@@ -52,7 +52,7 @@ impl Anchors {
         assert_eq!(total, ANCHOR_COUNT);
         // The clock keeps a resumed session from re-minting anchors its history still shows on other lines.
         let mut probe: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in seed.bytes().chain(crate::now_ms().to_le_bytes()) {
+        for byte in seed.bytes().chain(crate::process::now_ms().to_le_bytes()) {
             probe = (probe ^ byte as u64).wrapping_mul(0x100_0000_01b3);
         }
         Anchors {

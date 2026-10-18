@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 
 use crate::api::oauth::{REFRESH_MARGIN_MS, callback_code, form, open_browser, pkce, post, random_hex};
-use crate::now_ms;
+use crate::process::now_ms;
 
 /// `l` in /mcp exists only in the interactive agent, not in `--print`, `--headless` or subagent runs.
 const LOG_IN_AGAIN: &str = "Open /mcp in the interactive agent and press l to log in again.";

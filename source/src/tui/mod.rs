@@ -1575,7 +1575,7 @@ impl App {
             "context" => _ = self.commands.send(Command::Context),
             "history" => self.open_history(),
             "usage" => {
-                self.panel = Some(Panel::Usage { tab: 0, totals: usage::totals(&self.sessions_dir, &self.session_id, crate::now_ms()) });
+                self.panel = Some(Panel::Usage { tab: 0, totals: usage::totals(&self.sessions_dir, &self.session_id, crate::process::now_ms()) });
                 let (client, events) = (self.client.clone(), self.events.clone());
                 std::thread::spawn(move || {
                     client.refresh_all_usage();
@@ -4425,7 +4425,7 @@ fn choices(options: impl IntoIterator<Item = String>, current: &str) -> Line {
 /// An on/off row for a tool the user installs separately; the setting does nothing until `binary` is on PATH.
 fn optional_tool(current: &str, binary: &str) -> Line {
     let mut line = choices(["off", "on"].map(String::from), current);
-    if !crate::installed(binary) {
+    if !crate::process::installed(binary) {
         line.push(span(format!("  {binary} is not installed"), MUTED));
     }
     line

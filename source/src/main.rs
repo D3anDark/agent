@@ -372,7 +372,7 @@ fn headless_mode(agent: &mut Agent, prompt: &str) -> Result<(), String> {
         Event::Permission { reply, .. } => _ = reply.send(Decision::Deny),
         _ => {}
     });
-    line(usage::entry(&agent.model, agent.usage, now_ms()));
+    line(usage::entry(&agent.model, agent.usage, process::now_ms()));
     match result {
         Ok(answer) => line(serde_json::json!({"type": "done", "answer": answer})),
         Err(message) => line(serde_json::json!({"type": "error", "message": message})),
@@ -388,25 +388,8 @@ fn preview(input: &Value) -> String {
     }
 }
 
-pub fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
-}
-
-/// Whether `binary` is an executable file in some PATH directory; rtk and headroom are optional installs.
-pub fn installed(binary: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    let Some(path) = std::env::var_os("PATH") else { return false };
-    std::env::split_paths(&path).any(|dir| std::fs::metadata(dir.join(binary)).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
-}
-
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn installed_finds_only_executables_on_path() {
-        assert!(super::installed("sh"));
-        assert!(!super::installed("agent-no-such-binary"));
-    }
-
     #[test]
     fn account_flag_names_a_provider_and_an_account() {
         let options = super::parse_args(vec!["--account".into(), "anthropic=work".into()]).unwrap();
