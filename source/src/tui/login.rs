@@ -188,10 +188,10 @@ impl Login {
     }
 }
 
-/// Methods of the chosen kind whose label contains the search query (case-insensitive).
+/// Methods of the chosen kind whose label matches the search query, see `panel::search`.
 fn methods(api: bool, query: &Editor) -> Vec<&'static str> {
-    let query = query.text().to_lowercase();
-    METHODS.iter().filter(|(is_api, label)| *is_api == api && label.to_lowercase().contains(query.trim())).map(|(_, label)| *label).collect()
+    let kind = METHODS.iter().filter(|(is_api, _)| *is_api == api).map(|(_, label)| *label);
+    panel::search(kind, query.text().trim(), |label| label.to_string())
 }
 
 fn field(label: &str, value: String) -> panel::Row {

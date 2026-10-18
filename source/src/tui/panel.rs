@@ -10,6 +10,24 @@ pub struct Row {
     pub right: Line,
 }
 
+/// Items whose text matches the search `query`, ignoring case: substring matches first, then fuzzy ones.
+/// Fuzzy means the query's non-space characters appear in the text in order, so "cl max" finds "Claude Pro/Max".
+pub fn search<T>(items: impl IntoIterator<Item = T>, query: &str, text: impl Fn(&T) -> String) -> Vec<T> {
+    let mut ranked: Vec<(u8, T)> = items.into_iter().filter_map(|item| Some((search_rank(&text(&item), query)?, item))).collect();
+    ranked.sort_by_key(|(rank, _)| *rank);
+    ranked.into_iter().map(|(_, item)| item).collect()
+}
+
+/// 0 when `text` contains `query`, 1 when it matches only fuzzily, ignoring case.
+pub fn search_rank(text: &str, query: &str) -> Option<u8> {
+    let (text, query) = (text.to_lowercase(), query.to_lowercase());
+    if text.contains(&query) {
+        return Some(0);
+    }
+    let mut chars = text.chars();
+    query.chars().filter(|c| !c.is_whitespace()).all(|wanted| chars.any(|c| c == wanted)).then_some(1)
+}
+
 /// fx's bottom panel: a blank line, `Title  [Tab]  Tab`, `> search` when it filters, rows with the selected one bright, key hints.
 pub struct Panel<'a> {
     pub title: String,
@@ -104,5 +122,15 @@ mod tests {
         let panel = Panel { title: "History".into(), tabs: &["All", "Here"], tab: 0, search: Some("fo".into()), rows: &rows, selected: 0, empty: "", hint: "" };
         let lines: Vec<String> = panel.render(40, 5).iter().map(text).collect();
         assert_eq!(lines[1..4], ["History  [All]  Here", "> fo", "→ a    "]);
+    }
+
+    #[test]
+    fn search_lists_substring_matches_before_fuzzy_ones() {
+        let labels = ["Claude Pro/Max", "Max mode", "OpenAI API key"];
+        assert_eq!(search(labels, "max", |l| l.to_string()), ["Claude Pro/Max", "Max mode"]);
+        assert_eq!(search(labels, "cl max", |l| l.to_string()), ["Claude Pro/Max"]);
+        assert_eq!(search(labels, "oak", |l| l.to_string()), ["OpenAI API key"]);
+        assert_eq!(search(["Merge order", "Max mode"], "mode", |l| l.to_string()), ["Max mode", "Merge order"]);
+        assert!(search(labels, "xyz", |l| l.to_string()).is_empty());
     }
 }

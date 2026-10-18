@@ -3496,15 +3496,13 @@ impl Entry {
     }
 }
 
-/// Accounts whose name or provider contains the query, ignoring case.
+/// Accounts whose name or provider matches the query, see `panel::search`.
 fn matching_accounts(accounts: Vec<AccountView>, query: &str) -> Vec<AccountView> {
-    let query = query.to_lowercase();
-    accounts.into_iter().filter(|a| format!("{} {}", a.name, a.provider).to_lowercase().contains(&query)).collect()
+    panel::search(accounts, query, |a| format!("{} {}", a.name, a.provider))
 }
 
 fn matching_prompts<'a>(entries: &'a [history::Entry], query: &str, in_scope: impl Fn(&history::Entry) -> bool) -> Vec<&'a str> {
-    let query = query.to_lowercase();
-    entries.iter().filter(|entry| in_scope(entry) && entry.prompt.to_lowercase().contains(&query)).map(|entry| entry.prompt.as_str()).collect()
+    panel::search(entries.iter().filter(|entry| in_scope(entry)), query, |entry| entry.prompt.clone()).into_iter().map(|entry| entry.prompt.as_str()).collect()
 }
 
 /// "+3 -1" for the /changes rows.
@@ -3877,15 +3875,20 @@ fn matching_commands(commands: &[(String, String)], text: &str) -> Vec<(String, 
         return matching_args(name, arg);
     }
     let query = query.to_lowercase();
-    let (mut matches, mut inner) = (Vec::new(), Vec::new());
+    let (mut matches, mut inner, mut fuzzy) = (Vec::new(), Vec::new(), Vec::new());
     for command in commands {
         if command.0.starts_with(&query) {
             matches.push(command.clone());
-        } else if command.0.contains(&query) {
-            inner.push(command.clone());
+            continue;
+        }
+        match panel::search_rank(&command.0, &query) {
+            Some(0) => inner.push(command.clone()),
+            Some(_) => fuzzy.push(command.clone()),
+            None => {}
         }
     }
     matches.extend(inner);
+    matches.extend(fuzzy);
     matches
 }
 
@@ -4198,10 +4201,9 @@ fn context_window_label(window: Option<u64>) -> String {
     window.map_or("auto".to_string(), tokens)
 }
 
-/// `SETTING_ORDER` rows whose name contains the query, ignoring case.
+/// `SETTING_ORDER` rows whose name matches the query, see `panel::search`.
 fn matching_settings(query: &str) -> Vec<usize> {
-    let query = query.to_lowercase();
-    SETTING_ORDER.into_iter().filter(|&r| SETTING_NAMES[r].to_lowercase().contains(&query)).collect()
+    panel::search(SETTING_ORDER, query, |&r| SETTING_NAMES[r].to_string())
 }
 
 /// Override keys for the context windows panel: providers on tab 0, models matching `query` on tab 1.
@@ -4361,13 +4363,12 @@ fn plan_lines(selected: usize) -> Vec<Line> {
     lines
 }
 
-/// Picker rows for settings `row` whose provider or id contains `query`, ignoring case: pinned models first, each part grouped in provider order.
+/// Picker rows for settings `row` whose provider or id matches `query` (see `panel::search`): pinned models first, each part grouped in provider order.
 /// `None` is "auto", offered for the optional condense and fallback models.
 fn matching_models<'a>(catalog: &'a [Model], settings: &Settings, row: usize, query: &str) -> Vec<Option<&'a Model>> {
-    let query = query.to_lowercase();
-    let auto = (row != 0 && "auto".contains(&query)).then_some(None);
+    let auto = (row != 0 && panel::search_rank("auto", query).is_some()).then_some(None);
     let providers = settings.sort_providers(&models::PROVIDERS);
-    let mut matches: Vec<&Model> = catalog.iter().filter(|m| format!("{} {}", model_owners(m), m.id).to_lowercase().contains(&query)).collect();
+    let mut matches = panel::search(catalog, query, |m| format!("{} {}", model_owners(m), m.id));
     matches.sort_by_key(|m| (!settings.pinned_models.contains(&model_key(m)), providers.iter().position(|provider| *provider == m.provider).unwrap_or(usize::MAX)));
     auto.into_iter().chain(matches.into_iter().map(Some)).collect()
 }
@@ -4683,8 +4684,8 @@ mod tests {
         assert_eq!(model_owners(&catalog[1]), "openai-codex · pro, plus");
         assert_eq!(ids(&settings, 0, "").len(), catalog.len());
         assert_eq!(ids(&settings, 8, "").len(), catalog.len() + 1);
-        assert_eq!(ids(&settings, 12, "aut"), ["auto"]);
-        assert!(ids(&settings, 8, "nope").is_empty());
+        assert_eq!(ids(&settings, 12, "aut"), ["auto", "gpt-6-luna"]);
+        assert!(ids(&settings, 8, "xyz").is_empty());
         settings.provider_sort = "manual".into();
         settings.provider_order = vec!["openai-codex".into()];
         assert_eq!(ids(&settings, 8, ""), ["auto", "gpt-6-luna", "gpt-6-sol", "claude-haiku-5-5"]);
@@ -4826,7 +4827,7 @@ mod tests {
         );
         assert_eq!(account_rows, [1, 2, 5]);
         let names = |query| matching_accounts(accounts.to_vec(), query).into_iter().map(|a| a.name).collect::<Vec<_>>();
-        assert_eq!(names("API"), ["claudescom-api"]);
+        assert_eq!(names("API"), ["claudescom-api", "claudescom", "rokartur"]);
         assert_eq!(names("anthropic").len(), 3);
     }
 }
