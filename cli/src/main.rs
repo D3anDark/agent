@@ -36,7 +36,7 @@ Options:
   --no-session          Do not save the session
   --auto                Let a reviewer model approve tool calls
   --full-access, --yolo Run every tool call without asking
-  --ask                 Ask before commands and file edits
+  --ask                 Ask before commands, file edits, subagents, MCP and plugin tools
   --headless            Run the message, print JSONL events (tool, session, done, error)
   --parent <id>         Run as a subagent of that session: linked to it, no load_tools or ask_user_question
   --account <p>=<name>  Use that saved account first for provider p, like a pin in /account
@@ -87,10 +87,9 @@ fn plugin_command(args: &[String]) -> Result<(), String> {
 }
 
 fn main() {
-    process::on_hangup(|| {
-        process::hang_up_children();
-        std::process::exit(129);
-    });
+    process::exit_on_signal(tools::remove_spills);
+    // An earlier agent with this pid that crashed left files that the spill and bg log `create_new` would refuse.
+    tools::remove_spills();
     if std::env::args().nth(1).as_deref() == Some("--version") {
         println!("agent {}", env!("CARGO_PKG_VERSION"));
         return;
@@ -189,10 +188,13 @@ fn run(options: Options) -> Result<(), String> {
     });
     // Downloads only a missing file; the refresh of cached ones runs behind it, so startup never waits on it.
     let modes_error = modes::fetch(&home, &settings.ponytail, &settings.caveman, false).err();
-    std::thread::spawn({
-        let (home, ponytail, caveman) = (home.clone(), settings.ponytail.clone(), settings.caveman.clone());
-        move || modes::fetch(&home, &ponytail, &caveman, true)
-    });
+    // Subagents use the copy their parent refreshed seconds earlier.
+    if options.parent.is_none() {
+        std::thread::spawn({
+            let (home, ponytail, caveman) = (home.clone(), settings.ponytail.clone(), settings.caveman.clone());
+            move || modes::fetch(&home, &ponytail, &caveman, true)
+        });
+    }
     let cwd = std::env::current_dir().map_err(|e| format!("Cannot read the working directory: {e}"))?;
     let sessions_dir = home.join(".agents/sessions");
     let (session, history) = match &options.resume {
@@ -267,7 +269,7 @@ fn run(options: Options) -> Result<(), String> {
         sessions_dir,
     };
     agent.plugins.sync(&settings.disabled_plugins, &settings.plugin_settings);
-    agent.mcp.sync(&settings.disabled_mcp);
+    agent.mcp.sync(&settings.disabled_mcp, &settings.approved_mcp);
     agent.load(history);
     let mut prompt = options.prompt;
     if !std::io::stdin().is_terminal() {
@@ -283,6 +285,16 @@ fn run(options: Options) -> Result<(), String> {
     if options.headless || options.print || options.json || !std::io::stdout().is_terminal() {
         if let Some(error) = &modes_error {
             eprintln!("{error}");
+        }
+        agent.mcp.settled();
+        let (servers, mcp_error) = agent.mcp.list();
+        if let Some(error) = mcp_error {
+            eprintln!("{error}");
+        }
+        for server in servers {
+            if let mcp::Status::Failed(error) = server.status {
+                eprintln!("MCP server {}: {error}", server.name);
+            }
         }
         if let Some(notice) = agent.session.fork_notice() {
             eprintln!("{notice}");
@@ -308,6 +320,7 @@ fn run(options: Options) -> Result<(), String> {
         };
         agent.terminals.lock().unwrap().kill_all();
         agent.subagents.lock().unwrap().stop_all();
+        tools::remove_spills();
         return result;
     }
     // All skills: /skills lists the disabled ones too, the TUI filters by settings.disabled_skills.
@@ -328,7 +341,7 @@ fn print_mode(agent: &mut Agent, prompt: &str, json: bool) -> Result<(), String>
         Event::ToolStart { name, input, .. } if !json => eprintln!("· {name} {}", preview(&input)),
         Event::Notice(text) => eprintln!("{text}"),
         Event::Permission { request, reply } => {
-            eprintln!("Denied {}: {} (print mode cannot ask; use --auto or --full-access)", request.kind, request.detail);
+            eprintln!("Denied {}: {} (print mode cannot ask; use --auto or --full-access)", request.kind.label(), request.detail);
             let _ = reply.send(Decision::Deny);
         }
         Event::Reviewed { allowed, detail, reason } => eprintln!("auto: {} {detail}: {reason}", if allowed { "allowed" } else { "denied" }),

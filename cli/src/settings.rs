@@ -38,6 +38,8 @@ pub struct Settings {
     pub disabled_plugins: Vec<String>,
     /// MCP servers from `mcp.json` that are not connected.
     pub disabled_mcp: Vec<String>,
+    /// Project MCP servers the user let run, by `mcp::config::Server::approval` key.
+    pub approved_mcp: Vec<String>,
     /// The user's plugin settings, `{ "<plugin>": { "<key>": value } }`; see plugins/README.md.
     pub plugin_settings: serde_json::Value,
     /// One of `modes::PONYTAIL_LEVELS`.
@@ -138,9 +140,10 @@ pub fn load(home: &Path) -> Settings {
         disabled_skills: own["disabled_skills"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
         disabled_plugins: own["disabled_plugins"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
         disabled_mcp: own["disabled_mcp"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
+        approved_mcp: own["approved_mcp"].as_array().into_iter().flatten().filter_map(|key| Some(key.as_str()?.to_string())).collect(),
         plugin_settings: if own["plugin_settings"].is_object() { own["plugin_settings"].clone() } else { serde_json::json!({}) },
-        ponytail: own["ponytail"].as_str().unwrap_or("full").to_string(),
-        caveman: own["caveman"].as_str().unwrap_or("off").to_string(),
+        ponytail: level(&own["ponytail"], &crate::agent::modes::PONYTAIL_LEVELS, "full"),
+        caveman: level(&own["caveman"], &crate::agent::modes::CAVEMAN_LEVELS, "off"),
         rtk: own["rtk"].as_bool().unwrap_or(true),
         headroom: own["headroom"].as_bool().unwrap_or(false),
         notifications: own["notifications"].as_bool().unwrap_or(true),
@@ -152,6 +155,11 @@ pub fn load(home: &Path) -> Settings {
         on_start: own["on_start"].as_array().into_iter().flatten().filter_map(|command| Some(command.as_str()?.to_string())).collect(),
         lsp: lsp_servers(&own["lsp"]),
     }
+}
+
+/// A ponytail or caveman level from settings.json; an unknown one loads as the default, like an unknown permission mode.
+fn level(value: &Value, levels: &[&str], default: &str) -> String {
+    value.as_str().filter(|level| levels.contains(level)).unwrap_or(default).to_string()
 }
 
 /// The built-in servers, each field replaced by the user's value where one is set; unknown names add a language.
@@ -205,6 +213,7 @@ pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
         "disabled_skills": settings.disabled_skills,
         "disabled_plugins": settings.disabled_plugins,
         "disabled_mcp": settings.disabled_mcp,
+        "approved_mcp": settings.approved_mcp,
         "plugin_settings": settings.plugin_settings,
         "ponytail": settings.ponytail,
         "caveman": settings.caveman,

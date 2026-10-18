@@ -484,11 +484,13 @@ impl Agent {
             "create_goal" | "get_goal" | "update_goal" => self.goal_tool(name, input),
             "load_tools" => self.load_tools(input),
             "add_directory" => self.add_directory(input),
-            "search_external_files" => tools::external::search(&self.extra_dirs, input),
-            "bg_start" | "bg_status" | "bg_list" => self.terminals.lock().unwrap().run(name, input, &self.cwd, &self.follow_ups),
+            "search_external_files" => tools::external::search(&self.extra_dirs, input, &self.abort),
+            "bg_start" => self.terminals.lock().unwrap().start(input, &self.cwd, &self.follow_ups),
+            "bg_status" => self.terminals.lock().unwrap().status_of(input, &self.follow_ups),
+            "bg_list" => Ok(self.terminals.lock().unwrap().describe_all()),
             "bg_kill" => {
                 let targets = self.terminals.lock().unwrap().for_kill(input);
-                targets.map(|targets| bg::kill(&targets, &self.follow_ups))
+                targets.map(|targets| bg::kill(&targets, &self.follow_ups, &self.abort))
             }
             "subagent" => self.subagent(input, emit),
             "bg_wait" => self.bg_wait(input),
@@ -812,14 +814,14 @@ impl Agent {
     /// None when the call may run; otherwise the tool result that explains the refusal.
     /// A user's "No" also stops the turn, like Esc.
     fn check_permission(&mut self, tool: &str, input: &Value, user_request: &str, emit: &mut dyn FnMut(Event)) -> Option<String> {
-        let edited_file = self.edited_file(input);
-        let request = permissions::request_for(tool, input, edited_file.as_deref())?;
+        let edited_files = edit_hooks::edited_files(tool, input, &self.cwd, &self.anchors);
+        let request = permissions::request_for(tool, input, &edited_files)?;
         let mode = *self.permission_mode.lock().unwrap();
         if mode == Mode::FullAccess || self.grants.allows(&request) {
             return None;
         }
         if mode == Mode::Auto {
-            return self.review(user_request, &request, emit);
+            return self.review(user_request, &request, input, emit);
         }
         let (reply, answer) = mpsc::channel();
         emit(Event::Permission { request: request.clone(), reply });
@@ -836,19 +838,24 @@ impl Agent {
         }
     }
 
-    /// Auto mode: a small model allows or denies the call; a failed review denies it.
-    fn review(&mut self, user_request: &str, request: &Request, emit: &mut dyn FnMut(Event)) -> Option<String> {
-        let prompt = permissions::review_prompt(user_request, &self.cwd, request);
-        let verdict = self.client.send(&api::plain_request(&self.cheap_model, permissions::REVIEW_SYSTEM, &prompt, 200), &self.abort, &mut |_| {});
-        let (allowed, reason) = match verdict {
+    /// Auto mode: a small model allows or denies the call; a failed review or a call too long to show whole denies it.
+    fn review(&mut self, user_request: &str, request: &Request, input: &Value, emit: &mut dyn FnMut(Event)) -> Option<String> {
+        let (allowed, reason) = match permissions::review_prompt(user_request, &self.cwd, request, input) {
+            Some(prompt) => self.ask_reviewer(&prompt),
+            None => (false, format!("the call is over {} characters, too long to review", permissions::REVIEW_DETAIL_CHARS)),
+        };
+        emit(Event::Reviewed { allowed, detail: request.detail.clone(), reason: reason.clone() });
+        if allowed { None } else { Some(format!("Denied by the auto-mode reviewer: {reason}. Try another way or ask the user.")) }
+    }
+
+    fn ask_reviewer(&mut self, prompt: &str) -> (bool, String) {
+        match self.client.send(&api::plain_request(&self.cheap_model, permissions::REVIEW_SYSTEM, prompt, 200), &self.abort, &mut |_| {}) {
             Ok(reply) => {
                 self.usage.add(reply.usage);
                 permissions::parse_review(&text_of(&reply.message))
             }
             Err(error) => (false, format!("review failed: {error}")),
-        };
-        emit(Event::Reviewed { allowed, detail: request.detail.clone(), reason: reason.clone() });
-        if allowed { None } else { Some(format!("Denied by the auto-mode reviewer: {reason}. Try another way or ask the user.")) }
+        }
     }
 
     fn push(&mut self, message: Value) -> Result<(), String> {
@@ -989,6 +996,7 @@ impl Agent {
     /// /worktree: pi pins a session to its cwd, so the history moves to a new session started in `cwd`.
     pub fn move_to(&mut self, cwd: PathBuf) -> Result<(), String> {
         let session = self.copy_session(&cwd)?;
+        self.grants = Grants::default();
         let from = self.cwd.display();
         self.shell_context.push(format!("Session moved from {from} to {}. Paths and git state from earlier messages refer to the old checkout.", cwd.display()));
         self.system = prompt::system_prompt(&self.agent_dir, &cwd, &crate::settings::load(&self.home).disabled_skills);
@@ -1067,6 +1075,7 @@ impl Agent {
 
     /// Replaces the conversation state with a saved (or empty) session's.
     pub fn load(&mut self, history: History) {
+        self.grants = Grants::default();
         self.next_ref = history.condensed.iter().map(|batch| batch.refs.len()).sum::<usize>() + 1;
         self.messages = history.messages;
         self.condensed = history.condensed;
@@ -1292,7 +1301,8 @@ impl Session {
     pub fn append(&self, entry: &Value) -> Result<(), String> {
         let Some(path) = &self.path else { return Ok(()) };
         let mut file = OpenOptions::new().create(true).append(true).open(path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
-        writeln!(file, "{entry}").map_err(|e| format!("Cannot write {}: {e}", path.display()))
+        // One write call, so a signal exit on another thread cannot leave half a line; writeln! on a File writes piecewise.
+        file.write_all(format!("{entry}\n").as_bytes()).map_err(|e| format!("Cannot write {}: {e}", path.display()))
     }
 
     /// /import: copies an exported session file into `dir` and returns its id for `resume`.

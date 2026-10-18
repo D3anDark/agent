@@ -1,34 +1,33 @@
-use std::process::Stdio;
+use std::time::Duration;
 
-/// Output handling for the model's bash calls, matching pi-rtk-optimizer's defaults.
+/// The model's bash calls: the command goes through `rtk rewrite`, the output loses ANSI codes and keeps its last `max_bytes`.
 /// shortcut: pi's build/test/git/linter output filters are not ported; `rtk rewrite` already routes those commands through rtk.
 pub struct Rtk {
     enabled: bool,
-    /// The bash output tail the model sees; the rest goes to a temp file.
+    /// The byte cap on the kept tail of bash output; the full output goes to a temp file.
     pub max_bytes: usize,
 }
 
 impl Rtk {
     pub const ON: Rtk = Rtk { enabled: true, max_bytes: 12_000 };
-    /// For commands the user typed with `!`: only the model's bash calls are rewritten.
+    /// For `!` commands the user typed and for every call when the rtk setting is off: no rewrite, no ANSI strip, the MAX_BYTES tail.
     pub const OFF: Rtk = Rtk { enabled: false, max_bytes: super::MAX_BYTES };
 
-    /// The command bash runs: rtk's rewrite of `command`, or `command` itself when rtk has none or is not installed.
+    /// The command bash runs: rtk's rewrite of `command`, or `command` itself when rtk is off, missing, slow, refuses or has no rewrite.
     pub fn rewrite(&self, command: &str) -> String {
-        let trimmed = command.trim_start();
-        if !self.enabled || trimmed.is_empty() || trimmed == "rtk" || trimmed.starts_with("rtk ") {
+        if !self.enabled || matches!(command.split_whitespace().next(), None | Some("rtk")) {
             return command.to_string();
         }
-        let output = crate::process::command("rtk").args(["rewrite", command]).stderr(Stdio::null()).output();
-        match output {
-            Ok(output) => rewritten(command, output.status.code(), &String::from_utf8_lossy(&output.stdout)).unwrap_or_else(|| command.to_string()),
-            Err(_) => command.to_string(),
+        // Runs before bash starts, where abort cannot reach it, so a hung rtk must not block the call.
+        match crate::process::output_within(crate::process::command("rtk").args(["rewrite", command]), Duration::from_secs(2)) {
+            Ok(Some(output)) => rewritten(command, output.status.code(), &String::from_utf8_lossy(&output.stdout)).unwrap_or_else(|| command.to_string()),
+            Ok(None) | Err(_) => command.to_string(),
         }
     }
 
     /// The bash output without ANSI codes, so they spend none of `max_bytes`.
     pub fn strip(&self, output: String) -> String {
-        if self.enabled { strip_ansi(&output) } else { output }
+        if self.enabled && output.contains('\x1b') { strip_ansi(&output) } else { output }
     }
 }
 
@@ -38,14 +37,11 @@ fn rewritten(original: &str, exit_code: Option<i32>, stdout: &str) -> Option<Str
         return None;
     }
     let command = stdout.trim();
-    (!command.is_empty() && command != original).then(|| command.to_string())
+    (!command.is_empty() && command != original.trim()).then(|| command.to_string())
 }
 
-/// Removes CSI (`ESC [ ... letter`) and OSC (`ESC ] ... BEL` or `ESC ] ... ESC \`) sequences.
+/// Removes CSI (`ESC [ ... final byte`), OSC (`ESC ] ... BEL` or `ESC ] ... ESC \`) and charset (`ESC ( B`) sequences.
 pub fn strip_ansi(text: &str) -> String {
-    if !text.contains('\x1b') {
-        return text.to_string();
-    }
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -54,15 +50,21 @@ pub fn strip_ansi(text: &str) -> String {
             continue;
         }
         match chars.next() {
-            Some('[') => {
-                while chars.next().is_some_and(|c| !c.is_ascii_alphabetic()) {}
-            }
+            Some('[') => while chars.next().is_some_and(|ch| !('\x40'..='\x7e').contains(&ch)) {},
             Some(']') => {
-                while let Some(c) = chars.next() {
-                    if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                // An OSC cut off by a killed command ends at the newline, not at the end of the output.
+                while let Some(ch) = chars.next() {
+                    if ch == '\n' {
+                        out.push(ch);
+                        break;
+                    }
+                    if ch == '\x07' || (ch == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
                         break;
                     }
                 }
+            }
+            Some('(' | ')' | '*' | '+') => {
+                chars.next();
             }
             _ => {}
         }
@@ -88,5 +90,13 @@ mod tests {
     fn output_loses_ansi_only_when_enabled() {
         assert_eq!(Rtk::ON.strip("\x1b[31mred\x1b[0m \x1b]8;;http://x\x07link\x1b]8;;\x1b\\".into()), "red link");
         assert_eq!(Rtk::OFF.strip("\x1b[1mx".into()), "\x1b[1mx");
+        assert_eq!(strip_ansi("a\x1b(Bb\x1b[2~c\x1b]8;;x\nd"), "abc\nd");
+    }
+
+    #[test]
+    fn rewrite_skips_rtk_when_off_or_already_rtk() {
+        assert_eq!(Rtk::OFF.rewrite("git status"), "git status");
+        assert_eq!(Rtk::ON.rewrite("rtk\tgit status"), "rtk\tgit status");
+        assert_eq!(rewritten("ls\n", Some(0), "ls\n"), None);
     }
 }

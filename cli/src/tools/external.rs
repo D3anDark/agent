@@ -1,5 +1,6 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use super::hashline::{resolve, str_arg};
 
@@ -17,7 +18,7 @@ pub fn directory(cwd: &Path, input: &Value) -> Result<PathBuf, String> {
 }
 
 /// `fd` over every added directory in order, grouped per directory, stopping at `maxResults` files in total.
-pub fn search(dirs: &[PathBuf], input: &Value) -> Result<String, String> {
+pub fn search(dirs: &[PathBuf], input: &Value, abort: &AtomicBool) -> Result<String, String> {
     if dirs.is_empty() {
         return Err("No external directories added. Use add_directory first.".into());
     }
@@ -35,7 +36,7 @@ pub fn search(dirs: &[PathBuf], input: &Value) -> Result<String, String> {
             break;
         }
         // One extra result tells a cut search from one that found exactly `remaining` files.
-        let found = super::search("fd", &fd_args(dir, pattern, remaining + 1), dir)?;
+        let found = super::search("fd", &fd_args(dir, pattern, remaining + 1), dir, abort, &[0])?;
         let mut files: Vec<&str> = found.lines().collect();
         if files.len() > remaining {
             files.truncate(remaining);
@@ -90,10 +91,11 @@ mod tests {
         let a = tree("a", &["one.md", "two.md"]);
         let b = tree("b", &["docs/three.md"]);
         let dirs = [a.clone(), b.clone()];
-        let cut = search(&dirs, &json!({"pattern": "*.md", "maxResults": 2})).unwrap();
-        let all = search(&dirs, &json!({"pattern": "*.md", "maxResults": 3})).unwrap();
-        let nested = search(&dirs, &json!({"pattern": "docs/*.md"})).unwrap();
-        let none = search(&dirs, &json!({"pattern": "*.rs"})).unwrap();
+        let search = |input| search(&dirs, &input, &AtomicBool::new(false)).unwrap();
+        let cut = search(json!({"pattern": "*.md", "maxResults": 2}));
+        let all = search(json!({"pattern": "*.md", "maxResults": 3}));
+        let nested = search(json!({"pattern": "docs/*.md"}));
+        let none = search(json!({"pattern": "*.rs"}));
         std::fs::remove_dir_all(&a).unwrap();
         std::fs::remove_dir_all(&b).unwrap();
         assert_eq!(cut.lines().filter(|line| line.ends_with(".md")).count(), 2, "{cut}");

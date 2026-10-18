@@ -291,7 +291,7 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        crate::process::signal_group(self.child.id(), crate::process::SIGKILL);
         let _ = self.child.wait();
     }
 }

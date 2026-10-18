@@ -66,7 +66,8 @@ impl Run {
 
     pub fn stop(&self) {
         if let Some(child) = self.child.lock().unwrap().as_mut() {
-            let _ = child.kill();
+            // SIGTERM, not SIGKILL: the child's handler then ends its own bash commands, terminals and servers.
+            crate::process::signal_group(child.id(), crate::process::SIGTERM);
         }
     }
 
@@ -165,6 +166,11 @@ impl Runs {
 
     pub fn running(&self) -> usize {
         self.list.iter().filter(|run| run.status() == "running").count()
+    }
+
+    /// Moves running runs to the top, each group kept in start order.
+    pub fn running_first(&mut self) {
+        self.list.sort_by_key(|run| run.status() != "running");
     }
 }
 
@@ -330,6 +336,21 @@ mod tests {
         };
         let error = runs.spawn(launch, true, &Arc::default()).err().unwrap();
         assert!(error.starts_with("Cannot start subagent"), "{error}");
+    }
+
+    #[test]
+    fn running_runs_move_to_the_top_in_start_order() {
+        let mut runs = Runs::default();
+        for (id, done) in [("sa-1", true), ("sa-2", false), ("sa-3", true), ("sa-4", false)] {
+            let run = Run { id: id.into(), ..scan_run() };
+            if done {
+                run.state.lock().unwrap().result = Some(Ok("done".into()));
+            }
+            runs.list.push(Arc::new(run));
+        }
+        runs.running_first();
+        let ids: Vec<&str> = runs.list.iter().map(|run| run.id.as_str()).collect();
+        assert_eq!(ids, ["sa-2", "sa-4", "sa-1", "sa-3"]);
     }
 
     fn scan_run() -> Run {

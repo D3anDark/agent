@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::tools::{MAX_BYTES, MAX_LINES, format_size};
@@ -16,7 +16,7 @@ pub struct Anchors {
     row_starts: Vec<u32>,
     probe: u32,
     owner: HashMap<String, PathBuf>,
-    minted: HashSet<String>,
+    minted: u32,
     files: HashMap<PathBuf, Snapshot>,
     /// One level per file, like pi: the bytes before and after the last anchored edit.
     undo: HashMap<PathBuf, (Vec<u8>, Vec<u8>)>,
@@ -50,15 +50,16 @@ impl Anchors {
             total += row_bits(row).iter().map(|b| b.count_ones()).sum::<u32>();
         }
         assert_eq!(total, ANCHOR_COUNT);
+        // The clock keeps a resumed session from re-minting anchors its history still shows on other lines.
         let mut probe: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in seed.bytes() {
+        for byte in seed.bytes().chain(crate::now_ms().to_le_bytes()) {
             probe = (probe ^ byte as u64).wrapping_mul(0x100_0000_01b3);
         }
         Anchors {
             row_starts,
             probe: (probe % ANCHOR_COUNT as u64) as u32,
+            minted: 0,
             owner: HashMap::new(),
-            minted: HashSet::new(),
             files: HashMap::new(),
             undo: HashMap::new(),
         }
@@ -80,45 +81,52 @@ impl Anchors {
         unreachable!("anchor index {index} is past its row")
     }
 
+    /// The stride is coprime with ANCHOR_COUNT, so the probe visits every anchor once before repeating; `sync` checks that some are left.
     fn mint(&mut self, path: &Path) -> String {
-        for _ in 0..ANCHOR_COUNT {
-            self.probe = (self.probe + PROBE_STRIDE) % ANCHOR_COUNT;
-            let anchor = self.anchor_at(self.probe);
-            if self.minted.insert(anchor.clone()) {
-                self.owner.insert(anchor.clone(), path.to_path_buf());
-                return anchor;
-            }
-        }
-        panic!("all {ANCHOR_COUNT} anchors are used in this session")
+        self.minted += 1;
+        self.probe = (self.probe + PROBE_STRIDE) % ANCHOR_COUNT;
+        let anchor = self.anchor_at(self.probe);
+        self.owner.insert(anchor.clone(), path.to_path_buf());
+        anchor
     }
 
     /// Records `lines` as the content of `path`. Lines in the unchanged prefix and suffix keep their anchors.
     // shortcut: prefix/suffix alignment re-mints anchors between two separate external edits, use a line diff if that hurts.
-    fn sync(&mut self, path: &Path, lines: Vec<String>) -> Change {
+    fn sync(&mut self, path: &Path, lines: Vec<String>) -> Result<Change, String> {
         let old = self.files.remove(path).unwrap_or_default();
-        let prefix = old.lines.iter().zip(&lines).take_while(|(a, b)| a == b).count();
-        let max_suffix = old.lines.len().min(lines.len()) - prefix;
-        let suffix = old.lines.iter().rev().zip(lines.iter().rev()).take(max_suffix).take_while(|(a, b)| a == b).count();
+        let (prefix, suffix) = unchanged_ends(&old.lines, &lines);
         let old_end = old.lines.len() - suffix;
+        let added = lines.len() - suffix - prefix;
+        if let Err(e) = self.anchors_left(path, added) {
+            self.files.insert(path.to_path_buf(), old);
+            return Err(e);
+        }
         let mut removed = Vec::new();
         for i in prefix..old_end {
             self.owner.remove(&old.anchors[i]);
             removed.push((old.anchors[i].clone(), old.lines[i].clone()));
         }
         let mut anchors = old.anchors[..prefix].to_vec();
-        let added = lines.len() - suffix - prefix;
         for _ in 0..added {
             anchors.push(self.mint(path));
         }
         anchors.extend_from_slice(&old.anchors[old_end..]);
         self.files.insert(path.to_path_buf(), Snapshot { lines, anchors });
-        Change { start: prefix, removed, added }
+        Ok(Change { start: prefix, removed, added })
+    }
+
+    fn anchors_left(&self, path: &Path, needed: usize) -> Result<(), String> {
+        let left = ANCHOR_COUNT - self.minted;
+        if needed as u64 > left as u64 {
+            return Err(format!("[E_ANCHORS_EXHAUSTED] {} needs {needed} new anchors, but only {left} of {ANCHOR_COUNT} are left in this session. Start a new session.", path.display()));
+        }
+        Ok(())
     }
 
     /// Syncs a canonical `path` from disk so search rows can carry its anchors.
     pub fn track(&mut self, path: &Path) -> Result<(), String> {
         let text = Text::load(path)?;
-        self.sync(path, text.lines);
+        self.sync(path, text.lines)?;
         Ok(())
     }
 
@@ -128,13 +136,19 @@ impl Anchors {
     }
 
     pub fn read(&mut self, cwd: &Path, input: &Value) -> Result<String, String> {
-        if let Some(paths) = input["paths"].as_array() {
+        if !input["paths"].is_null() {
+            let Some(paths) = input["paths"].as_array().filter(|paths| !paths.is_empty()) else {
+                return Err("[E_BAD_SHAPE] \"paths\" must be a non-empty array of strings.".into());
+            };
+            if !input["offset"].is_null() || !input["limit"].is_null() {
+                return Err("[E_BAD_SHAPE] \"paths\" reads whole files; use \"path\" with \"offset\" and \"limit\" to page one file.".into());
+            }
             return self.read_many(cwd, paths);
         }
         let path = existing_file(cwd, str_arg(input, &["path"])?)?;
         let text = Text::load(&path)?;
         let empty = text.is_empty();
-        self.sync(&path, text.lines);
+        self.sync(&path, text.lines)?;
         let snapshot = &self.files[&path];
         if empty {
             return Ok(format!("{}│\n[File is empty. Use replace to insert content.]", snapshot.anchors[0]));
@@ -143,8 +157,11 @@ impl Anchors {
         let start = match &input["offset"] {
             Value::Null => 0,
             Value::Number(n) => n.as_u64().filter(|&n| n >= 1).ok_or("[E_BAD_SHAPE] Read request field \"offset\" must be a positive integer.")? as usize - 1,
-            Value::String(s) if s.parse::<usize>().is_ok_and(|n| n >= 1) => s.parse::<usize>().unwrap() - 1,
-            Value::String(anchor) => self.index_of(&path, anchor)? + 1,
+            Value::String(s) => match s.parse::<usize>() {
+                Ok(0) => return Err("[E_BAD_SHAPE] Read request field \"offset\" must be a positive integer or an anchor.".into()),
+                Ok(n) => n - 1,
+                Err(_) => self.index_of(&path, s)? + 1,
+            },
             _ => return Err("[E_BAD_SHAPE] offset must be a line number or an anchor.".into()),
         };
         let limit = match &input["limit"] {
@@ -152,6 +169,9 @@ impl Anchors {
             v => Some(v.as_u64().filter(|&n| n >= 1).ok_or("[E_BAD_SHAPE] Read request field \"limit\" must be a positive integer.")? as usize),
         };
         if start >= total {
+            if let Some(anchor) = input["offset"].as_str().filter(|s| s.parse::<usize>().is_err()) {
+                return Ok(format!("[No lines after {anchor}: it is the last line of {}.]", path.display()));
+            }
             return Ok(format!("Offset {} is beyond end of file ({total} lines total). Use offset=1 to read from the start, or offset={total} to read the last line.", start + 1));
         }
         Ok(self.rows(&path, start, limit))
@@ -165,20 +185,20 @@ impl Anchors {
             let body = self.read(cwd, &json!({"path": path})).unwrap_or_else(|e| e);
             out.push(format!("== {path}\n{body}"));
         }
-        Ok(out.join("\n\n"))
+        Ok(crate::tools::truncate_head(out.join("\n\n"), "read"))
     }
 
     /// Serves `path` from `start`, cut at `limit`, MAX_LINES or MAX_BYTES, with a hint to continue.
     fn rows(&self, path: &Path, start: usize, limit: Option<usize>) -> String {
         let snapshot = &self.files[path];
         let total = snapshot.lines.len();
-        let end = limit.map_or(total, |limit| (start + limit).min(total));
+        let end = limit.map_or(total, |limit| start.saturating_add(limit).min(total));
         let mut out = String::new();
         let mut shown = start;
         let mut byte_limited = false;
         while shown < end {
             let row = row_text(&snapshot.anchors[shown], &snapshot.lines[shown], shown + 1, path);
-            if shown - start == MAX_LINES || out.len() + row.len() + 1 > MAX_BYTES {
+            if shown - start == MAX_LINES || out.len() + usize::from(shown > start) + row.len() > MAX_BYTES {
                 byte_limited = shown - start < MAX_LINES;
                 break;
             }
@@ -225,8 +245,14 @@ impl Anchors {
         if !region.contains(old) {
             return Err(format!("[E_NO_MATCH] old_string was not found in lines {}-{} of {}. Copy the fragment exactly from the served rows.", first + 1, last + 1, path.display()));
         }
-        let replaced = region.replace(old, new);
-        file.lines.splice(first..=last, replaced.split('\n').map(String::from));
+        let new = new.replace("\r\n", "\n");
+        let mut lines: Vec<String> = region.replace(old, &new).split('\n').map(String::from).collect();
+        // Like replace: a trailing break ends the last line written instead of adding a blank one.
+        if new.ends_with('\n') && region.ends_with(old) {
+            lines.pop();
+            file.final_newline |= last + 1 == file.lines.len();
+        }
+        file.lines.splice(first..=last, lines);
         self.commit(&path, file)
     }
 
@@ -263,15 +289,16 @@ impl Anchors {
         if path == source {
             refuse_inside(at, first, last)?;
             let at = if at > last { at - block.len() } else { at };
+            let count = block.len();
             source_file.lines.splice(at..at, block);
-            return self.commit(&path, source_file);
+            return Ok(format!("Successfully moved {count} line(s) within {}.\n\n{}", path.display(), self.commit(&path, source_file)?));
         }
         let count = block.len();
         file.lines.splice(at..at, block);
         let destination_diff = self.commit(&path, file)?;
-        let source_diff = self.commit(&source, source_file)?;
+        let source_diff = self.commit(&source, source_file).map_err(|e| format!("{e}. The block was already added to {}; call undo_last_change on {0} to remove it.", path.display()))?;
         Ok(format!(
-            "Successfully moved {count} line(s) from {} to {}.\n\n--- {0} ---\n{source_diff}\n\n--- {1} ---\n{destination_diff}",
+            "Successfully moved {count} line(s) from {} to {}. Undoing the move takes undo_last_change on both files.\n\n{0}:\n{source_diff}\n\n{1}:\n{destination_diff}",
             source.display(),
             path.display()
         ))
@@ -280,18 +307,21 @@ impl Anchors {
     /// Restores the bytes from before the last anchored edit of `path`, unless the file changed since.
     pub fn undo(&mut self, cwd: &Path, input: &Value) -> Result<String, String> {
         let raw = str_arg(input, &["path"])?;
-        let path = resolve(cwd, raw);
-        let path = path.canonicalize().unwrap_or(path);
-        let Some((before, after)) = self.undo.get(&path).cloned() else {
+        let path = canonical_even_if_deleted(resolve(cwd, raw));
+        let Some((before, after)) = self.undo.get(&path) else {
             return Err(format!("[E_UNDO_NONE] No undo history for {raw}."));
         };
-        let current = std::fs::read(&path).ok();
-        if current.as_ref().is_some_and(|bytes| *bytes != after) {
+        let current = match std::fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
+        };
+        if current.as_ref().is_some_and(|bytes| bytes != after) {
             return Err(format!("[E_UNDO_STALE] Cannot undo last change on {raw}: the file was modified after the edit, so nothing was reverted and the file was left untouched. The undo record is kept. Do not edit the file to force the undo. Call read() to inspect the current state."));
         }
-        std::fs::write(&path, before).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+        write_or_restore(&path, before, after)?;
         self.undo.remove(&path);
-        let change = self.sync(&path, Text::load(&path)?.lines);
+        let change = self.sync(&path, Text::load(&path)?.lines)?;
         let mut parts = vec![format!("Undone last change on {raw}.")];
         if current.is_none() {
             parts.push("The file was deleted; restored it from undo history.".into());
@@ -318,7 +348,7 @@ impl Anchors {
             return Err(format!("[E_BAD_SHAPE] \"{from}\" and \"{to}\" belong to different files."));
         }
         let file = Text::load(&path)?;
-        self.sync(&path, file.lines.clone());
+        self.sync(&path, file.lines.clone())?;
         let (a, b) = (self.index_of(&path, from)?, self.index_of(&path, to)?);
         Ok((path, file, a.min(b), a.max(b)))
     }
@@ -328,13 +358,12 @@ impl Anchors {
     }
 
     fn index_of(&self, path: &Path, anchor: &str) -> Result<usize, String> {
-        let stale = || format!("[E_STALE_ANCHOR] \"{anchor}\" is stale in {0}: the file changed since read. Call read() on {0} for fresh anchors.", path.display());
-        match self.owner.get(anchor) {
-            Some(owner) if owner != path => return Err(format!("[E_STALE_ANCHOR] \"{anchor}\" is owned by {}. Read {0} to use that anchor.", owner.display())),
-            None => return Err(stale()),
-            Some(_) => {}
+        if let Some(owner) = self.owner.get(anchor).filter(|owner| *owner != path) {
+            return Err(format!("[E_STALE_ANCHOR] \"{anchor}\" is owned by {}. Read {0} to use that anchor.", owner.display()));
         }
-        self.files[path].anchors.iter().position(|a| a == anchor).ok_or_else(stale)
+        self.files[path].anchors.iter().position(|a| a == anchor).ok_or_else(|| {
+            format!("[E_STALE_ANCHOR] \"{anchor}\" is not a live anchor in {0}: the file changed since read, or the anchor is mistyped (send only the 4 letters before │). Call read() on {0} for fresh anchors.", path.display())
+        })
     }
 
     fn commit(&mut self, path: &Path, mut file: Text) -> Result<String, String> {
@@ -342,15 +371,21 @@ impl Anchors {
             file.lines.push(String::new());
             file.final_newline = false;
         }
-        if file.lines == self.files[path].lines {
-            return Ok(format!("No changes made to {}: the edit produced identical content.", path.display()));
-        }
         let before = std::fs::read(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
         let after = file.encode();
-        std::fs::write(path, &after).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+        if after.as_bytes() == before {
+            return Ok(format!("No changes made to {}: the edit produced identical content.", path.display()));
+        }
+        // Reparsed, as an empty last line becomes the final newline on disk.
+        let written = Text::parse(&after);
+        let old = self.files.get(path).map(|snapshot| snapshot.lines.as_slice()).unwrap_or_default();
+        let (prefix, suffix) = unchanged_ends(old, &written.lines);
+        // Checked before writing, so the edit is not left on disk without anchors.
+        self.anchors_left(path, written.lines.len() - prefix - suffix)?;
+        write_or_restore(path, after.as_bytes(), &before)?;
         self.undo.insert(path.to_path_buf(), (before, after.into_bytes()));
-        let empty = file.is_empty();
-        let change = self.sync(path, file.lines);
+        let empty = written.is_empty();
+        let change = self.sync(path, written.lines)?;
         let snapshot = &self.files[path];
         if empty {
             return Ok(format!("File is empty. Use replace on {}│ to insert content.", snapshot.anchors[0]));
@@ -380,23 +415,34 @@ impl Anchors {
     }
 }
 
+const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
 impl Text {
     fn load(path: &Path) -> Result<Text, String> {
+        let size = std::fs::metadata(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?.len();
+        if size > MAX_FILE_BYTES {
+            return Err(format!("{} is {}, over the {} limit for anchored files. Use bash with sed -n and head.", path.display(), format_size(size as usize), format_size(MAX_FILE_BYTES as usize)));
+        }
         let bytes = std::fs::read(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
         if bytes[..bytes.len().min(8192)].contains(&0) {
-            return Err(format!("{} is a binary file.", path.display()));
+            return Err(format!("{} is a binary file. Use bash with file, xxd or strings to inspect it.", path.display()));
         }
-        let raw = String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text.", path.display()))?;
+        let raw = String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text. Use bash with iconv to convert it, or edit it with bash.", path.display()))?;
+        Ok(Text::parse(&raw))
+    }
+
+    /// CRLF only when every line break is one; a mixed file keeps its `\r`s in the line text.
+    fn parse(raw: &str) -> Text {
         let bom = raw.starts_with('\u{feff}');
-        let body = raw.trim_start_matches('\u{feff}');
-        let crlf = body.contains("\r\n");
+        let body = raw.strip_prefix('\u{feff}').unwrap_or(raw);
+        let crlf = body.contains("\r\n") && !body.replace("\r\n", "").contains('\n');
         let body = if crlf { body.replace("\r\n", "\n") } else { body.to_string() };
         let final_newline = body.ends_with('\n');
         let mut lines: Vec<String> = body.split('\n').map(String::from).collect();
         if final_newline {
             lines.pop();
         }
-        Ok(Text { lines, bom, crlf, final_newline })
+        Text { lines, bom, crlf, final_newline }
     }
 
     fn encode(&self) -> String {
@@ -414,6 +460,14 @@ impl Text {
     }
 }
 
+/// The line counts `old` and `new` share at the start and, not overlapping it, at the end.
+fn unchanged_ends(old: &[String], new: &[String]) -> (usize, usize) {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let max_suffix = old.len().min(new.len()) - prefix;
+    let suffix = old.iter().rev().zip(new.iter().rev()).take(max_suffix).take_while(|(a, b)| a == b).count();
+    (prefix, suffix)
+}
+
 fn row_bits(row: usize) -> &'static [u8] {
     &TABLE[PIECES * 2 + row * ROW_BYTES..][..ROW_BYTES]
 }
@@ -427,7 +481,8 @@ fn row_text(anchor: &str, line: &str, number: usize, path: &Path) -> String {
     if row.len() <= MAX_BYTES {
         return row;
     }
-    format!("{anchor}│[Line {number} is {}, exceeds {}; content not shown. Use bash: sed -n '{number}p' {} | head -c {MAX_BYTES}]", format_size(row.len()), format_size(MAX_BYTES), path.display())
+    let quoted = format!("'{}'", path.display().to_string().replace('\'', r"'\''"));
+    format!("{anchor}│[Line {number} is {}, exceeds {}; content not shown. Use bash: sed -n '{number}p' {quoted} | head -c {MAX_BYTES}]", format_size(line.len()), format_size(MAX_BYTES))
 }
 
 /// Replacement text to lines: one trailing line break ends the last line instead of adding a blank one.
@@ -459,9 +514,34 @@ pub fn str_arg<'a>(input: &'a Value, names: &[&str]) -> Result<&'a str, String> 
     names.iter().find_map(|name| input[name].as_str()).ok_or_else(|| format!("[E_BAD_SHAPE] Missing string field \"{}\".", names[0]))
 }
 
+/// Writes `new` in place; when that fails, puts `old` back so a half-written file is not left behind.
+pub(super) fn write_or_restore(path: &Path, new: &[u8], old: &[u8]) -> Result<(), String> {
+    let Err(e) = std::fs::write(path, new) else { return Ok(()) };
+    let outcome = match std::fs::write(path, old) {
+        Ok(()) => "The file was left as it was.".to_string(),
+        Err(restore) => format!("Restoring its previous content failed too ({restore}); it may be truncated."),
+    };
+    Err(format!("Cannot write {}: {e}. {outcome}", path.display()))
+}
+
+/// A deleted file has no canonical path, but its directory still does.
+fn canonical_even_if_deleted(path: PathBuf) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    match (path.parent().and_then(|dir| dir.canonicalize().ok()), path.file_name()) {
+        (Some(dir), Some(name)) => dir.join(name),
+        _ => path,
+    }
+}
+
 pub fn resolve(cwd: &Path, path: &str) -> PathBuf {
+    let home = || PathBuf::from(std::env::var("HOME").expect("main exits when HOME is not set"));
+    if path == "~" {
+        return home();
+    }
     match path.strip_prefix("~/") {
-        Some(rest) => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest),
+        Some(rest) => home().join(rest),
         None => cwd.join(path),
     }
 }
@@ -470,6 +550,9 @@ fn existing_file(cwd: &Path, path: &str) -> Result<PathBuf, String> {
     let full = resolve(cwd, path).canonicalize().map_err(|e| format!("Cannot read {path}: {e}"))?;
     if full.is_dir() {
         return Err(format!("{} is a directory. Use fd or bash ls to list it.", full.display()));
+    }
+    if !full.is_file() {
+        return Err(format!("{} is not a regular file. Use bash ls -l to inspect it.", full.display()));
     }
     Ok(full)
 }
@@ -508,6 +591,9 @@ mod tests {
         assert!(first.ends_with(&format!("[Showing lines 1-2 of 3. Use offset={} to continue.]", served[1])));
         let rest = anchors.read(Path::new("/"), &json!({"path": path, "offset": served[1]})).unwrap();
         assert_eq!(rest.split_once('│').unwrap().1, "c");
+        let last = anchors_of(&rest)[0].clone();
+        let after_last = anchors.read(Path::new("/"), &json!({"path": path, "offset": last})).unwrap();
+        assert_eq!(after_last, format!("[No lines after {last}: it is the last line of {}.]", path.display()));
     }
 
     #[test]
@@ -610,5 +696,94 @@ mod tests {
         assert!(out.contains("The file was deleted; restored it from undo history."));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "\u{feff}a\r\nb\r\n");
         assert!(anchors.undo(Path::new("/"), &undo).unwrap_err().starts_with("[E_UNDO_NONE]"));
+    }
+
+    #[test]
+    fn a_resumed_session_never_serves_the_anchors_of_its_previous_run() {
+        let path = temp_file("resume", "a\nb\n");
+        let first = anchors_of(&Anchors::new("s").read(Path::new("/"), &json!({"path": path})).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let resumed = anchors_of(&Anchors::new("s").read(Path::new("/"), &json!({"path": path})).unwrap());
+        assert!(!resumed.iter().any(|anchor| first.contains(anchor)), "{first:?} {resumed:?}");
+    }
+
+    #[test]
+    fn running_out_of_anchors_is_an_error_not_a_crash() {
+        let path = temp_file("exhaust", "a\n");
+        let mut anchors = Anchors::new("s");
+        anchors.minted = ANCHOR_COUNT;
+        assert!(anchors.read(Path::new("/"), &json!({"path": path})).unwrap_err().starts_with("[E_ANCHORS_EXHAUSTED]"));
+    }
+
+    #[test]
+    fn an_edit_needs_anchors_only_for_the_lines_it_adds() {
+        let path = temp_file("exhaust-edit", "a\nb\nc\n");
+        let mut anchors = Anchors::new("s");
+        let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
+        anchors.minted = ANCHOR_COUNT - 1;
+        anchors.replace(&json!({"remove_from": a[1], "remove_to": a[1], "text": "B\n"})).unwrap();
+    }
+
+    #[test]
+    fn a_mixed_line_ending_file_keeps_each_lines_ending() {
+        let path = temp_file("mixed", "a\nb\r\nc\n");
+        let mut anchors = Anchors::new("s");
+        let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
+        anchors.replace(&json!({"remove_from": a[2], "remove_to": a[2], "text": "C\n"})).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nb\r\nC\n");
+    }
+
+    #[test]
+    fn replace_match_ends_the_line_on_a_trailing_break_in_the_files_line_ending() {
+        let path = temp_file("match", "foo\r\nx\r\n");
+        let mut anchors = Anchors::new("s");
+        let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
+        anchors.replace_match(&json!({"replace_from": a[0], "replace_to": a[0], "old_string": "foo", "new_string": "a\r\nb\n"})).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\r\nb\r\nx\r\n");
+    }
+
+    #[test]
+    fn a_row_of_exactly_max_bytes_is_served() {
+        let line = "x".repeat(MAX_BYTES - "ABCD│".len());
+        let path = temp_file("wide", &format!("{line}\nb\n"));
+        let out = Anchors::new("s").read(Path::new("/"), &json!({"path": path})).unwrap();
+        assert!(out.lines().next().unwrap().ends_with(&line), "{}", &out[out.len() - 200..]);
+    }
+
+    #[test]
+    fn the_diff_serves_only_anchors_of_lines_on_disk() {
+        let path = temp_file("addnewline", "a");
+        let mut anchors = Anchors::new("s");
+        let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
+        let out = anchors.insert(&json!({"anchor": a[0], "direction": "after", "text": ""})).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\n");
+        assert!(!out.lines().any(|row| row.starts_with('+')), "{out}");
+    }
+
+    #[test]
+    fn undo_restores_a_file_deleted_after_an_edit_through_a_symlinked_dir() {
+        let path = temp_file("undolink", "a\n");
+        let link = path.parent().unwrap().with_extension("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(path.parent().unwrap(), &link).unwrap();
+        let through = json!({"path": link.join("f.txt")});
+        let mut anchors = Anchors::new("s");
+        let a = anchors_of(&anchors.read(Path::new("/"), &through).unwrap());
+        anchors.replace(&json!({"remove_from": a[0], "remove_to": a[0], "text": "b\n"})).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        anchors.undo(Path::new("/"), &through).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\n");
+    }
+
+    #[test]
+    fn read_refuses_devices() {
+        let err = Anchors::new("s").read(Path::new("/"), &json!({"path": "/dev/null"})).unwrap_err();
+        assert!(err.contains("is not a regular file"), "{err}");
+    }
+
+    #[test]
+    fn the_long_line_hint_quotes_the_path_and_measures_the_line() {
+        let row = row_text("ABCD", &"x".repeat(60_000), 1, Path::new("/r/it's x;y"));
+        assert!(row.contains("Line 1 is 58.6KB") && row.contains(r"sed -n '1p' '/r/it'\''s x;y' |"), "{row}");
     }
 }

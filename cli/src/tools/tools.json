@@ -1,7 +1,7 @@
 [
   {
     "name": "read",
-    "description": "Read a text file, or several whole files at once with `paths`, as `anchor│content` rows: a 4-character anchor (letters only, case-sensitive), `│`, then the line. Target edits by anchor, never by content or line number. `offset` takes a 1-indexed line number or a served anchor; with an anchor, `limit` counts lines after it — no line-number math. Page long files with `offset` and `limit`; when output says truncated, continue from the hinted `offset`. A stale anchor is refused with the current rows and fresh anchors. Images attach visually; binary, directory, and UTF-16/UTF-32 text are rejected; an empty file returns one empty row you can replace to seed content.",
+    "description": "Read a text file, or several whole files at once with `paths`, as `anchor│content` rows: a 4-character anchor (letters only, case-sensitive), `│`, then the line. Target edits by anchor, never by content or line number. `offset` takes a 1-indexed line number or a served anchor; with an anchor, `limit` counts lines after it — no line-number math. Page long files with `offset` and `limit`; when output says truncated, continue from the hinted `offset`. A stale anchor is refused; read the file again for fresh anchors. Images, binary files, directories, devices, UTF-16/UTF-32 text and files over 64MB are rejected; an empty file returns one empty row you can replace to seed content.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
@@ -39,7 +39,7 @@
   },
   {
     "name": "bash",
-    "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+    "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to the last 2000 lines or 12KB (50KB when rtk is off), whichever is hit first; if truncated, the full output is saved to a temp file. Commands with an rtk equivalent run through rtk, and ANSI codes are removed. The command receives no stdin (immediate EOF); interactive commands will not work. Pass a timeout in seconds, or null for none.",
     "eager_input_streaming": true,
     "strict": true,
     "input_schema": {
@@ -189,7 +189,7 @@
   },
   {
     "name": "copy",
-    "description": "Duplicate a range of lines at another anchor, in this or another file. The source rows and anchors stay live; the copied lines get fresh anchors in the destination's post-edit diff and keep their source line endings.\n\nA copy duplicates the content its source anchors were served from, so a same-message edit to the source file does not change what is copied.",
+    "description": "Duplicate a range of lines at another anchor, in this or another file. The source rows and anchors stay live; the copied lines get fresh anchors in the destination's post-edit diff and take the destination's line endings.\n\nA copy reads the source lines when it runs, after any earlier call in the same message.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
@@ -440,7 +440,7 @@
   },
   {
     "name": "subagent",
-    "description": "Spawn child agents that run as separate processes with their own context and every tool except load_tools and ask_user_question. Pass {label, prompt} for one child or {tasks: [{label, prompt}, ...]} to run several in parallel. The result is each child's final answer. With background: true it returns run ids at once and each answer arrives later as a message.",
+    "description": "Spawn child agents that run as separate processes with their own context and the base tools only: no load_tools, ask_user_question, or the optional agents, terminals and web groups. Pass {label, prompt} for one child or {tasks: [{label, prompt}, ...]} to run several in parallel. The result is each child's final answer. With background: true it returns run ids at once and each answer arrives later as a message.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -480,13 +480,13 @@
   },
   {
     "name": "bg_start",
-    "description": "Start a long-running shell command as a background terminal (executed via sh -c). Fire-and-forget: this returns immediately with an id, and you get a message with the final output when the process exits. The process receives NO stdin (immediate EOF) and there is no way to send input later — interactive commands will not work; use bg_kill to stop a stuck one. Terminals are session-scoped: they are killed when the agent exits. Output shown to you is tail-truncated (stdout 16.0KB, stderr 8.0KB); the full logs are captured to files and in the /ps viewer. Max 8 background terminals can run at once.",
+    "description": "Start a long-running shell command as a background terminal (executed via sh -c). Fire-and-forget: this returns immediately with an id, and you get a message with the final output when the process exits, unless bg_status or bg_kill already returned its final state. The process receives NO stdin (immediate EOF) and there is no way to send input later; interactive commands will not work, use bg_kill to stop a stuck one. Terminals are session-scoped: their process groups are killed when the agent exits. Output shown to you is tail-truncated: bg_status shows stdout 16.0KB/400 lines and stderr 8.0KB/200 lines, the exit message stdout 8.0KB/40 lines and stderr 4.0KB/20 lines. The full logs are in files whose paths the truncation notice gives; the /ps viewer shows the last 1.0MB. Max 8 background terminals can run at once.",
     "input_schema": {
       "type": "object",
       "required": ["command", "title"],
       "properties": {
         "command": { "type": "string", "description": "Shell command line to run in the background (sh -c). It receives no stdin (EOF immediately); interactive commands will not work." },
-        "title": { "type": "string", "description": "Short human-readable name shown in listings and the UI" },
+        "title": { "type": "string", "description": "Short human-readable name shown in listings and the UI; whitespace is collapsed and it is cut to 80 characters" },
         "working_dir": { "type": "string", "description": "Working directory (default: current working directory)" }
       }
     }
@@ -507,7 +507,7 @@
   },
   {
     "name": "bg_kill",
-    "description": "Stop one or more running background terminals (SIGTERM to the whole process tree, escalating to SIGKILL). Returns each terminal's final state; already-settled ids are reported as such.",
+    "description": "Stop one or more background terminals: SIGTERM to each terminal's process group, escalating to SIGKILL after 2s. A process that left the group (setsid, setpgid) is not reached. Returns each terminal's final state, or that it did not stop within 5s, in which case its exit arrives later as a message; already-settled ids are reported as such, and the group members they left behind are stopped too.",
     "input_schema": {
       "type": "object",
       "required": ["ids"],
@@ -743,7 +743,7 @@
           ],
           "description": "Search provider, or a non-empty list of providers to search simultaneously. Omit or use auto for the configured provider; all searches every eligible provider. Providers without credentials return an error."
         },
-        "proxy": { "type": "string", "description": "http(s) or socks proxy URL for this call's outbound requests; empty string forces direct access." }
+        "proxy": { "type": "string", "description": "http(s) or socks proxy URL for this call's outbound requests; empty string forces direct access. Page fetches refuse a proxy on a local or private address." }
       },
       "additionalProperties": false
     }
@@ -757,8 +757,8 @@
         "url": { "type": "string", "description": "Single URL to fetch." },
         "urls": { "type": "array", "items": { "type": "string" }, "description": "Multiple URLs fetched in parallel." },
         "mode": { "type": "string", "enum": ["readable", "raw"], "description": "readable = extract readable content as markdown (default); raw = return the exact textual body using direct HTTP only." },
-        "forceClone": { "type": "boolean", "description": "Force cloning GitHub repositories that exceed the size threshold." },
-        "proxy": { "type": "string", "description": "http(s) or socks proxy URL for this call's outbound requests; empty string forces direct access." }
+        "forceClone": { "type": "boolean", "description": "Delete the cached clone of a GitHub repository and clone it again." },
+        "proxy": { "type": "string", "description": "http(s) or socks proxy URL for this call's outbound requests; empty string forces direct access. Page fetches refuse a proxy on a local or private address." }
       },
       "additionalProperties": false
     }
@@ -808,7 +808,7 @@
           ],
           "description": "Search provider, or a non-empty list of providers to search simultaneously. Omit or use auto for the configured provider; all searches every eligible provider. Providers without credentials return an error."
         },
-        "proxy": { "type": "string", "description": "http(s) or socks proxy URL for this call's outbound requests; empty string forces direct access." }
+        "proxy": { "type": "string", "description": "http(s) or socks proxy URL for this call's outbound requests; empty string forces direct access. Page fetches refuse a proxy on a local or private address." }
       },
       "required": ["claim"],
       "additionalProperties": false

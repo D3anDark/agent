@@ -32,7 +32,7 @@ use crate::agent::{self, Agent, Event, FileChange, RestoredFiles, RewindPoint, S
 use crate::api::{AccountView, Client, Delta, Usage};
 use crate::agent::FollowUp;
 use crate::agent::modes::{self, CAVEMAN_LEVELS, PONYTAIL_LEVELS};
-use crate::agent::permissions::{Decision, MODES, Mode, Request};
+use crate::agent::permissions::{Decision, Kind, MODES, Mode, Request};
 use crate::agent::skill_usage;
 use crate::agent::usage::{self, ModelTotal, tokens};
 use crate::agent::prompt::{Skill, Template};
@@ -112,7 +112,8 @@ enum Panel {
     Plugins { index: usize },
     /// Every skill, including the ones `Settings.disabled_skills` leaves out of the prompt.
     Skills { index: usize },
-    Mcp { index: usize },
+    /// `confirm`: space was pressed once on a project server whose entry the panel cuts.
+    Mcp { index: usize, confirm: bool },
     /// Token totals per `usage::SCOPES`, read when /usage opens; the last tab shows subscription limits.
     Usage { tab: usize, totals: [Vec<ModelTotal>; 4] },
     /// The settings a plugin declares in plugin.json; `edit` holds a string being typed.
@@ -203,7 +204,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("export", "[path] — Export session: .jsonl (default) or .md for plain text"),
     ("model", "[search] — Select model"),
     ("settings", "Open settings menu"),
-    ("permissions", "<mode> — full access, ask or auto"),
+    ("permissions", "<mode> — ask, auto or full access"),
     ("thinking", "<level> — Set thinking level"),
     ("ponytail", "<off | lite | full | ultra> — Set the ponytail level"),
     ("caveman", "<off | full | ultra | wenyan> — Set the caveman level"),
@@ -459,6 +460,7 @@ pub fn run(agent: Agent, setup: Setup, model_lists: JoinHandle<Vec<String>>) -> 
     let result = event_loop(&mut app, &inbox, &mut out);
     app.terminals.lock().unwrap().kill_all();
     app.subagents.lock().unwrap().stop_all();
+    crate::tools::remove_spills();
     if let Some(recording) = app.recording.take() {
         recording.cancel();
     }
@@ -824,8 +826,9 @@ impl App {
         };
         app.push(Item::Lines(banner()));
         app.system("skills", format!("{} loaded", app.enabled_skills().count()));
-        for (name, banner) in [("ponytail", modes::PONYTAIL_BANNER), ("caveman", modes::CAVEMAN_BANNER)] {
-            if let Some(level) = agent.modes.split(banner).nth(1).and_then(|rest| rest.lines().next()) {
+        let levels = [("ponytail", modes::PONYTAIL_BANNER, app.settings.ponytail.clone()), ("caveman", modes::CAVEMAN_BANNER, app.settings.caveman.clone())];
+        for (name, banner, level) in levels {
+            if agent.modes.contains(banner) {
                 app.system(name, format!("loaded, level {level}"));
             }
         }
@@ -929,11 +932,9 @@ impl App {
                 self.input_selection.press(point, &text);
             }
             MouseEventKind::Drag(MouseButton::Left) => self.input_selection.drag(point, &text),
-            MouseEventKind::Up(MouseButton::Left) if self.input_selection.release() => {
-                if self.settings.copy_on_select {
-                    let text = self.input_selected_text();
-                    self.copy_selection(&text);
-                }
+            MouseEventKind::Up(MouseButton::Left) if self.input_selection.release() && self.settings.copy_on_select => {
+                let text = self.input_selected_text();
+                self.copy_selection(&text);
             }
             _ => {}
         }
@@ -1237,7 +1238,7 @@ impl App {
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
             KeyCode::Up => self.editor.up(self.editor_width),
             KeyCode::Down if self.editor.is_empty() && self.subagents.lock().unwrap().running() > 0 => {
-                self.panel = Some(Panel::Subagents { index: 0 });
+                self.open_subagents();
             }
             KeyCode::Down => self.editor.down(self.editor_width),
             KeyCode::Char('v') if ctrl => self.attach(image::from_clipboard()),
@@ -1547,13 +1548,13 @@ impl App {
                     self.update_settings(|s| s.permission_mode = mode);
                     self.system("permissions", format!("mode set to {}", mode.label()));
                 }
-                None => self.push(Item::Error(format!("Unknown mode {args}. Modes: full access, ask, auto"))),
+                None => self.push(Item::Error(format!("Unknown mode {args}. Modes: ask, auto, full access"))),
             },
             "settings" => self.panel = Some(Panel::Settings { row: 0, query: Editor::new() }),
             "todos" => self.panel = Some(Panel::Todos { index: 0 }),
             "plugins" => self.panel = Some(Panel::Plugins { index: 0 }),
             "skills" => self.panel = Some(Panel::Skills { index: 0 }),
-            "mcp" => self.panel = Some(Panel::Mcp { index: 0 }),
+            "mcp" => self.panel = Some(Panel::Mcp { index: 0, confirm: false }),
             "changes" => _ = self.commands.send(Command::Changes),
             "context" => _ = self.commands.send(Command::Context),
             "history" => self.open_history(),
@@ -1570,7 +1571,7 @@ impl App {
             "ps" if self.terminals.lock().unwrap().list.is_empty() => self.system("ps", "No background terminals yet. The agent starts them with bg_start."),
             "ps" => self.panel = Some(Panel::Terminals { index: 0 }),
             "subagents" if self.subagents.lock().unwrap().list.is_empty() => self.system("subagents", "No subagent runs yet."),
-            "subagents" => self.panel = Some(Panel::Subagents { index: 0 }),
+            "subagents" => self.open_subagents(),
             "login" => self.panel = Some(Panel::Login(login::Login::Kind { index: 0 })),
             "voice" => match voice::start(&self.home) {
                 Ok(recording) => self.recording = Some(recording),
@@ -1863,25 +1864,31 @@ impl App {
                 }
                 _ => {}
             },
-            Some(Panel::Mcp { index }) => {
+            Some(Panel::Mcp { index, confirm }) => {
                 let (views, _) = self.mcp.list();
                 *index = (*index).min(views.len().saturating_sub(1));
                 let Some(view) = views.get(*index) else { return };
                 match code {
-                    KeyCode::Up => *index = index.saturating_sub(1),
-                    KeyCode::Down => *index = (*index + 1).min(views.len() - 1),
+                    KeyCode::Up => (*index, *confirm) = (index.saturating_sub(1), false),
+                    KeyCode::Down => (*index, *confirm) = ((*index + 1).min(views.len() - 1), false),
                     KeyCode::Char('r') => self.mcp.reconnect(&view.name),
                     KeyCode::Char('l') if view.http => self.mcp.login(&view.name),
-                    KeyCode::Char(' ') => {
+                    // An entry the panel cuts is approved on the second press, after the user has read the file.
+                    KeyCode::Char(' ') if view.approval.is_some() && !*confirm && terminal::size().map_or(true, |(width, _)| mcp_entry(&view.entry, width as usize).1) => *confirm = true,
+                    // A server `mcp.json` turns off stays off; only the file can turn it on.
+                    KeyCode::Char(' ') if view.enabled => {
+                        *confirm = false;
                         let name = view.name.clone();
-                        self.update_settings(|s| {
-                            if s.disabled_mcp.contains(&name) {
+                        let approval = view.approval.clone();
+                        self.update_settings(|s| match approval {
+                            Some(key) => {
+                                s.approved_mcp.push(key);
                                 s.disabled_mcp.retain(|disabled| *disabled != name);
-                            } else {
-                                s.disabled_mcp.push(name);
                             }
+                            None if s.disabled_mcp.contains(&name) => s.disabled_mcp.retain(|disabled| *disabled != name),
+                            None => s.disabled_mcp.push(name),
                         });
-                        self.mcp.sync(&self.settings.disabled_mcp);
+                        self.mcp.sync(&self.settings.disabled_mcp, &self.settings.approved_mcp);
                     }
                     _ => {}
                 }
@@ -2666,13 +2673,15 @@ impl App {
                 };
                 view.render(width, PANEL_ROWS)
             }
-            Panel::Mcp { index } => {
+            Panel::Mcp { index, confirm } => {
                 let (views, error) = self.mcp.list();
                 let name_width = views.iter().map(|view| view.name.chars().count()).max().unwrap_or(0);
                 let mut rows = Vec::new();
                 for view in &views {
-                    let disabled = self.settings.disabled_mcp.contains(&view.name);
+                    let on = view.enabled && view.approval.is_none() && !self.settings.disabled_mcp.contains(&view.name);
                     let mut right = vec![match &view.status {
+                        crate::mcp::Status::Off if view.approval.is_some() => span("project server, space to approve", WARN),
+                        crate::mcp::Status::Off if !view.enabled => span("off in mcp.json", MUTED),
                         crate::mcp::Status::Off => span("disabled", MUTED),
                         crate::mcp::Status::Connecting => span("connecting", MUTED),
                         crate::mcp::Status::LoggingIn => span("logging in (browser)", WARN),
@@ -2682,7 +2691,7 @@ impl App {
                     if view.logged_in {
                         right.push(span("  logged in", MUTED));
                     }
-                    let mark = if disabled { "[ ]" } else { "[x]" };
+                    let mark = if on { "[x]" } else { "[ ]" };
                     rows.push(panel::Row { left: format!("{mark} {:<name_width$}  {}", view.name, view.target), right });
                 }
                 let empty = match &error {
@@ -2699,7 +2708,17 @@ impl App {
                     empty,
                     hint: "↑↓ navigate     space enable/disable     r reconnect     l log in     esc close",
                 };
-                view.render(width, PANEL_ROWS)
+                let mut lines = view.render(width, PANEL_ROWS);
+                // `env`, `cwd` and `headers` decide what a project server runs as much as its command does.
+                if let Some(selected) = views.get(*index).filter(|view| view.approval.is_some()) {
+                    let (mut entry, cut) = mcp_entry(&selected.entry, width);
+                    if cut && *confirm {
+                        entry.push(vec![span("  read the whole entry in the file, then press space again to approve it", WARN)]);
+                    }
+                    let above_hint = lines.len() - 1;
+                    lines.splice(above_hint..above_hint, entry);
+                }
+                lines
             }
             Panel::Plugins { index } => {
                 let rows: Vec<panel::Row> = self
@@ -2868,6 +2887,12 @@ impl App {
         }
     }
 
+    /// Sorts only on open, so a run that finishes does not move under the cursor while the panel is up.
+    fn open_subagents(&mut self) {
+        self.subagents.lock().unwrap().running_first();
+        self.panel = Some(Panel::Subagents { index: 0 });
+    }
+
     fn session_title(&self, id: &str) -> String {
         let session = Session::list(&self.sessions_dir).into_iter().find(|s| s.id == id);
         session.map_or(id.to_string(), |s| s.name.unwrap_or(s.title))
@@ -2897,7 +2922,7 @@ impl App {
                 let mut commands = self.slash_commands.clone();
                 commands.extend(self.enabled_skills().map(|skill| (format!("skill:{}", skill.name), skill.description.split_whitespace().collect::<Vec<_>>().join(" "))));
                 commands.extend(self.plugins.commands());
-                matching_commands(&commands, &self.editor.text())
+                matching_commands(&commands, slash_query(&self.editor.text(), self.editor.before_cursor()))
             }
         }
     }
@@ -2921,16 +2946,21 @@ impl App {
     }
 
     /// Fills the editor with the selected command; commands without arguments run right away on Enter.
+    /// A `/` typed in front of existing text keeps that text as the command's arguments, or in the editor for a command without them.
     fn accept_slash(&mut self, run: bool) {
         let matches = self.menu_matches();
-        let (name, _) = &matches[self.menu_index.min(matches.len() - 1)];
-        let takes_args = matches!(name.as_str(), "thinking" | "rename-title" | "btw" | "goal" | "import") || name.starts_with("skill:") || self.templates.iter().any(|t| &t.name == name);
-        if takes_args || !run {
-            self.editor.set(&format!("/{name}{}", if takes_args { " " } else { "" }));
-            return;
+        let name = matches[self.menu_index.min(matches.len() - 1)].0.clone();
+        let takes_args = matches!(name.as_str(), "thinking" | "rename-title" | "btw" | "goal" | "import") || name.starts_with("skill:") || self.templates.iter().any(|t| t.name == name);
+        let text = self.editor.text();
+        let rest = text[slash_query(&text, self.editor.before_cursor()).len()..].trim().to_string();
+        if takes_args {
+            self.editor.set(&format!("/{name} {rest}"));
+        } else if run || !rest.is_empty() {
+            self.editor.set(&rest);
+            self.submit(format!("/{name}"));
+        } else {
+            self.editor.set(&format!("/{name}"));
         }
-        self.editor.set("");
-        self.submit(format!("/{name}"));
     }
 
     fn menu(&self) -> Vec<Line> {
@@ -3761,6 +3791,11 @@ fn plain_json(value: &Value) -> String {
     }
 }
 
+/// What the slash menu completes: the `/word` up to the cursor when the cursor sits in the text's first word, else the whole text.
+fn slash_query<'a>(text: &'a str, before_cursor: &'a str) -> &'a str {
+    if text.starts_with(before_cursor) && !before_cursor.contains(char::is_whitespace) { before_cursor } else { text }
+}
+
 /// Commands matching a typed `/name`: prefix matches first, then names containing it. Past the name, its known arguments.
 fn matching_commands(commands: &[(String, String)], text: &str) -> Vec<(String, String)> {
     let Some(query) = text.strip_prefix('/') else { return Vec::new() };
@@ -3870,6 +3905,18 @@ fn scrollbar(total: usize, visible: usize, scroll: usize) -> Vec<&'static str> {
             _ => "│",
         })
         .collect()
+}
+
+/// A project server's entry wrapped to `width` and cut to 6 rows; true when cut.
+fn mcp_entry(entry: &str, width: usize) -> (Vec<Line>, bool) {
+    const ROWS: usize = 6;
+    let mut lines = wrap(&[span(entry, WARN)], width, &vec![span("  ", PLAIN)]);
+    let cut = lines.len() > ROWS;
+    if cut {
+        lines.truncate(ROWS - 1);
+        lines.push(vec![span("  … cut here, read the rest in .mcp.json or .agents/mcp.json", MUTED)]);
+    }
+    (lines, cut)
 }
 
 /// Pads between `left` and `right` so `right` ends at the last column.
@@ -4210,9 +4257,9 @@ fn open_in_browser(url: &str) -> Result<(), String> {
 /// fx's "Permission needed" prompt.
 fn permission_lines(request: &Request, selected: usize, width: usize) -> Vec<Line> {
     let title = vec![span("  ", PLAIN), span("Permission needed · Choose one", PLAIN.bold())];
-    let always = if request.kind == "Command" { "Yes, and don't ask again for this exact command" } else { "Yes, and don't ask again for this file" };
-    let mut lines = vec![Vec::new(), spread(title, vec![span(request.kind, MUTED)], width), Vec::new(), vec![span(format!("  {}", request.question), PLAIN.bold())], Vec::new()];
-    let prefix = if request.kind == "Command" { "$ " } else { "" };
+    let always = request.kind.always();
+    let mut lines = vec![Vec::new(), spread(title, vec![span(request.kind.label(), MUTED)], width), Vec::new(), vec![span(format!("  {}", request.question), PLAIN.bold())], Vec::new()];
+    let prefix = if request.kind == Kind::Command { "$ " } else { "" };
     for (index, line) in request.detail.lines().enumerate() {
         let lead = if index == 0 { prefix } else { "  " };
         lines.extend(wrap(&[span(format!("{lead}{line}"), BRIGHT.bold())], width, &vec![span("  ", PLAIN)]));
@@ -4481,6 +4528,13 @@ mod tests {
     }
 
     #[test]
+    fn slash_menu_completes_a_slash_typed_in_front_of_existing_text() {
+        assert_eq!(slash_query("/skfix the bug", "/sk"), "/sk");
+        assert_eq!(slash_query("/thinking m", "/thinking m"), "/thinking m");
+        assert_eq!(slash_query("fix the bug /sk", "fix the bug /sk"), "fix the bug /sk");
+    }
+
+    #[test]
     fn slash_menu_lists_known_arguments_after_the_name() {
         let names = |text: &str| matching_commands(&[], text).into_iter().map(|c| c.0).collect::<Vec<_>>();
         assert_eq!(names("/thinking m"), ["thinking minimal", "thinking medium", "thinking max"]);
@@ -4619,12 +4673,6 @@ mod tests {
     }
 
     #[test]
-    fn log_lines_drop_colors_and_keep_the_last_progress_redraw() {
-        let lines: Vec<String> = log_lines("\x1b[32mok\x1b[0m\n10%\r55%\r100%\nabcdefghij", 6).iter().map(text).collect();
-        assert_eq!(lines, [" ok", " 100%", " abcde", " fghij"]);
-    }
-
-    #[test]
     fn subagent_lines_keep_consecutive_tool_calls_together() {
         let dir = std::env::temp_dir().join(format!("agent-subagent-tools-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -4646,6 +4694,12 @@ mod tests {
         let done = lines.iter().position(|line| line.contains("Done.")).unwrap();
         assert!(lines[one..two].iter().all(|line| !line.trim().is_empty()), "{lines:#?}");
         assert!(lines[two..done].iter().any(|line| line.trim().is_empty()), "{lines:#?}");
+    }
+
+    #[test]
+    fn log_lines_drop_colors_and_keep_the_last_progress_redraw() {
+        let lines: Vec<String> = log_lines("\x1b[32mok\x1b[0m\n10%\r55%\r100%\nabcdefghij", 6).iter().map(text).collect();
+        assert_eq!(lines, [" ok", " 100%", " abcde", " fghij"]);
     }
 
     #[test]

@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -32,6 +33,7 @@ struct State {
 
 struct Entry {
     server: Server,
+    approved: bool,
     /// Which connection attempt owns `connection`; 0 when none, so late answers of a replaced one are dropped.
     run: u64,
     connection: Connection,
@@ -60,6 +62,12 @@ pub struct View {
     /// Whether the server is reached over HTTP, so it can take an OAuth login.
     pub http: bool,
     pub logged_in: bool,
+    /// False when `mcp.json` sets `"enabled": false`.
+    pub enabled: bool,
+    /// The key to add to `settings.approved_mcp` before this project server may run.
+    pub approval: Option<String>,
+    /// The merged entry, launch fields first, before `${VAR}` expansion: what the user approves.
+    pub entry: String,
 }
 
 pub enum Status {
@@ -81,24 +89,23 @@ impl Mcp {
         self.state.lock().unwrap().on_change = Some(Arc::new(callback));
     }
 
-    /// Rereads `mcp.json`: connects enabled servers not in `disabled`, stops the rest, and
-    /// keeps connections whose command or URL did not change.
-    pub fn sync(&self, disabled: &[String]) {
-        let (servers, error) = match config::load(&self.home, &self.cwd) {
-            Ok(servers) => (servers, None),
-            Err(error) => (Vec::new(), Some(error)),
-        };
+    /// Rereads `mcp.json`: connects enabled servers not in `disabled` whose project entry, if any, is in
+    /// `approved`, stops the rest, and keeps connections whose command or URL did not change.
+    pub fn sync(&self, disabled: &[String], approved: &[String]) {
+        let (servers, error) = config::load(&self.home, &self.cwd);
         let mut state = self.state.lock().unwrap();
         state.error = error;
         let mut previous = std::mem::take(&mut state.servers);
         for server in servers {
-            let wanted = server.enabled && !disabled.contains(&server.name);
+            let is_approved = server.approval.as_ref().is_none_or(|key| approved.contains(key));
+            let wanted = server.enabled && is_approved && !disabled.contains(&server.name);
             let kept = previous.iter().position(|entry| entry.server.name == server.name && entry.server.launch == server.launch);
             let mut entry = match kept {
                 Some(index) => previous.remove(index),
-                None => Entry { server: server.clone(), run: 0, connection: Connection::Off },
+                None => Entry { server: server.clone(), approved: false, run: 0, connection: Connection::Off },
             };
             entry.server = server;
+            entry.approved = is_approved;
             let running = !matches!(entry.connection, Connection::Off);
             if !wanted {
                 (entry.run, entry.connection) = (0, Connection::Off);
@@ -108,6 +115,15 @@ impl Mcp {
                 let index = state.servers.len() - 1;
                 self.connect(&mut state, index);
             }
+        }
+    }
+
+    /// Waits until no server is still connecting, so a run without a UI starts with every tool.
+    pub fn settled(&self) {
+        let start = Instant::now();
+        let connecting = || self.state.lock().unwrap().servers.iter().any(|entry| matches!(entry.connection, Connection::Connecting));
+        while connecting() && start.elapsed() < client::CONNECT_TIMEOUT {
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 
@@ -123,15 +139,16 @@ impl Mcp {
     /// Opens the browser to log in to an enabled HTTP server, then reconnects with the new token.
     pub fn login(&self, name: &str) {
         let mut state = self.state.lock().unwrap();
-        let run = state.next_run + 1;
+        state.next_run += 1;
+        let run = state.next_run;
         let Some(entry) = state.servers.iter_mut().find(|entry| entry.server.name == name) else { return };
         let Launch::Http { url, .. } = &entry.server.launch else { return };
-        if matches!(entry.connection, Connection::Off) {
+        // The first login waits up to its timeout for the browser; a second one would open another tab.
+        if matches!(entry.connection, Connection::Off | Connection::LoggingIn) {
             return;
         }
         let url = url.clone();
         (entry.run, entry.connection) = (run, Connection::LoggingIn);
-        state.next_run = run;
         let (mcp, name) = (self.clone(), name.to_string());
         drop(state);
         self.changed();
@@ -141,7 +158,7 @@ impl Mcp {
         });
     }
 
-    /// Tool schemas of the ready servers. Names cut to 64 characters can clash; the first one wins.
+    /// Tool schemas of the ready servers. Sanitized or cut names can clash; the first one wins.
     pub fn tools(&self) -> Vec<Value> {
         let state = self.state.lock().unwrap();
         let mut seen = HashSet::new();
@@ -174,9 +191,11 @@ impl Mcp {
     pub fn list(&self) -> (Vec<View>, Option<String>) {
         let state = self.state.lock().unwrap();
         let views = state.servers.iter().map(|entry| {
+            let approval = entry.server.approval.clone().filter(|_| !entry.approved);
             let (target, http, logged_in) = match &entry.server.launch {
                 Launch::Stdio { command, args, .. } => (std::iter::once(command).chain(args).cloned().collect::<Vec<_>>().join(" "), false, false),
-                Launch::Http { url, .. } => (url.clone(), true, oauth::logged_in(&self.home, url)),
+                // The origin only: a `${VAR}` secret expanded into the path or query stays off screen.
+                Launch::Http { url, .. } => (oauth::origin(url).to_string(), true, oauth::logged_in(&self.home, url)),
             };
             let status = match &entry.connection {
                 Connection::Off => Status::Off,
@@ -185,7 +204,7 @@ impl Mcp {
                 Connection::Ready { tools, .. } => Status::Ready { tools: tools.len() },
                 Connection::Failed(error) => Status::Failed(error.clone()),
             };
-            View { name: entry.server.name.clone(), target, status, http, logged_in }
+            View { name: entry.server.name.clone(), target, status, http, logged_in, enabled: entry.server.enabled, approval, entry: entry.server.raw.clone() }
         });
         (views.collect(), state.error.clone())
     }
@@ -290,8 +309,9 @@ for line in sys.stdin:
         mcp.on_change(move || {
             let _ = changed.send(());
         });
-        mcp.sync(&[]);
-        change.recv_timeout(Duration::from_secs(10)).unwrap();
+        mcp.sync(&[], &[]);
+        mcp.settled();
+        assert!(change.try_recv().is_ok());
 
         let names: Vec<_> = mcp.tools().iter().map(|tool| tool["name"].clone()).collect();
         assert_eq!(names, ["mcp__fake__echo", "mcp__fake__fail"]);
@@ -305,11 +325,39 @@ for line in sys.stdin:
         assert!(matches!(views[0].status, Status::Ready { tools: 2 }));
         assert!(matches!(views[1].status, Status::Off));
 
-        mcp.sync(&["fake".into()]);
+        mcp.sync(&["fake".into()], &[]);
         let (views, _) = mcp.list();
         std::fs::remove_dir_all(&home).unwrap();
         assert!(mcp.tools().is_empty());
         assert!(matches!(views[0].status, Status::Off));
+    }
+
+    #[test]
+    fn a_project_server_runs_only_once_approved() {
+        let root = std::env::temp_dir().join(format!("agent-mcp-project-{}", std::process::id()));
+        let (home, cwd) = (root.join("home"), root.join("repo"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let config = json!({"mcpServers": {"fake": {"command": "python3", "args": ["-c", FAKE_SERVER]}}});
+        std::fs::write(cwd.join(".mcp.json"), config.to_string()).unwrap();
+        let mcp = Mcp::new(&home, &cwd);
+        let (changed, change) = mpsc::channel();
+        mcp.on_change(move || {
+            let _ = changed.send(());
+        });
+
+        mcp.sync(&[], &[]);
+        let (views, _) = mcp.list();
+        assert!(matches!(views[0].status, Status::Off));
+        let key = views[0].approval.clone().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&views[0].entry).unwrap(), config["mcpServers"]["fake"]);
+
+        mcp.sync(&[], &[key]);
+        change.recv_timeout(Duration::from_secs(10)).unwrap();
+        let (views, _) = mcp.list();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(matches!(views[0].status, Status::Ready { tools: 2 }));
+        assert_eq!(views[0].approval, None);
     }
 
     #[test]

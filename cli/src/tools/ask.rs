@@ -59,10 +59,19 @@ pub fn parse(input: &Value) -> Result<Vec<Question>, String> {
         }
     }
     for q in &questions {
+        if q.question.is_empty() {
+            return Err("Error: Each question requires question text".into());
+        }
+        if q.header.chars().count() > 16 {
+            return Err("Error: header must be at most 16 characters".into());
+        }
         if q.options.len() < 2 {
             return Err("Error: Each question requires at least 2 options".into());
         }
         for (index, option) in q.options.iter().enumerate() {
+            if option.label.chars().count() > 60 {
+                return Err("Error: Option label must be at most 60 characters".into());
+            }
             if RESERVED.contains(&option.label.as_str()) {
                 return Err(format!("Error: Option label is reserved ({})", RESERVED.join(", ")));
             }
@@ -127,6 +136,14 @@ mod tests {
     fn validation_and_envelope_match_rpiv() {
         assert_eq!(parse(&input(["x", "x"])).unwrap_err(), "Error: Option labels must be unique within a question");
         assert_eq!(parse(&input(["Other", "x"])).unwrap_err(), "Error: Option label is reserved (Other, Type something., Next)");
+        assert_eq!(parse(&input([&"ł".repeat(61), "x"])).unwrap_err(), "Error: Option label must be at most 60 characters");
+        assert!(parse(&input([&"ł".repeat(60), "x"])).is_ok());
+        let mut long_header = input(["pg", "sqlite"]);
+        long_header["questions"][0]["header"] = "Seventeen chars!!".into();
+        assert_eq!(parse(&long_header).unwrap_err(), "Error: header must be at most 16 characters");
+        let mut no_question = input(["pg", "sqlite"]);
+        no_question["questions"][0].as_object_mut().unwrap().remove("question");
+        assert_eq!(parse(&no_question).unwrap_err(), "Error: Each question requires question text");
         let questions = parse(&input(["pg", "sqlite"])).unwrap();
         assert_eq!(response(&questions, &[None, None]), DECLINED);
         let answers = [Some(Answer::Picked(1)), Some(Answer::Multi { picked: vec![0, 1], typed: "c".into() })];

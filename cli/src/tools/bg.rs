@@ -1,9 +1,10 @@
 use serde_json::Value;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -68,26 +69,20 @@ impl Status {
 }
 
 impl Terminals {
-    pub fn run(&mut self, name: &str, input: &Value, cwd: &Path, follow_ups: &Arc<Mutex<Vec<FollowUp>>>) -> Result<String, String> {
-        match name {
-            "bg_start" => self.start(input, cwd, follow_ups),
-            "bg_status" => {
-                let terminal = self.find(input["id"].as_str().unwrap_or_default())?;
-                let mut state = terminal.state.lock().unwrap();
-                if state.exit.is_some() {
-                    state.reported = true;
-                    follow_ups.lock().unwrap().retain(|f| f.source != terminal.id);
-                }
-                drop(state);
-                Ok(terminal.status_text())
-            }
-            "bg_list" if self.list.is_empty() => Ok("No background terminals.".into()),
-            "bg_list" => Ok(self.list.iter().map(|t| t.describe()).collect::<Vec<_>>().join("\n")),
-            _ => Err(format!("Tool {name} not found")),
-        }
+    pub fn status_of(&self, input: &Value, follow_ups: &Arc<Mutex<Vec<FollowUp>>>) -> Result<String, String> {
+        let terminal = self.find(input["id"].as_str().unwrap_or_default())?;
+        terminal.mark_reported(follow_ups);
+        Ok(terminal.status_text())
     }
 
-    fn start(&mut self, input: &Value, cwd: &Path, follow_ups: &Arc<Mutex<Vec<FollowUp>>>) -> Result<String, String> {
+    pub fn describe_all(&self) -> String {
+        if self.list.is_empty() {
+            return "No background terminals.".into();
+        }
+        self.list.iter().map(|t| t.describe()).collect::<Vec<_>>().join("\n")
+    }
+
+    pub fn start(&mut self, input: &Value, cwd: &Path, follow_ups: &Arc<Mutex<Vec<FollowUp>>>) -> Result<String, String> {
         let command = input["command"].as_str().unwrap_or_default().trim();
         if command.is_empty() {
             return Err("command must not be empty.".into());
@@ -99,33 +94,43 @@ impl Terminals {
         if !cwd.is_dir() {
             return Err(format!("working_dir is not a directory: {}", cwd.display()));
         }
-        if self.list.iter().filter(|t| t.status() == Status::Running).count() >= MAX_RUNNING {
+        if self.running() >= MAX_RUNNING {
             return Err(format!("Max {MAX_RUNNING} background terminals can run concurrently. Stop one with bg_kill before starting another."));
         }
         let title: String = input["title"].as_str().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
         let title = if title.is_empty() { "terminal".to_string() } else { title };
-        self.counter += 1;
-        let id = format!("bt-{}", self.counter);
-        let dir = std::env::temp_dir().join(format!("agent-bg-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
-        let (stdout, stderr) = (dir.join(format!("{id}.stdout")), dir.join(format!("{id}.stderr")));
-        let file = |path: &Path| File::create(path).map_err(|e| format!("Cannot create {}: {e}", path.display()));
-        let mut child = crate::process::command("sh")
+        static LOGS: AtomicUsize = AtomicUsize::new(0);
+        let dir = super::spill_dir();
+        crate::process::private_dir(&dir)?;
+        let log = LOGS.fetch_add(1, Ordering::Relaxed);
+        let (stdout, stderr) = (dir.join(format!("bg-{log}.stdout")), dir.join(format!("bg-{log}.stderr")));
+        let file = |path: &Path| {
+            let opened = OpenOptions::new().write(true).create_new(true).mode(0o600).open(path);
+            opened.map_err(|e| format!("Cannot create {}: {e}", path.display()))
+        };
+        let pid = crate::process::command("sh")
             .args(["-c", command])
             .current_dir(&cwd)
             .stdout(file(&stdout)?)
             .stderr(file(&stderr)?)
             .spawn()
-            .map_err(|e| format!("Cannot start sh: {e}"))?;
-        let terminal = Arc::new(Terminal { id, title, cwd, pid: child.id(), started: Instant::now(), stdout, stderr, state: Mutex::default() });
+            .map_err(|e| format!("Cannot start sh: {e}"))?
+            .id();
+        self.counter += 1;
+        let id = format!("bt-{}", self.counter);
+        let terminal = Arc::new(Terminal { id, title, cwd, pid, started: Instant::now(), stdout, stderr, state: Mutex::default() });
         self.list.push(terminal.clone());
         let follow_ups = follow_ups.clone();
         let watched = terminal.clone();
         std::thread::spawn(move || {
-            let status = child.wait();
+            // shortcut: every settled `sh` stays a zombie until the agent exits, so `stop` and `kill_all` never signal a
+            // reused group; reap once the group is empty if a session starts thousands of terminals.
+            let status = crate::process::wait_unreaped(pid);
+            // follow_ups before state, the order bg_status and bg_kill use, so neither sees the exit before its report is queued.
+            let mut queued = follow_ups.lock().unwrap();
             let mut state = watched.state.lock().unwrap();
             let exit = match status {
-                Ok(status) if state.killed => (Status::Killed, exit_text(status.code(), status.signal())),
+                Ok(status) if state.killed && status.signal().is_some() => (Status::Killed, exit_text(status.code(), status.signal())),
                 Ok(status) if status.success() => (Status::Done, "exit 0".to_string()),
                 Ok(status) => (Status::Failed, exit_text(status.code(), status.signal())),
                 Err(e) => (Status::Failed, format!("wait failed: {e}")),
@@ -135,7 +140,7 @@ impl Terminals {
             let report = !state.reported;
             drop(state);
             if report {
-                follow_ups.lock().unwrap().push(FollowUp { source: watched.id.clone(), text: watched.result_text() });
+                queued.push(FollowUp { source: watched.id.clone(), text: watched.result_text() });
             }
         });
         Ok(format!(
@@ -175,12 +180,10 @@ impl Terminals {
         Ok(ids.iter().filter_map(|id| self.list.iter().find(|t| t.id == *id).cloned()).collect())
     }
 
-    /// Process groups do not end with the agent, so quitting kills them.
+    /// Process groups do not end with the agent, so quitting kills them, also the members that outlived their `sh`.
     pub fn kill_all(&self) {
         for terminal in &self.list {
-            if terminal.status() == Status::Running {
-                let _ = crate::process::command("kill").args(["-KILL", "--", &format!("-{}", terminal.pid)]).stderr(Stdio::null()).status();
-            }
+            crate::process::signal_group(terminal.pid, crate::process::SIGKILL);
         }
     }
 
@@ -190,16 +193,15 @@ impl Terminals {
 }
 
 /// bg_kill: SIGTERM to each group, SIGKILL after two seconds, then the final states.
-pub fn kill(terminals: &[Arc<Terminal>], follow_ups: &Arc<Mutex<Vec<FollowUp>>>) -> String {
+pub fn kill(terminals: &[Arc<Terminal>], follow_ups: &Arc<Mutex<Vec<FollowUp>>>, abort: &AtomicBool) -> String {
     let was_running: Vec<bool> = terminals.iter().map(|t| t.stop()).collect();
     let deadline = Instant::now() + STOP_TIMEOUT;
-    while terminals.iter().any(|t| t.status() == Status::Running) && Instant::now() < deadline {
+    while terminals.iter().any(|t| t.status() == Status::Running) && Instant::now() < deadline && !abort.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(50));
     }
     let mut lines = Vec::new();
     for (terminal, was_running) in terminals.iter().zip(was_running) {
-        terminal.state.lock().unwrap().reported = true;
-        follow_ups.lock().unwrap().retain(|f| f.source != terminal.id);
+        terminal.mark_reported(follow_ups);
         let (status, exit) = terminal.exit();
         let (id, title) = (&terminal.id, &terminal.title);
         lines.push(match status {
@@ -219,29 +221,38 @@ impl Terminal {
 
     fn exit(&self) -> (Status, String) {
         let state = self.state.lock().unwrap();
-        state.exit.clone().unwrap_or((Status::Running, "running".into()))
+        state.exit.clone().unwrap_or((Status::Running, "exit -".into()))
     }
 
-    /// Sends SIGTERM and escalates to SIGKILL later; false when it had already exited.
-    pub fn stop(&self) -> bool {
+    /// The model saw the final state, so the watcher's exit report is withdrawn or never queued.
+    /// Locks follow_ups before state, the order the watcher uses.
+    fn mark_reported(&self, follow_ups: &Mutex<Vec<FollowUp>>) {
+        let mut queued = follow_ups.lock().unwrap();
         let mut state = self.state.lock().unwrap();
         if state.exit.is_some() {
-            return false;
+            state.reported = true;
+            queued.retain(|f| f.source != self.id);
         }
+    }
+
+    /// Sends SIGTERM to the whole group and escalates to SIGKILL later; false when its `sh` had already exited.
+    /// Members that outlived the `sh` still get the signals.
+    pub fn stop(&self) -> bool {
+        let mut state = self.state.lock().unwrap();
+        let was_running = state.exit.is_none();
         state.killed = true;
         drop(state);
-        let group = format!("-{}", self.pid);
-        let _ = crate::process::command("kill").args(["-TERM", "--", &group]).stderr(Stdio::null()).status();
+        let group = self.pid;
+        crate::process::signal_group(group, crate::process::SIGTERM);
         std::thread::spawn(move || {
             std::thread::sleep(FORCE_KILL_AFTER);
-            let _ = crate::process::command("kill").args(["-KILL", "--", &group]).stderr(Stdio::null()).status();
+            crate::process::signal_group(group, crate::process::SIGKILL);
         });
-        true
+        was_running
     }
 
     fn describe(&self) -> String {
         let (status, exit) = self.exit();
-        let exit = if status == Status::Running { "exit -".to_string() } else { exit };
         let size = |path: &Path| format_size(std::fs::metadata(path).map_or(0, |m| m.len() as usize));
         format!(
             "{} [{}] \"{}\" (pid {}, {}, {exit}, {}, stdout {}, stderr {})",
@@ -259,7 +270,11 @@ impl Terminal {
     pub fn elapsed(&self) -> String {
         let end = self.state.lock().unwrap().settled.unwrap_or_else(Instant::now);
         let seconds = end.duration_since(self.started).as_secs_f64().round() as u64;
-        if seconds >= 60 { format!("{}m{:02}s", seconds / 60, seconds % 60) } else { format!("{seconds}s") }
+        match seconds {
+            0..60 => format!("{seconds}s"),
+            60..3600 => format!("{}m{:02}s", seconds / 60, seconds % 60),
+            _ => format!("{}h{:02}m", seconds / 3600, seconds / 60 % 60),
+        }
     }
 
     /// Combined size of both logs; the /ps viewer rereads `log` when it changes.
@@ -297,10 +312,14 @@ impl Terminal {
 fn exit_text(code: Option<i32>, signal: Option<i32>) -> String {
     match (code, signal) {
         (Some(code), _) => format!("exit {code}"),
+        (None, Some(1)) => "SIGHUP".into(),
         (None, Some(2)) => "SIGINT".into(),
+        (None, Some(6)) => "SIGABRT".into(),
         (None, Some(9)) => "SIGKILL".into(),
+        (None, Some(11)) => "SIGSEGV".into(),
+        (None, Some(13)) => "SIGPIPE".into(),
         (None, Some(15)) => "SIGTERM".into(),
-        (None, Some(signal)) => format!("SIG{signal}"),
+        (None, Some(signal)) => format!("signal {signal}"),
         (None, None) => "exit ?".into(),
     }
 }
@@ -340,30 +359,52 @@ mod tests {
         let dir = std::env::temp_dir();
         let follow_ups = Arc::default();
         let mut terminals = Terminals::default();
-        let started = terminals.run("bg_start", &json!({"command": "echo out; echo err >&2; exit 3", "title": "  a\nb "}), &dir, &follow_ups).unwrap();
+        let started = terminals.start(&json!({"command": "echo out; echo err >&2; exit 3", "title": "  a\nb "}), &dir, &follow_ups).unwrap();
         assert!(started.starts_with("Started background terminal bt-1 \"a b\""));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while follow_ups.lock().unwrap().is_empty() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let text = follow_ups.lock().unwrap()[0].text.clone();
+        wait_until(|| !follow_ups.lock().unwrap().is_empty());
+        let text = follow_ups.lock().unwrap().first().expect("no exit report within 5s").text.clone();
         assert!(text.starts_with("Background terminal bt-1 \"a b\" exited (exit 3) after 0s.\n\nstdout:\nout\n\nstderr:\nerr"), "{text}");
-        let status = terminals.run("bg_status", &json!({"id": "bt-1"}), &dir, &follow_ups).unwrap();
+        let status = terminals.status_of(&json!({"id": "bt-1"}), &follow_ups).unwrap();
         assert!(status.starts_with("bt-1 [failed] \"a b\""), "{status}");
         assert!(follow_ups.lock().unwrap().is_empty());
-        assert_eq!(terminals.run("bg_status", &json!({"id": "bt-9"}), &dir, &follow_ups).unwrap_err(), "Unknown terminal id \"bt-9\". Known: bt-1.");
+        assert_eq!(terminals.status_of(&json!({"id": "bt-9"}), &follow_ups).unwrap_err(), "Unknown terminal id \"bt-9\". Known: bt-1.");
     }
 
     #[test]
-    fn kill_stops_the_whole_group_without_a_follow_up() {
+    fn kill_reports_a_killed_terminal_once_without_a_follow_up() {
         let dir = std::env::temp_dir();
         let follow_ups = Arc::default();
         let mut terminals = Terminals::default();
-        terminals.run("bg_start", &json!({"command": "sleep 30 & sleep 30", "title": "sleeper"}), &dir, &follow_ups).unwrap();
+        terminals.start(&json!({"command": "sleep 30 & sleep 30", "title": "sleeper"}), &dir, &follow_ups).unwrap();
         let targets = terminals.for_kill(&json!({"ids": ["bt-1"]})).unwrap();
-        assert_eq!(kill(&targets, &follow_ups), "Killed bt-1 \"sleeper\" (SIGTERM).");
-        std::thread::sleep(Duration::from_millis(100));
+        let abort = AtomicBool::new(false);
+        assert_eq!(kill(&targets, &follow_ups, &abort), "Killed bt-1 \"sleeper\" (SIGTERM).");
         assert!(follow_ups.lock().unwrap().is_empty());
-        assert_eq!(kill(&targets, &follow_ups), "bt-1 \"sleeper\" was already killed (SIGTERM).");
+        assert_eq!(kill(&targets, &follow_ups, &abort), "bt-1 \"sleeper\" was already killed (SIGTERM).");
+    }
+
+    #[test]
+    fn kill_reaches_children_that_outlive_the_shell() {
+        let dir = std::env::temp_dir();
+        let follow_ups = Arc::default();
+        let mut terminals = Terminals::default();
+        terminals.start(&json!({"command": "sleep 30 & echo $!", "title": "orphan"}), &dir, &follow_ups).unwrap();
+        let terminal = terminals.find("bt-1").unwrap();
+        wait_until(|| terminal.status() != Status::Running);
+        let child = std::fs::read_to_string(&terminal.stdout).unwrap().trim().to_string();
+        assert_eq!(kill(&[terminal], &follow_ups, &AtomicBool::new(false)), "bt-1 \"orphan\" was already done (exit 0).");
+        wait_until(|| !alive(&child));
+        assert!(!alive(&child), "sleep {child} survived bg_kill");
+    }
+
+    fn wait_until(done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn alive(pid: &str) -> bool {
+        crate::process::command("kill").args(["-0", pid]).stderr(std::process::Stdio::null()).status().unwrap().success()
     }
 }
