@@ -49,6 +49,7 @@ pub struct Pending {
 
 pub fn start_claude() -> Pending {
     let (verifier, challenge) = pkce();
+    let state = random_hex(32);
     let query = [
         ("code", "true"),
         ("client_id", CLAUDE_CLIENT_ID),
@@ -57,9 +58,9 @@ pub fn start_claude() -> Pending {
         ("scope", CLAUDE_SCOPES),
         ("code_challenge", &challenge),
         ("code_challenge_method", "S256"),
-        ("state", &verifier),
+        ("state", &state),
     ];
-    Pending { url: format!("{CLAUDE_AUTHORIZE_URL}?{}", form(&query)), state: verifier.clone(), verifier }
+    Pending { url: format!("{CLAUDE_AUTHORIZE_URL}?{}", form(&query)), verifier, state }
 }
 
 /// Exchanges the `code#state` Anthropic shows after sign-in.
