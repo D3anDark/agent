@@ -15,6 +15,8 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 /// `npx -y <package>` downloads the server on its first start.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 const TOOL_TIMEOUT: Duration = Duration::from_secs(600);
+/// ureq's own `read_to_string` limit, applied here to the streamed replies too.
+const REPLY_LIMIT: u64 = 10 * 1024 * 1024;
 
 /// How to reach a server, from one `mcpServers` entry.
 #[derive(Clone, Debug, PartialEq)]
@@ -320,7 +322,7 @@ impl HttpRequest {
         if status == 404 && self.has_session {
             return Ok(Reply::SessionGone);
         }
-        let mut reader = BufReader::new(response.into_body().into_reader());
+        let mut reader = BufReader::new(response.into_body().into_reader().take(REPLY_LIMIT));
         if !(200..300).contains(&status) {
             let mut text = String::new();
             let _ = reader.read_to_string(&mut text);

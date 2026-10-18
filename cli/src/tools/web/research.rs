@@ -266,7 +266,7 @@ fn classify(url: &str) -> &'static str {
     "unknown"
 }
 
-fn hash(text: &str) -> String {
+pub fn hash(text: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
     let hex: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
     format!("sha256:{hex}")

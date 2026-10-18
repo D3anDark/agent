@@ -5,7 +5,7 @@ mod find;
 mod github;
 mod html;
 mod providers;
-mod research;
+pub mod research;
 
 use find::Mode;
 use serde_json::{Value, json};

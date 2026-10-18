@@ -74,7 +74,8 @@ pub fn load(home: &Path, cwd: &Path) -> (Vec<Server>, Option<String>) {
         };
         let raw = launch_first(&entry);
         let entry = Value::Object(entry);
-        let approval = from_project.then(|| format!("{} {name} {raw}", cwd.display()));
+        // A digest, so header and env secrets from the project file stay out of settings.json.
+        let approval = from_project.then(|| crate::tools::web::research::hash(&format!("{} {name} {raw}", cwd.display())));
         match server(&name, &entry, cwd, &|key| std::env::var(key).ok()) {
             Ok(launch) => servers.push(Server { name, launch, enabled, approval, raw }),
             Err(error) => _ = first_error.get_or_insert(error),
@@ -198,7 +199,7 @@ mod tests {
 
         assert_eq!(error, None);
         let approvals: Vec<_> = servers.iter().map(|server| server.approval.clone()).collect();
-        let key = |name: &str, entry: &str| Some(format!("{} {name} {entry}", cwd.display()));
+        let key = |name: &str, entry: &str| Some(crate::tools::web::research::hash(&format!("{} {name} {entry}", cwd.display())));
         assert_eq!(approvals, [None, None, key("repo", r#"{"command":"./run","args":["a"],"_":"x"}"#), key("web", r#"{"url":"https://evil.example/mcp"}"#)]);
         assert_eq!(servers[3].launch, Launch::Http { url: "https://evil.example/mcp".into(), headers: vec![] });
     }
