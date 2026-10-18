@@ -61,6 +61,7 @@ pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high
 const TOOL_OUTPUT_LINES: usize = 20;
 /// One line per tick while a selection drag rests on the transcript edge.
 const EDGE_SCROLL: Duration = Duration::from_millis(40);
+const PERMISSION_SETTLE: Duration = Duration::from_millis(400);
 
 const DIM: Style = Style::fg(241);
 const WARN: Style = Style::fg(179);
@@ -159,6 +160,7 @@ enum Panel {
         request: Request,
         reply: Sender<Decision>,
         index: usize,
+        opened: Instant,
     },
     Ask(ask::AskPanel),
     Todos {
@@ -1818,7 +1820,9 @@ impl App {
         let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
         let key = if ctrl_c { KeyEvent::from(KeyCode::Esc) } else { key };
         let code = key.code;
-        if let Some(Panel::Permission { index, .. }) = self.panel.as_mut() {
+        if let Some(Panel::Permission { index, opened, .. }) = self.panel.as_mut() {
+            // An Enter or digit typed for the prompt just before the panel opened must not approve the call.
+            let settling = opened.elapsed() < PERMISSION_SETTLE;
             let choice = match code {
                 KeyCode::Up => {
                     *index = index.saturating_sub(1);
@@ -1828,9 +1832,10 @@ impl App {
                     *index = (*index + 1).min(2);
                     return;
                 }
+                KeyCode::Char('3') | KeyCode::Esc => 2,
+                _ if settling => return,
                 KeyCode::Char('1') => 0,
                 KeyCode::Char('2') => 1,
-                KeyCode::Char('3') | KeyCode::Esc => 2,
                 KeyCode::Enter => *index,
                 _ => return,
             };
@@ -3236,7 +3241,7 @@ impl App {
             }
             Event::Permission { request, reply } => {
                 self.notify(&format!("{} {}", request.question, request.detail));
-                self.open_agent_panel(Panel::Permission { request, reply, index: 0 });
+                self.open_agent_panel(Panel::Permission { request, reply, index: 0, opened: Instant::now() });
             }
             Event::Ask { questions, reply } => {
                 self.notify(&questions.first().map_or(String::new(), |question| question.question.clone()));
