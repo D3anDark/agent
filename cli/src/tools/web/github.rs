@@ -110,8 +110,12 @@ fn clone(repo: &Repo, force_clone: bool) -> Result<PathBuf, String> {
         return Err(error);
     }
     _ = std::fs::remove_dir_all(&dir);
-    if std::fs::rename(&partial, &dir).is_err() {
+    if let Err(error) = std::fs::rename(&partial, &dir) {
         _ = std::fs::remove_dir_all(&partial);
+        // A concurrent fetch may have won the rename; its tree serves this request.
+        if !dir.join(".git").is_dir() {
+            return Err(format!("Cannot move the clone to {}: {error}", dir.display()));
+        }
     }
     Ok(dir)
 }
