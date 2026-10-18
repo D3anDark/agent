@@ -154,7 +154,7 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
     out
 }
 
-/// Fits the columns into `room`, wraps each cell inside its column, splits columns with `│` and rules off the header row.
+/// Fits the columns into `room`, wraps each cell inside its column, splits columns with `│` and rules off every row from the next.
 fn aligned(rows: Vec<Vec<Line>>, room: usize) -> Vec<Line> {
     let mut natural: Vec<usize> = Vec::new();
     for row in &rows {
@@ -168,6 +168,7 @@ fn aligned(rows: Vec<Vec<Line>>, room: usize) -> Vec<Line> {
     let widths = fit(&natural, room.saturating_sub(3 * natural.len().saturating_sub(1)));
     let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
     let mut lines = Vec::new();
+    let row_count = rows.len();
     for (index, row) in rows.into_iter().enumerate() {
         let last = row.len().saturating_sub(1);
         let cells: Vec<Vec<Line>> = row.iter().enumerate().map(|(column, cell)| wrap(cell, widths[column], &Vec::new())).collect();
@@ -185,7 +186,7 @@ fn aligned(rows: Vec<Vec<Line>>, room: usize) -> Vec<Line> {
             }
             lines.push(line);
         }
-        if index == 0 {
+        if index + 1 < row_count {
             lines.push(vec![span(rule.join("─┼─"), CODE_BORDER)]);
         }
     }
@@ -227,8 +228,8 @@ mod tests {
 
     #[test]
     fn table_columns_line_up() {
-        let lines = render("text\n\n| a | bb |\n|---|---|\n| ccc | d |", 40);
-        assert_eq!(text(&lines), [" text", "", " a   │ bb", " ────┼───", " ccc │ d"]);
+        let lines = render("text\n\n| a | bb |\n|---|---|\n| ccc | d |\n| e | f |", 40);
+        assert_eq!(text(&lines), [" text", "", " a   │ bb", " ────┼───", " ccc │ d", " ────┼───", " e   │ f"]);
     }
 
     #[test]
