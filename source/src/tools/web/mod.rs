@@ -7,6 +7,8 @@ mod html;
 mod providers;
 pub mod research;
 
+pub use providers::PROVIDERS as SEARCH_PROVIDERS;
+
 use find::Mode;
 use serde_json::{Value, json};
 use std::collections::VecDeque;

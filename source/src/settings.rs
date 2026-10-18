@@ -101,6 +101,19 @@ impl Settings {
         sorted
     }
 
+    /// Moves the provider at `index` of the shown order one step and switches to manual;
+    /// entries for providers outside `providers` stay listed after them.
+    pub fn move_provider(&mut self, providers: &[&str], index: usize, up: bool) {
+        let mut shown = self.sort_providers(providers);
+        let target = if up { index.checked_sub(1) } else { Some(index + 1) };
+        if let Some(target) = target.filter(|target| *target < shown.len()) {
+            shown.swap(index, target);
+        }
+        let others = self.provider_order.iter().filter(|listed| !providers.contains(&listed.as_str()));
+        self.provider_order = shown.iter().map(|provider| provider.to_string()).chain(others.cloned()).collect();
+        self.provider_sort = "manual".into();
+    }
+
     /// How long an untouched session is kept; `None` keeps it forever.
     pub fn prune_sessions_after(&self) -> Option<Duration> {
         let hours = match self.prune_sessions.as_str() {
@@ -362,6 +375,18 @@ mod tests {
         settings.provider_sort = "manual".into();
         settings.provider_order = vec!["tavily".into(), "exa".into()];
         assert_eq!(settings.sort_providers(&providers), ["tavily", "exa", "brave"]);
+    }
+
+    #[test]
+    fn moving_a_provider_keeps_the_shown_order_and_switches_to_manual() {
+        let mut settings = load(Path::new("/nonexistent"));
+        settings.provider_sort = "alphabetical".into();
+        settings.provider_order = vec!["anthropic".into()];
+        settings.move_provider(&["exa", "brave", "tavily"], 2, true);
+        assert_eq!(settings.provider_sort, "manual");
+        assert_eq!(settings.provider_order, ["brave", "tavily", "exa", "anthropic"]);
+        settings.move_provider(&["exa", "brave", "tavily"], 2, false);
+        assert_eq!(settings.provider_order, ["brave", "tavily", "exa", "anthropic"]);
     }
 
     #[test]

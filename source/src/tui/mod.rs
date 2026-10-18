@@ -105,6 +105,8 @@ enum Panel {
     Models { row: usize, query: Editor, index: usize, back: ModelsBack },
     /// Context window overrides, tab 0 per provider, tab 1 per model filtered by `query`.
     ContextWindows { tab: usize, query: Editor, index: usize },
+    /// Manual provider order, tab 0 model providers, tab 1 web search providers.
+    ProviderOrder { tab: usize, index: usize },
     /// fx's "Permission needed" prompt; the agent thread waits on `reply`.
     Permission { request: Request, reply: Sender<Decision>, index: usize },
     Ask(ask::AskPanel),
@@ -274,6 +276,8 @@ const SETTING_NAMES: [&str; 26] = [
 const SETTING_ORDER: [usize; 26] = [0, 1, 18, 13, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 25, 14, 15, 16, 17, 19, 20, 23, 21, 22, 24];
 const MODEL_ROWS: [usize; 3] = [0, 8, 12];
 const CONTEXT_WINDOW_ROW: usize = 13;
+const PROVIDER_ORDER_ROW: usize = 25;
+const PROVIDER_LISTS: [&[&str]; 2] = [&models::PROVIDERS, &crate::tools::web::SEARCH_PROVIDERS];
 const CONTEXT_WINDOWS: [Option<u64>; 5] = [
     None,
     Some(200_000),
@@ -1763,6 +1767,10 @@ impl App {
             self.context_windows_key(key);
             return;
         }
+        if matches!(self.panel, Some(Panel::ProviderOrder { .. })) {
+            self.provider_order_key(key);
+            return;
+        }
         if matches!(self.panel, Some(Panel::Diff { .. })) {
             self.diff_key(code);
             return;
@@ -1829,6 +1837,7 @@ impl App {
                 let rows = matching_settings(&query.text());
                 let index = rows.iter().position(|r| r == row);
                 match code {
+                    KeyCode::Enter if *row == PROVIDER_ORDER_ROW && index.is_some() => self.panel = Some(Panel::ProviderOrder { tab: 0, index: 0 }),
                     KeyCode::Up if !rows.is_empty() => *row = rows[index.map_or(0, |i| i.saturating_sub(1))],
                     KeyCode::Down if !rows.is_empty() => *row = rows[index.map_or(0, |i| (i + 1).min(rows.len() - 1))],
                     KeyCode::Enter | KeyCode::Right | KeyCode::Left if index.is_some() => {
@@ -2062,7 +2071,7 @@ impl App {
                     }
                 }
             }
-            Some(Panel::Permission { .. } | Panel::Ask(_) | Panel::Btw | Panel::Login(_) | Panel::Models { .. } | Panel::ContextWindows { .. } | Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Diff { .. } | Panel::Plan { .. } | Panel::PlanFresh { .. } | Panel::PluginSettings { .. } | Panel::Plugin { .. } | Panel::Usage { .. }) | None => {}
+            Some(Panel::Permission { .. } | Panel::Ask(_) | Panel::Btw | Panel::Login(_) | Panel::Models { .. } | Panel::ContextWindows { .. } | Panel::ProviderOrder { .. } | Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Diff { .. } | Panel::Plan { .. } | Panel::PlanFresh { .. } | Panel::PluginSettings { .. } | Panel::Plugin { .. } | Panel::Usage { .. }) | None => {}
         }
     }
 
@@ -2272,7 +2281,7 @@ impl App {
             ModelsBack::Settings => Some(Panel::Settings { row, query: Editor::new() }),
             ModelsBack::PlanFresh => Some(Panel::PlanFresh { index: 0 }),
         };
-        let matches = matching_models(self.client.catalog(), row, &query.text());
+        let matches = matching_models(self.client.catalog(), &self.settings, row, &query.text());
         match key.code {
             KeyCode::Esc => self.panel = back,
             KeyCode::Up => *index = index.saturating_sub(1),
@@ -2323,6 +2332,27 @@ impl App {
                     *index = 0;
                 }
             }
+        }
+    }
+
+    fn provider_order_key(&mut self, key: KeyEvent) {
+        let Some(Panel::ProviderOrder { tab, index }) = self.panel.as_mut() else { return };
+        let providers = PROVIDER_LISTS[*tab];
+        let last = providers.len() - 1;
+        match key.code {
+            KeyCode::Esc => self.panel = Some(Panel::Settings { row: PROVIDER_ORDER_ROW, query: Editor::new() }),
+            KeyCode::Tab | KeyCode::BackTab => {
+                *tab = 1 - *tab;
+                *index = 0;
+            }
+            KeyCode::Up | KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                let (moved, up) = (*index, key.code == KeyCode::Up);
+                *index = if up { moved.saturating_sub(1) } else { (moved + 1).min(last) };
+                self.update_settings(|s| s.move_provider(providers, moved, up));
+            }
+            KeyCode::Up => *index = index.saturating_sub(1),
+            KeyCode::Down => *index = (*index + 1).min(last),
+            _ => {}
         }
     }
 
@@ -2408,7 +2438,7 @@ impl App {
     /// The model picker for settings `row`, on the current model when it matches `query`.
     fn open_models(&mut self, row: usize, query: &str, back: ModelsBack) {
         let current = model_setting(&mut self.settings, row).clone();
-        let index = matching_models(self.client.catalog(), row, query).iter().position(|m| m.map_or("", |m| &m.id) == current).unwrap_or(0);
+        let index = matching_models(self.client.catalog(), &self.settings, row, query).iter().position(|m| m.map_or("", |m| &m.id) == current).unwrap_or(0);
         self.panel = Some(Panel::Models { row, query: Editor::from_text(query), index, back });
     }
 
@@ -2490,7 +2520,7 @@ impl App {
             choices(crate::update::CHANNELS.map(String::from), &s.update_channel),
             choices(MENU_ROWS.map(|n| n.to_string()), &s.menu_rows.to_string()),
             choices(PRUNE_SESSIONS.map(String::from), &s.prune_sessions),
-            choices(PROVIDER_SORTS.map(String::from), &s.provider_sort),
+            [choices(PROVIDER_SORTS.map(String::from), &s.provider_sort), vec![span("   enter reorder", MUTED)]].concat(),
         ]
     }
 
@@ -2560,8 +2590,22 @@ impl App {
                 };
                 view.render(width, PANEL_ROWS)
             }
+            Panel::ProviderOrder { tab, index } => {
+                let rows: Vec<panel::Row> = self.settings.sort_providers(PROVIDER_LISTS[*tab]).into_iter().map(|provider| panel::Row { left: provider.into(), right: vec![] }).collect();
+                let view = panel::Panel {
+                    title: "Provider order".into(),
+                    tabs: &["Models", "Web search"],
+                    tab: *tab,
+                    search: None,
+                    rows: &rows,
+                    selected: *index,
+                    empty: "No providers.",
+                    hint: "↑↓ navigate     shift+↑↓ move     tab models/web search     esc back",
+                };
+                view.render(width, PANEL_ROWS)
+            }
             Panel::Models { row, query, index, .. } => {
-                let rows: Vec<panel::Row> = matching_models(self.client.catalog(), *row, &query.text())
+                let rows: Vec<panel::Row> = matching_models(self.client.catalog(), &self.settings, *row, &query.text())
                     .into_iter()
                     .map(|m| match m {
                         Some(m) => panel::Row { left: m.id.clone(), right: vec![span(model_owners(m), MUTED)] },
@@ -4150,7 +4194,7 @@ fn context_window_targets<'a>(catalog: &'a [Model], settings: &Settings, tab: us
     if tab == 0 {
         return settings.sort_providers(&models::PROVIDERS).into_iter().map(|provider| (provider.to_string(), None)).collect();
     }
-    matching_models(catalog, 0, query).into_iter().flatten().map(|model| (model_key(model), Some(model))).collect()
+    matching_models(catalog, settings, 0, query).into_iter().flatten().map(|model| (model_key(model), Some(model))).collect()
 }
 
 /// Where the window in effect for `model` comes from.
@@ -4302,13 +4346,15 @@ fn plan_lines(selected: usize) -> Vec<Line> {
     lines
 }
 
-/// Picker rows for settings `row` whose provider or id contains `query`, ignoring case.
+/// Picker rows for settings `row` whose provider or id contains `query`, ignoring case, grouped in provider order.
 /// `None` is "auto", offered for the optional condense and fallback models.
-fn matching_models<'a>(catalog: &'a [Model], row: usize, query: &str) -> Vec<Option<&'a Model>> {
+fn matching_models<'a>(catalog: &'a [Model], settings: &Settings, row: usize, query: &str) -> Vec<Option<&'a Model>> {
     let query = query.to_lowercase();
     let auto = (row != 0 && "auto".contains(&query)).then_some(None);
-    let models = catalog.iter().filter(|m| format!("{} {}", model_owners(m), m.id).to_lowercase().contains(&query)).map(Some);
-    auto.into_iter().chain(models).collect()
+    let providers = settings.sort_providers(&models::PROVIDERS);
+    let mut matches: Vec<&Model> = catalog.iter().filter(|m| format!("{} {}", model_owners(m), m.id).to_lowercase().contains(&query)).collect();
+    matches.sort_by_key(|m| providers.iter().position(|provider| *provider == m.provider).unwrap_or(usize::MAX));
+    auto.into_iter().chain(matches.into_iter().map(Some)).collect()
 }
 
 /// "openai-codex · pro, plus": the provider and the accounts whose model list has the model.
@@ -4612,17 +4658,21 @@ mod tests {
             model("openai-codex", "gpt-6-luna", &["pro", "plus"]),
             model("openai-codex", "gpt-6-sol", &["pro"]),
         ];
-        let ids = |row, query| {
-            matching_models(&catalog, row, query).iter().map(|m| m.map_or("auto", |m| m.id.as_str()).to_string()).collect::<Vec<_>>()
+        let mut settings = settings::load(Path::new("/nonexistent"));
+        let ids = |settings: &Settings, row, query| {
+            matching_models(&catalog, settings, row, query).iter().map(|m| m.map_or("auto", |m| m.id.as_str()).to_string()).collect::<Vec<_>>()
         };
-        assert_eq!(ids(0, "HAIKU"), ["claude-haiku-5-5"]);
-        assert_eq!(ids(0, "codex"), ["gpt-6-luna", "gpt-6-sol"]);
-        assert_eq!(ids(0, "plus"), ["gpt-6-luna"]);
+        assert_eq!(ids(&settings, 0, "HAIKU"), ["claude-haiku-5-5"]);
+        assert_eq!(ids(&settings, 0, "codex"), ["gpt-6-luna", "gpt-6-sol"]);
+        assert_eq!(ids(&settings, 0, "plus"), ["gpt-6-luna"]);
         assert_eq!(model_owners(&catalog[1]), "openai-codex · pro, plus");
-        assert_eq!(ids(0, "").len(), catalog.len());
-        assert_eq!(ids(8, "").len(), catalog.len() + 1);
-        assert_eq!(ids(12, "aut"), ["auto"]);
-        assert!(ids(8, "nope").is_empty());
+        assert_eq!(ids(&settings, 0, "").len(), catalog.len());
+        assert_eq!(ids(&settings, 8, "").len(), catalog.len() + 1);
+        assert_eq!(ids(&settings, 12, "aut"), ["auto"]);
+        assert!(ids(&settings, 8, "nope").is_empty());
+        settings.provider_sort = "manual".into();
+        settings.provider_order = vec!["openai-codex".into()];
+        assert_eq!(ids(&settings, 8, ""), ["auto", "gpt-6-luna", "gpt-6-sol", "claude-haiku-5-5"]);
     }
 
     #[test]
