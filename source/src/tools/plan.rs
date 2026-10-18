@@ -36,8 +36,8 @@ const EDITING_TOOLS: [&str; 8] = ["write", "replace", "replace_match", "insert",
 
 const READ_ONLY_COMMANDS: [&str; 18] = ["ls", "cat", "head", "tail", "wc", "rg", "fd", "pwd", "tree", "file", "stat", "which", "echo", "jq", "diff", "du", "cd", "true"];
 const READ_ONLY_GIT: [&str; 7] = ["status", "log", "diff", "show", "blame", "ls-files", "rev-parse"];
-// Matched as prefixes, so attached values (`--pre=sh`) count too; `--output` writes a file.
-const RUNS_OTHER_COMMANDS: [&str; 3] = ["--exec", "--pre", "--output"];
+// Matched as prefixes, so attached values (`--pre=sh`) count too; `--output` writes a file; rg runs `--hostname-bin` for hyperlinks.
+const RUNS_OTHER_COMMANDS: [&str; 4] = ["--exec", "--pre", "--output", "--hostname-bin"];
 
 pub fn tool() -> Value {
     json!({
@@ -120,6 +120,7 @@ mod tests {
             "echo $(rm x)",
             "cat <(rm x)",
             "rg --pre=sh x",
+            "rg --hostname-bin=sh --hyperlink-format=default x",
             "fd --exec=rm",
             "git diff --output=f",
             "tree -o f",

@@ -23,8 +23,8 @@ impl Mode {
     pub fn description(self) -> &'static str {
         match self {
             Mode::FullAccess => "run every tool without asking",
-            Mode::Ask => "ask before commands, file edits, subagents, MCP and plugin tools",
-            Mode::Auto => "a reviewer model approves or denies commands, file edits, subagents, MCP and plugin tools",
+            Mode::Ask => "ask before commands, file edits, URL fetches, subagents, MCP and plugin tools",
+            Mode::Auto => "a reviewer model approves or denies commands, file edits, URL fetches, subagents, MCP and plugin tools",
         }
     }
 
@@ -52,6 +52,7 @@ pub enum Kind {
     Subagent,
     Mcp,
     Plugin,
+    Web,
 }
 
 impl Kind {
@@ -63,6 +64,7 @@ impl Kind {
             Kind::Subagent => "Subagent",
             Kind::Mcp => "MCP",
             Kind::Plugin => "Plugin",
+            Kind::Web => "Web",
         }
     }
 
@@ -73,6 +75,7 @@ impl Kind {
             Kind::Edit => "Yes, and don't ask again for these files",
             Kind::Subagent => "Yes, and don't ask again for these exact subagents",
             Kind::Mcp | Kind::Plugin => "Yes, and don't ask again for any call to this tool",
+            Kind::Web => "Yes, and don't ask again for these exact URLs",
         }
     }
 }
@@ -112,6 +115,12 @@ pub fn request_for(tool: &str, input: &Value, edited_files: &[PathBuf]) -> Optio
             detail: input.to_string(),
             grant: format!("subagent:{input}"),
         }),
+        // A fetched URL can carry file contents to any server, so prompt injection could leak local files through it.
+        "fetch_content" => {
+            let urls: Vec<&str> = input["urls"].as_array().into_iter().flatten().chain([&input["url"]]).filter_map(Value::as_str).collect();
+            let urls = if urls.is_empty() { input.to_string() } else { urls.join(" ") };
+            Some(Request { kind: Kind::Web, question: "Would you like to fetch the following URLs?", grant: format!("web:{urls}"), detail: urls })
+        }
         _ if tool.starts_with("mcp__") => {
             Some(Request { kind: Kind::Mcp, question: "Would you like to call the following MCP tool?", detail: format!("{tool} {input}"), grant: format!("mcp:{tool}") })
         }
@@ -150,7 +159,7 @@ pub const REVIEW_DETAIL_CHARS: usize = 16_000;
 pub fn review_prompt(user_request: &str, cwd: &Path, request: &Request, input: &Value) -> Option<String> {
     // A command's detail is the whole call; subagent, MCP and plugin details hold the whole input.
     let input = match request.kind {
-        Kind::Edit => format!("\n{input}"),
+        Kind::Edit | Kind::Web => format!("\n{input}"),
         Kind::Command | Kind::Subagent | Kind::Mcp | Kind::Plugin => String::new(),
     };
     if request.detail.chars().count() + input.chars().count() > REVIEW_DETAIL_CHARS {
@@ -206,6 +215,13 @@ mod tests {
         let input = json!({"label": "deploy", "prompt": "run ./deploy.sh"});
         let request = request_for("subagent", &input, &[]).unwrap();
         assert_eq!((request.kind, request.detail), (Kind::Subagent, input.to_string()));
+    }
+
+    #[test]
+    fn fetching_urls_needs_permission() {
+        let request = request_for("fetch_content", &json!({"urls": ["https://a.example/x", "https://b.example/?k=v"]}), &[]).unwrap();
+        assert_eq!((request.kind, request.detail.as_str()), (Kind::Web, "https://a.example/x https://b.example/?k=v"));
+        assert_eq!(request_for("fetch_content", &json!({"url": "https://a.example"}), &[]).unwrap().detail, "https://a.example");
     }
 
     #[test]

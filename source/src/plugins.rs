@@ -431,7 +431,12 @@ pub fn install(home: &Path, source: &str) -> Result<String, String> {
         let name = from.file_name().unwrap_or_default().to_string_lossy().to_string();
         check_name(&name)?;
         read_manifest(&from)?;
-        copy_dir(&from, &plugins.join(&name))?;
+        let target = plugins.join(&name);
+        // Copying the installed directory onto itself would truncate every file to zero bytes.
+        if target.canonicalize().is_ok_and(|target| target == from) {
+            return Ok(name);
+        }
+        copy_dir(&from, &target)?;
         return Ok(name);
     }
     check_name(source)?;
@@ -753,6 +758,16 @@ done"#;
         assert!(remove(&home, "..").is_err());
         assert_eq!(remove(&home, "usagefleet"), Ok(()));
         assert!(!home.join(".agents/plugins/usagefleet").exists());
+    }
+
+    #[test]
+    fn installing_an_installed_plugin_from_its_own_directory_keeps_its_files() {
+        let home = home_with("reinstall", &[]);
+        install(&home, "usagefleet").unwrap();
+        let dir = home.join(".agents/plugins/usagefleet");
+        let manifest = std::fs::read(dir.join("plugin.json")).unwrap();
+        assert_eq!(install(&home, dir.to_str().unwrap()), Ok("usagefleet".into()));
+        assert_eq!(std::fs::read(dir.join("plugin.json")).unwrap(), manifest);
     }
 
     #[test]

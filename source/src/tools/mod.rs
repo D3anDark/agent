@@ -218,11 +218,13 @@ fn write(input: &Value, cwd: &Path, anchors: &mut Anchors) -> Result<String, Str
     if path.exists() && !path.is_file() {
         return Err(format!("{} is not a regular file.", path.display()));
     }
-    match std::fs::read(&path) {
-        Ok(old) => hashline::write_or_restore(&path, content.as_bytes(), &old)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::write(&path, content).map_err(|e| format!("Cannot write {}: {e}", path.display()))?,
-        Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
+    // The rename in replace_file would succeed over a file the user cannot even read.
+    if let Err(e) = std::fs::File::open(&path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(format!("Cannot read {}: {e}", path.display()));
     }
+    hashline::replace_file(&path, content.as_bytes())?;
     let path = path.canonicalize().map_err(|e| e.to_string())?;
     // The write succeeded, so a file that cannot be served as anchors (binary, too big) still reports success.
     let rows = anchors.written(&path).unwrap_or_else(|e| e);

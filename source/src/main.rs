@@ -36,7 +36,7 @@ Options:
   --no-session          Do not save the session
   --auto                Let a reviewer model approve tool calls
   --full-access, --yolo Run every tool call without asking
-  --ask                 Ask before commands, file edits, subagents, MCP and plugin tools
+  --ask                 Ask before commands, file edits, URL fetches, subagents, MCP and plugin tools
   --headless            Run the message, print JSONL events (tool, session, done, error)
   --parent <id>         Run as a subagent of that session: linked to it, no load_tools or ask_user_question
   --account <p>=<name>  Use that saved account first for provider p, like a pin in /account

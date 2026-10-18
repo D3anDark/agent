@@ -1,5 +1,7 @@
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::tools::{MAX_BYTES, MAX_LINES, format_size};
@@ -331,7 +333,7 @@ impl Anchors {
                 "[E_UNDO_STALE] Cannot undo last change on {raw}: the file was modified after the edit, so nothing was reverted and the file was left untouched. The undo record is kept. Do not edit the file to force the undo. Call read() to inspect the current state."
             ));
         }
-        write_or_restore(&path, before, after)?;
+        replace_file(&path, before)?;
         self.undo.remove(&path);
         let change = self.sync(&path, Text::load(&path)?.lines)?;
         let mut parts = vec![format!("Undone last change on {raw}.")];
@@ -394,7 +396,7 @@ impl Anchors {
         let (prefix, suffix) = unchanged_ends(old, &written.lines);
         // Checked before writing, so the edit is not left on disk without anchors.
         self.anchors_left(path, written.lines.len() - prefix - suffix)?;
-        write_or_restore(path, after.as_bytes(), &before)?;
+        replace_file(path, after.as_bytes())?;
         self.undo.insert(path.to_path_buf(), (before, after.into_bytes()));
         let empty = written.is_empty();
         let change = self.sync(path, written.lines)?;
@@ -526,14 +528,23 @@ pub fn str_arg<'a>(input: &'a Value, names: &[&str]) -> Result<&'a str, String> 
     names.iter().find_map(|name| input[name].as_str()).ok_or_else(|| format!("[E_BAD_SHAPE] Missing string field \"{}\".", names[0]))
 }
 
-/// Writes `new` in place; when that fails, puts `old` back so a half-written file is not left behind.
-pub(super) fn write_or_restore(path: &Path, new: &[u8], old: &[u8]) -> Result<(), String> {
-    let Err(e) = std::fs::write(path, new) else { return Ok(()) };
-    let outcome = match std::fs::write(path, old) {
-        Ok(()) => "The file was left as it was.".to_string(),
-        Err(restore) => format!("Restoring its previous content failed too ({restore}); it may be truncated."),
+/// Writes `new` to a temp file next to `path` and renames it over, so a crash or a full disk never leaves `path` truncated.
+pub(super) fn replace_file(path: &Path, new: &[u8]) -> Result<(), String> {
+    // rename would replace a symlink itself, so the temp file goes next to the file it points to.
+    let Ok(path) = path.canonicalize() else { return std::fs::write(path, new).map_err(|e| format!("Cannot write {}: {e}", path.display())) };
+    let name = path.file_name().expect("a canonical file path has a name").to_string_lossy();
+    let temp = path.with_file_name(format!(".{name}.{}.tmp", crate::api::oauth::random_hex(4)));
+    let write = || -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+        file.set_permissions(std::fs::metadata(&path)?.permissions())?;
+        file.write_all(new)?;
+        file.sync_all()?;
+        std::fs::rename(&temp, &path)
     };
-    Err(format!("Cannot write {}: {e}. {outcome}", path.display()))
+    write().map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("Cannot write {}: {e}. The file was left as it was.", path.display())
+    })
 }
 
 /// A deleted file has no canonical path, but its directory still does.
@@ -584,6 +595,21 @@ mod tests {
 
     fn anchors_of(output: &str) -> Vec<String> {
         output.lines().filter_map(|row| row.split_once('│')).map(|(a, _)| a.trim_start_matches(['+', '-', ' ']).to_string()).collect()
+    }
+
+    #[test]
+    fn replacing_a_file_keeps_its_mode_and_writes_through_a_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let target = temp_file("replace-file", "old");
+        let dir = target.parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o751)).unwrap();
+        let link = dir.join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        replace_file(&link, b"new").unwrap();
+        let state = (std::fs::read_to_string(&target).unwrap(), link.is_symlink(), std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, std::fs::read_dir(&dir).unwrap().count());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(state, ("new".to_string(), true, 0o751, 2));
     }
 
     #[test]

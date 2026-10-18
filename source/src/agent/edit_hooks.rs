@@ -53,13 +53,15 @@ pub fn hooks(files: &[PathBuf]) -> Result<Vec<Hook>, String> {
 }
 
 /// Stops at the repository root, so a file never runs the hooks of a project around it.
+/// Outside a repository there is no root, and the walk would reach configs in ~ or /tmp.
 fn config_dir(file: &Path) -> Option<PathBuf> {
+    let mut nearest = None;
     for dir in file.ancestors().skip(1) {
-        if dir.join(CONFIG).is_file() {
-            return Some(dir.to_path_buf());
+        if nearest.is_none() && dir.join(CONFIG).is_file() {
+            nearest = Some(dir.to_path_buf());
         }
         if dir.join(".git").exists() {
-            return None;
+            return nearest;
         }
     }
     None
@@ -200,6 +202,17 @@ mod tests {
             ]
         );
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn files_outside_a_repository_run_no_hooks() {
+        let root = std::env::temp_dir().join(format!("agent-edit-hooks-norepo-{}", std::process::id()));
+        std::fs::create_dir_all(root.join(".agents")).unwrap();
+        std::fs::write(root.join(CONFIG), r#"{"onStop": {"*": "touch pwned"}}"#).unwrap();
+        std::fs::write(root.join("a.txt"), "").unwrap();
+        let hooks = hooks(&[root.join("a.txt")]).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(hooks.is_empty());
     }
 
     #[test]

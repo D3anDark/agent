@@ -103,6 +103,16 @@ impl Snapshots {
         self.git(&["rev-parse", "--verify", "-q", &format!("{tree}:{path}")]).ok()
     }
 
+    /// Whether the work tree's ignore rules, as they are on disk now, ignore `path`.
+    pub fn ignored(&self, path: &str) -> Result<bool, String> {
+        let output = self.command(&["check-ignore", "-q", "--no-index", "--", path]).output().map_err(|e| format!("Cannot run git: {e}"))?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+        }
+    }
+
     /// Writes `path` as it is in `tree`, or deletes it when the tree lacks it.
     pub fn restore(&self, tree: &str, path: &str) -> Result<(), String> {
         if self.blob(tree, path).is_some() {
