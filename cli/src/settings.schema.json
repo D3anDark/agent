@@ -19,6 +19,8 @@
       "default": {},
       "description": "Keyed by provider (\"anthropic\") or model (\"anthropic/claude-opus-5-5\"); the model key wins."
     },
+    "provider_sort": { "enum": ["default", "alphabetical", "manual"], "default": "default", "description": "Order of the provider lists in /account, the context windows panel and web search." },
+    "provider_order": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Providers listed first when provider_sort is manual; the rest keep their default order after them." },
     "disabled_skills": { "type": "array", "items": { "type": "string" }, "default": [] },
     "disabled_plugins": { "type": "array", "items": { "type": "string" }, "default": [] },
     "disabled_mcp": { "type": "array", "items": { "type": "string" }, "default": [] },

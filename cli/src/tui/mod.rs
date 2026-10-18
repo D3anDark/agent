@@ -40,7 +40,7 @@ use crate::agent::subagent::{Run, Runs};
 use crate::api::accounts::Policy;
 use crate::api::models::{self, Model};
 use crate::api::oauth::Tokens;
-use crate::settings::{self, PRUNE_SESSIONS, Settings, model_key};
+use crate::settings::{self, PROVIDER_SORTS, PRUNE_SESSIONS, Settings, model_key};
 use crate::tools::bg::Terminals;
 use crate::tools::goal::{Goal, Status as GoalStatus};
 use crate::tools::plan::{self, Plan};
@@ -242,7 +242,7 @@ const PANEL_ROWS: usize = 8;
 const PLAN_OPTIONS: [&str; 4] = ["Implement here", "Start fresh and implement", "Export to PLAN.md", "Keep planning"];
 const PLAN_FRESH_ROWS: [&str; 3] = ["Model", "Effort", "Start"];
 const SCROLL_LINES: [usize; 5] = [1, 2, 3, 5, 10];
-const SETTING_NAMES: [&str; 25] = [
+const SETTING_NAMES: [&str; 26] = [
     "Model",
     "Thinking level",
     "Permission mode",
@@ -268,9 +268,10 @@ const SETTING_NAMES: [&str; 25] = [
     "Update channel",
     "Menu rows",
     "Auto prune sessions",
+    "Provider order",
 ];
 /// Rows of `SETTING_NAMES` in the order the settings panel lists them.
-const SETTING_ORDER: [usize; 25] = [0, 1, 18, 13, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 23, 21, 22, 24];
+const SETTING_ORDER: [usize; 26] = [0, 1, 18, 13, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 25, 14, 15, 16, 17, 19, 20, 23, 21, 22, 24];
 const MODEL_ROWS: [usize; 3] = [0, 8, 12];
 const CONTEXT_WINDOW_ROW: usize = 13;
 const CONTEXT_WINDOWS: [Option<u64>; 5] = [
@@ -2292,13 +2293,13 @@ impl App {
 
     fn open_context_windows(&mut self) {
         let Some(current) = self.loaded_model_key() else { return };
-        let index = context_window_targets(self.client.catalog(), 1, "").iter().position(|(key, _)| *key == current).unwrap_or(0);
+        let index = context_window_targets(self.client.catalog(), &self.settings, 1, "").iter().position(|(key, _)| *key == current).unwrap_or(0);
         self.panel = Some(Panel::ContextWindows { tab: 1, query: Editor::new(), index });
     }
 
     fn context_windows_key(&mut self, key: KeyEvent) {
         let Some(Panel::ContextWindows { tab, query, index }) = self.panel.as_mut() else { return };
-        let targets = context_window_targets(self.client.catalog(), *tab, &query.text());
+        let targets = context_window_targets(self.client.catalog(), &self.settings, *tab, &query.text());
         match key.code {
             KeyCode::Esc => self.panel = Some(Panel::Settings { row: CONTEXT_WINDOW_ROW, query: Editor::new() }),
             KeyCode::Tab | KeyCode::BackTab => {
@@ -2426,6 +2427,7 @@ impl App {
         let caveman: Vec<String> = CAVEMAN_LEVELS.iter().map(|l| l.to_string()).collect();
         let channels: Vec<String> = crate::update::CHANNELS.iter().map(|c| c.to_string()).collect();
         let prune: Vec<String> = PRUNE_SESSIONS.iter().map(|p| p.to_string()).collect();
+        let sorts: Vec<String> = PROVIDER_SORTS.iter().map(|sort| sort.to_string()).collect();
         self.update_settings(|s| match row {
             1 => s.thinking = step(&thinking, &s.thinking, forward),
             2 => s.permission_mode = step(&MODES, &s.permission_mode, forward),
@@ -2448,11 +2450,12 @@ impl App {
             22 => s.update_channel = step(&channels, &s.update_channel, forward),
             23 => s.menu_rows = step(&MENU_ROWS, &s.menu_rows, forward),
             24 => s.prune_sessions = step(&prune, &s.prune_sessions, forward),
+            25 => s.provider_sort = step(&sorts, &s.provider_sort, forward),
             _ => unreachable!("rows 0, 8, 12 and 13 open their own panels"),
         });
     }
 
-    fn setting_values(&self) -> [Line; 25] {
+    fn setting_values(&self) -> [Line; 26] {
         let s = &self.settings;
         let on_off = |value: bool| if value { "on" } else { "off" };
         let condense_model = if s.condense_model.is_empty() { "auto" } else { &s.condense_model };
@@ -2487,6 +2490,7 @@ impl App {
             choices(crate::update::CHANNELS.map(String::from), &s.update_channel),
             choices(MENU_ROWS.map(|n| n.to_string()), &s.menu_rows.to_string()),
             choices(PRUNE_SESSIONS.map(String::from), &s.prune_sessions),
+            choices(PROVIDER_SORTS.map(String::from), &s.provider_sort),
         ]
     }
 
@@ -2535,7 +2539,7 @@ impl App {
                 view.render(width, PANEL_ROWS)
             }
             Panel::ContextWindows { tab, query, index } => {
-                let rows: Vec<panel::Row> = context_window_targets(self.client.catalog(), *tab, &query.text())
+                let rows: Vec<panel::Row> = context_window_targets(self.client.catalog(), &self.settings, *tab, &query.text())
                     .into_iter()
                     .map(|(target, model)| {
                         let mut right = choices(CONTEXT_WINDOWS.map(context_window_label), &context_window_label(self.settings.context_windows.get(&target).copied()));
@@ -4142,9 +4146,9 @@ fn matching_settings(query: &str) -> Vec<usize> {
 }
 
 /// Override keys for the context windows panel: providers on tab 0, models matching `query` on tab 1.
-fn context_window_targets<'a>(catalog: &'a [Model], tab: usize, query: &str) -> Vec<(String, Option<&'a Model>)> {
+fn context_window_targets<'a>(catalog: &'a [Model], settings: &Settings, tab: usize, query: &str) -> Vec<(String, Option<&'a Model>)> {
     if tab == 0 {
-        return models::PROVIDERS.iter().map(|provider| (provider.to_string(), None)).collect();
+        return settings.sort_providers(&models::PROVIDERS).into_iter().map(|provider| (provider.to_string(), None)).collect();
     }
     matching_models(catalog, 0, query).into_iter().flatten().map(|model| (model_key(model), Some(model))).collect()
 }

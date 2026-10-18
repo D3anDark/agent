@@ -18,7 +18,7 @@ impl Web {
             queries.push(claim.to_string());
         }
         queries.truncate(MAX_QUERIES);
-        let config = providers::load_config(&self.config_path)?;
+        let config = providers::load_config(&self.config_path, self.provider_order())?;
         let domains = string_list(&input["domainFilter"]);
         let recency = super::recency(&input["recencyFilter"]);
         let proxy = input["proxy"].as_str();

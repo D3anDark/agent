@@ -52,6 +52,7 @@ struct State {
     policy: Option<Policy>,
     fallback_model: String,
     headroom: bool,
+    provider_order: Vec<&'static str>,
 }
 
 #[derive(Default)]
@@ -197,6 +198,7 @@ impl Client {
         state.current.retain(|provider, _| state.pinned.get(provider) == settings.default_accounts.get(provider));
         state.pinned = settings.default_accounts.clone();
         state.headroom = settings.headroom && crate::installed("headroom");
+        state.provider_order = settings.sort_providers(&models::PROVIDERS);
     }
 
     fn reload(&self, mut saved: Vec<Account>) {
@@ -457,7 +459,8 @@ impl Client {
                 pinned: state.pinned.get(&a.provider) == Some(&a.name),
             })
             .collect();
-        views.sort_by(|a, b| (!a.oauth, &a.provider, &a.name).cmp(&(!b.oauth, &b.provider, &b.name)));
+        let rank = |provider: &str| state.provider_order.iter().position(|listed| *listed == provider).unwrap_or(usize::MAX);
+        views.sort_by(|a, b| (!a.oauth, rank(&a.provider), &a.name).cmp(&(!b.oauth, rank(&b.provider), &b.name)));
         views
     }
 

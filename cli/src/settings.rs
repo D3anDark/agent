@@ -32,6 +32,10 @@ pub struct Settings {
     pub default_accounts: HashMap<String, String>,
     /// Keyed by provider ("anthropic") or model ("anthropic/claude-opus-5-5"); the model key wins.
     pub context_windows: HashMap<String, u64>,
+    /// One of `PROVIDER_SORTS`: the order /account, the context windows panel and web search list providers in.
+    pub provider_sort: String,
+    /// Providers listed first when `provider_sort` is "manual"; unlisted ones keep their default order after them.
+    pub provider_order: Vec<String>,
     /// Skill names left out of the prompt and /skill: completion.
     pub disabled_skills: Vec<String>,
     /// Installed plugins that are not started.
@@ -76,6 +80,7 @@ pub struct LspServer {
 }
 
 pub const PRUNE_SESSIONS: [&str; 6] = ["never", "24h", "3d", "7d", "14d", "30d"];
+pub const PROVIDER_SORTS: [&str; 3] = ["default", "alphabetical", "manual"];
 /// Below this a condensed batch costs more in cache rewrites than its summary saves on later cache reads.
 pub const CONDENSE_MIN_BATCH_CHARS: u64 = 10_000;
 
@@ -83,6 +88,17 @@ impl Settings {
     pub fn context_window(&self, model: &Model) -> u64 {
         let overrides = &self.context_windows;
         overrides.get(&model_key(model)).or(overrides.get(&model.provider)).copied().unwrap_or(model.context_window)
+    }
+
+    /// `providers` in the order `provider_sort` picks.
+    pub fn sort_providers<'a>(&self, providers: &[&'a str]) -> Vec<&'a str> {
+        let mut sorted = providers.to_vec();
+        match self.provider_sort.as_str() {
+            "alphabetical" => sorted.sort_unstable(),
+            "manual" => sorted.sort_by_key(|provider| self.provider_order.iter().position(|listed| listed.as_str() == *provider).unwrap_or(usize::MAX)),
+            _ => {}
+        }
+        sorted
     }
 
     /// How long an untouched session is kept; `None` keeps it forever.
@@ -137,6 +153,8 @@ pub fn load(home: &Path) -> Settings {
             .flatten()
             .filter_map(|(key, window)| Some((key.clone(), window.as_u64()?)))
             .collect(),
+        provider_sort: level(&own["provider_sort"], &PROVIDER_SORTS, "default"),
+        provider_order: own["provider_order"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
         disabled_skills: own["disabled_skills"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
         disabled_plugins: own["disabled_plugins"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
         disabled_mcp: own["disabled_mcp"].as_array().into_iter().flatten().filter_map(|name| Some(name.as_str()?.to_string())).collect(),
@@ -210,6 +228,8 @@ pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
         "keep_recent_tokens": settings.keep_recent_tokens,
         "expand_tools": settings.expand_tools,
         "context_windows": settings.context_windows,
+        "provider_sort": settings.provider_sort,
+        "provider_order": settings.provider_order,
         "disabled_skills": settings.disabled_skills,
         "disabled_plugins": settings.disabled_plugins,
         "disabled_mcp": settings.disabled_mcp,
@@ -262,6 +282,8 @@ mod tests {
         settings.context_windows.insert("anthropic".into(), 500_000);
         settings.context_windows.insert("openai-codex/gpt-5.5".into(), 400_000);
         settings.default_accounts.insert("anthropic".into(), "work".into());
+        settings.provider_sort = "manual".into();
+        settings.provider_order = vec!["openrouter".into(), "anthropic".into()];
         settings.disabled_skills = vec!["remotion-render".into()];
         settings.disabled_plugins = vec!["usagefleet".into()];
         settings.disabled_mcp = vec!["github".into()];
@@ -303,6 +325,7 @@ mod tests {
         assert_eq!(properties["caveman"]["enum"], json!(crate::agent::modes::CAVEMAN_LEVELS));
         assert_eq!(properties["update_channel"]["enum"], json!(crate::update::CHANNELS));
         assert_eq!(properties["prune_sessions"]["enum"], json!(PRUNE_SESSIONS));
+        assert_eq!(properties["provider_sort"]["enum"], json!(PROVIDER_SORTS));
     }
 
     /// Every object `save` writes has exactly the properties its schema lists, nested objects included.
@@ -327,6 +350,18 @@ mod tests {
         settings.context_windows.insert("anthropic".into(), 400_000);
         settings.context_windows.insert("anthropic/claude-opus-4-6".into(), 200_000);
         assert_eq!((settings.context_window(opus), settings.context_window(sonnet)), (200_000, 400_000));
+    }
+
+    #[test]
+    fn provider_sort_applies_default_alphabetical_and_manual_orders() {
+        let mut settings = load(Path::new("/nonexistent"));
+        let providers = ["exa", "brave", "tavily"];
+        assert_eq!(settings.sort_providers(&providers), ["exa", "brave", "tavily"]);
+        settings.provider_sort = "alphabetical".into();
+        assert_eq!(settings.sort_providers(&providers), ["brave", "exa", "tavily"]);
+        settings.provider_sort = "manual".into();
+        settings.provider_order = vec!["tavily".into(), "exa".into()];
+        assert_eq!(settings.sort_providers(&providers), ["tavily", "exa", "brave"]);
     }
 
     #[test]

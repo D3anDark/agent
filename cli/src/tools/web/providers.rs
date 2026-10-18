@@ -31,18 +31,20 @@ pub struct Response {
 /// `~/.pi/agent/web-search.json` for one tool call, with each provider's key resolved at most once.
 pub struct Config {
     path: PathBuf,
+    /// The providers "auto" and "all" try, in order.
+    order: Vec<&'static str>,
     settings: Value,
     keys: [OnceLock<Result<Option<String>, String>>; PROVIDERS.len()],
 }
 
 /// Shared with pi; a missing file is an empty config.
-pub fn load_config(path: &Path) -> Result<Config, String> {
+pub fn load_config(path: &Path, order: Vec<&'static str>) -> Result<Config, String> {
     let settings = match std::fs::read_to_string(path) {
         Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
         Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
     };
-    Ok(Config { path: path.to_path_buf(), settings, keys: Default::default() })
+    Ok(Config { path: path.to_path_buf(), order, settings, keys: Default::default() })
 }
 
 /// Runs `query` against the providers `requested` names: "auto" (or absent), "all", one name, or a list.
@@ -65,7 +67,7 @@ pub fn search(config: &Config, requested: &Value, query: &Query) -> Result<Respo
     match requested.as_str().unwrap_or_default().trim().to_lowercase().as_str() {
         "auto" => search_auto(config, query),
         "all" => {
-            let available: Vec<&str> = PROVIDERS.into_iter().filter(|p| has_key(&config.settings, p)).collect();
+            let available: Vec<&str> = config.order.iter().copied().filter(|p| has_key(&config.settings, p)).collect();
             if available.is_empty() {
                 return Err(format!("No configured search provider available for provider \"all\". {}", missing_keys_hint(&config.path)));
             }
@@ -89,7 +91,7 @@ fn known(name: &str) -> Result<&'static str, String> {
 fn search_auto(config: &Config, query: &Query) -> Result<Response, String> {
     let configured = config.settings["searchProvider"].as_str().or(config.settings["provider"].as_str()).and_then(|name| known(name).ok());
     let mut order: Vec<&str> = configured.into_iter().collect();
-    order.extend(PROVIDERS.into_iter().filter(|p| Some(*p) != configured));
+    order.extend(config.order.iter().copied().filter(|p| Some(*p) != configured));
     let mut errors = Vec::new();
     let mut first_empty = None;
     for provider in order {
@@ -727,7 +729,7 @@ mod tests {
                 return;
             }
         }
-        let error = search(&load_config(Path::new("/cfg.json")).unwrap(), &Value::Null, &query).unwrap_err();
+        let error = search(&load_config(Path::new("/cfg.json"), PROVIDERS.to_vec()).unwrap(), &Value::Null, &query).unwrap_err();
         assert!(error.starts_with("No search provider available. Providers without credentials: set EXA_API_KEY"), "{error}");
     }
 
@@ -739,7 +741,7 @@ mod tests {
         let settings = json!({"exaApiKey": format!("!echo run >> {}; echo k1", log.display()), "tavilyApiKey": " "});
         std::fs::write(dir.join("web-search.json"), settings.to_string()).unwrap();
         unsafe { std::env::set_var("TAVILY_API_KEY", "!from-env") };
-        let config = load_config(&dir.join("web-search.json")).unwrap();
+        let config = load_config(&dir.join("web-search.json"), PROVIDERS.to_vec()).unwrap();
         let keys = [api_key(&config, "exa"), api_key(&config, "exa"), api_key(&config, "tavily")];
         let runs = std::fs::read_to_string(&log).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();

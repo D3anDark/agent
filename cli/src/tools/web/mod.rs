@@ -64,6 +64,7 @@ pub(super) fn http_agent(proxy: Option<&str>, timeout: Duration) -> Result<ureq:
 
 /// Session store of tool responses: the last 20 as JSON files in `dir`, looked up by responseId.
 pub struct Web {
+    home: PathBuf,
     config_path: PathBuf,
     dir: PathBuf,
     ids: VecDeque<String>,
@@ -79,7 +80,12 @@ impl Drop for Web {
 
 impl Web {
     pub fn new(home: &Path, dir: PathBuf) -> Web {
-        Web { config_path: home.join(".pi/agent/web-search.json"), dir, ids: VecDeque::new() }
+        Web { home: home.to_path_buf(), config_path: home.join(".pi/agent/web-search.json"), dir, ids: VecDeque::new() }
+    }
+
+    /// The provider order from /settings, read per call like the other settings.
+    fn provider_order(&self) -> Vec<&'static str> {
+        crate::settings::load(&self.home).sort_providers(&providers::PROVIDERS)
     }
 
     pub fn run(&mut self, name: &str, input: &Value) -> Result<String, String> {
@@ -120,7 +126,7 @@ impl Web {
             return Err("Error: No query provided. Use 'query' or 'queries' parameter.".into());
         }
         queries.truncate(research::MAX_QUERIES);
-        let config = providers::load_config(&self.config_path)?;
+        let config = providers::load_config(&self.config_path, self.provider_order())?;
         let domains = string_list(&input["domainFilter"]);
         let include_content = input["includeContent"].as_bool().unwrap_or(false);
         let proxy = input["proxy"].as_str();
