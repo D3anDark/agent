@@ -11,9 +11,11 @@ pub const PONYTAIL_BANNER: &str = "PONYTAIL MODE ACTIVE — level: ";
 pub const CAVEMAN_BANNER: &str = "CAVEMAN MODE ACTIVE — mode: ";
 const PONYTAIL_URL: &str = "https://raw.githubusercontent.com/DietrichGebert/ponytail/main/skills/ponytail/SKILL.md";
 const CAVEMAN_SKILLS_URL: &str = "https://raw.githubusercontent.com/JuliusBrussee/caveman/main/skills";
+/// Blocks startup on first run and the TUI on a level change.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Downloads the rules the active levels need: always with `refresh`, otherwise only when missing.
-/// A failed refresh keeps the old copy; only a missing copy is an error.
+/// A failed download keeps the old copy; a missing copy that cannot be downloaded, or a download that cannot be saved, is an error.
 pub fn fetch(home: &Path, ponytail: &str, caveman: &str, refresh: bool) -> Result<(), String> {
     let mut wanted = Vec::new();
     if ponytail != "off" {
@@ -32,12 +34,16 @@ pub fn fetch(home: &Path, ponytail: &str, caveman: &str, refresh: bool) -> Resul
             Ok(rules) => {
                 fs::create_dir_all(path.parent().expect("cache_path has a parent")).map_err(|e| format!("Cannot create {}: {e}", path.display()))?;
                 // The startup refresh runs while the agent reads the rules; a rename never shows a half-written file.
-                let partial = path.with_extension("partial");
+                // Per-process name: subagents refresh too, and a shared partial could be truncated mid-rename.
+                let partial = path.with_extension(format!("{}.partial", std::process::id()));
                 fs::write(&partial, rules).map_err(|e| format!("Cannot write {}: {e}", partial.display()))?;
-                fs::rename(&partial, &path).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+                fs::rename(&partial, &path).map_err(|e| {
+                    let _ = fs::remove_file(&partial);
+                    format!("Cannot move {} to {}: {e}", partial.display(), path.display())
+                })?;
             }
             Err(e) if !cached => return Err(format!("Cannot download the {skill} rules from {url}: {e}")),
-            Err(_) => {} // offline: the cached copy still works
+            Err(_) => {} // any failed download, offline or upstream: the cached copy still works
         }
     }
     Ok(())
@@ -85,7 +91,7 @@ fn read(home: &Path, skill: &str) -> Option<String> {
 }
 
 fn download(url: &str) -> Result<String, String> {
-    let http: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(10))).build().into();
+    let http: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(DOWNLOAD_TIMEOUT)).build().into();
     let rules = http.get(url).call().map_err(|e| e.to_string())?.body_mut().read_to_string().map_err(|e| e.to_string())?;
     if !rules.starts_with("---") {
         return Err("the response is not a SKILL.md".into());
@@ -94,7 +100,7 @@ fn download(url: &str) -> Result<String, String> {
 }
 
 fn body(skill: &str) -> &str {
-    skill.strip_prefix("---").and_then(|rest| rest.split_once("---")).map_or(skill, |(_, body)| body.trim_start())
+    skill.strip_prefix("---").and_then(|rest| rest.split_once("\n---")).map_or(skill, |(_, body)| body.trim_start())
 }
 
 /// ponytail's SKILL.md lists every level; keep only the active level's table row and examples.
@@ -123,6 +129,11 @@ mod tests {
     fn ponytail_keeps_only_the_active_level() {
         let body = "Rules\n| **lite** | a |\n| **ultra** | b |\n- lite: \"x\"\n- ultra: \"y\"\n- Full: prose stays";
         assert_eq!(only_level(body, "ultra"), "Rules\n| **ultra** | b |\n- ultra: \"y\"\n- Full: prose stays");
+    }
+
+    #[test]
+    fn frontmatter_ends_at_a_fence_line_only() {
+        assert_eq!(body("---\ndescription: lazy --- but complete\n---\nRules"), "Rules");
     }
 
     #[test]
