@@ -167,7 +167,8 @@ fn search_one(config: &Config, provider: &str, query: &Query) -> Result<Response
         "tavily" => tavily(&config.settings, &key, query),
         "jina" => jina(&key, query),
         "perplexity" => perplexity(&key, query),
-        _ => xai(&config.settings, &key, query),
+        "xai" => xai(&config.settings, &key, query),
+        other => unreachable!("{other} is not in PROVIDERS"),
     };
     result.map_err(|e| e.replace(&key, "[redacted]"))
 }
@@ -179,7 +180,8 @@ pub fn label(provider: &str) -> &'static str {
         "tavily" => "Tavily",
         "jina" => "Jina",
         "perplexity" => "Perplexity",
-        _ => "xAI",
+        "xai" => "xAI",
+        other => unreachable!("{other} is not in PROVIDERS"),
     }
 }
 
