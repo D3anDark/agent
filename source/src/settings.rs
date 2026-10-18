@@ -214,7 +214,7 @@ fn default_lsp_servers() -> BTreeMap<String, LspServer> {
 }
 
 /// Editors fetch it for completion; `settings_schema_matches_what_save_writes` keeps it in step with `save`.
-const SCHEMA_URL: &str = "https://raw.githubusercontent.com/rokartur/agent/main/cli/src/settings.schema.json";
+const SCHEMA_URL: &str = "https://raw.githubusercontent.com/rokartur/agent/main/source/src/settings.schema.json";
 
 pub fn save(home: &Path, settings: &Settings) -> Result<(), String> {
     let path = path(home);

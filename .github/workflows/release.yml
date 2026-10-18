@@ -19,7 +19,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
-        working-directory: cli
+        working-directory: source
     steps:
       - uses: actions/checkout@v4
       - name: Tag matches Cargo.toml
@@ -39,7 +39,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
-          path: cli/${{ matrix.asset }}
+          path: source/${{ matrix.asset }}
 
   publish:
     needs: build
