@@ -74,10 +74,10 @@ enum Msg {
     Input(Input),
     Agent(Event),
     Done(Result<String, String>),
-    /// The model the worker settled on, with the failed model lists and a swapped model.
+    /// The model the worker settled on with the notice of a swapped model, and the failed model lists.
     ModelSettled {
-        model: Result<String, String>,
-        notices: Vec<String>,
+        model: Result<(String, Option<String>), String>,
+        failures: Vec<String>,
     },
     Resumed {
         id: String,
@@ -447,6 +447,7 @@ enum Item {
     System {
         source: String,
         text: String,
+        failed: bool,
     },
     Error(String),
     User(String),
@@ -795,12 +796,9 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
     });
 }
 
-fn settle_model(agent: &mut Agent, settings: &mut Settings, mut notices: Vec<String>) -> Msg {
-    let model = agent.settle_model(settings).map(|swapped| {
-        notices.extend(swapped);
-        settings.model.clone()
-    });
-    Msg::ModelSettled { model, notices }
+fn settle_model(agent: &mut Agent, settings: &mut Settings, failures: Vec<String>) -> Msg {
+    let model = agent.settle_model(settings).map(|swapped| (settings.model.clone(), swapped));
+    Msg::ModelSettled { model, failures }
 }
 
 fn spawn_update(channel: String, events: Sender<Msg>) {
@@ -996,7 +994,7 @@ impl App {
     }
 
     fn system(&mut self, source: &str, text: impl Into<String>) {
-        self.push(Item::System { source: source.to_string(), text: text.into() });
+        self.push(Item::System { source: source.to_string(), text: text.into(), failed: false });
     }
 
     /// pj's mouse selection over the transcript: release copies, a drag past its top or bottom scrolls.
@@ -1154,12 +1152,17 @@ impl App {
             Msg::Input(_) => {}
             Msg::Agent(event) => self.agent_event(event),
             Msg::Done(result) => self.done(result),
-            Msg::ModelSettled { model, notices } => {
-                for notice in notices {
-                    self.system("models", notice);
+            Msg::ModelSettled { model, failures } => {
+                for failure in failures {
+                    self.push(Item::System { source: "models".into(), text: failure, failed: true });
                 }
                 match model {
-                    Ok(model) => self.settings.model = model,
+                    Ok((model, swapped)) => {
+                        self.settings.model = model;
+                        if let Some(notice) = swapped {
+                            self.system("models", notice);
+                        }
+                    }
                     Err(error) => self.push(Item::Error(error)),
                 }
             }
@@ -3837,7 +3840,8 @@ fn todo_style(status: Status) -> Style {
 fn render_item(item: &Item, width: usize, expanded: bool) -> Vec<Line> {
     match item {
         Item::Lines(lines) => lines.clone(),
-        Item::System { source, text } => system_lines("⚙", source, text, SYSTEM, width),
+        Item::System { source, text, failed: false } => system_lines("⚙", source, text, SYSTEM, width),
+        Item::System { source, text, failed: true } => system_lines("✗", source, text, ERROR, width),
         Item::Error(text) => system_lines("✗", "error", text, ERROR, width),
         Item::User(text) => {
             let indent = vec![span("┃", BRIGHT), span(" ", PLAIN)];
