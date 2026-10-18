@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 pub mod ask;
 pub mod bg;
+pub mod conflicts;
 pub mod external;
 pub mod goal;
 pub mod guard;

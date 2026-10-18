@@ -29,6 +29,7 @@ use crate::settings::Settings;
 use crate::tools;
 use crate::tools::ask::{self, Answer, Question};
 use crate::tools::bg::{self, Terminals};
+use crate::tools::conflicts;
 use crate::tools::goal::{AfterTurn, Goal, Status as GoalStatus};
 use crate::tools::guard;
 use crate::tools::hashline::Anchors;
@@ -501,6 +502,11 @@ impl Agent {
         {
             return (reason, true);
         }
+        if name == "bash"
+            && let Some(reason) = conflicts::commit_blocked(input["command"].as_str().unwrap_or_default(), &self.cwd)
+        {
+            return (reason, true);
+        }
         if let Some(reason) = self.check_permission(name, input, targets, user_request, emit) {
             return (reason, true);
         }
@@ -543,6 +549,11 @@ impl Agent {
 
     fn run_file_tool(&mut self, name: &str, input: &Value) -> (String, bool) {
         let (mut output, is_error) = tools::run(name, input, &self.cwd, &mut self.anchors, &self.rtk, &self.abort);
+        if name == "bash"
+            && let Some(hint) = conflicts::hint(input["command"].as_str().unwrap_or_default(), &self.cwd)
+        {
+            output = format!("{output}\n\n{hint}");
+        }
         if name == "read" && !is_error {
             let paths = match input["paths"].as_array() {
                 Some(paths) => paths.iter().filter_map(Value::as_str).collect(),
