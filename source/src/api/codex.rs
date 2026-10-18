@@ -92,7 +92,13 @@ pub fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut
             break;
         }
         line.clear();
-        let read = reader.read_line(&mut line).map_err(|e| ApiError::retryable(format!("Stream read failed: {e}.")))?;
+        let read = match reader.read_line(&mut line) {
+            Err(_) if abort.load(Ordering::Relaxed) => {
+                stop_reason = "aborted".into();
+                break;
+            }
+            read => read.map_err(|e| ApiError::retryable(format!("Stream read failed: {e}.")))?,
+        };
         if read == 0 {
             return Err(ApiError::retryable("Stream ended before response.completed.".into()));
         }

@@ -435,7 +435,7 @@ impl Client {
         let hint = if headroom { format!(" Is `headroom proxy` running on {HEADROOM_URL}?") } else { String::new() };
         let response = call.header("content-type", "application/json").send(body.to_string()).map_err(|e| ApiError::retryable(format!("Request failed: {e}.{hint}")))?;
         let status = response.status().as_u16();
-        let mut reader = BufReader::new(response.into_body().into_reader());
+        let mut reader = watched_body(response.into_body().into_reader(), abort, STREAM_IDLE);
         if status != 200 {
             let mut text = String::new();
             let _ = std::io::Read::read_to_string(&mut reader, &mut text);
@@ -585,6 +585,62 @@ pub fn plain_request(model: &str, system: &str, prompt: &str, max_tokens: u64) -
     })
 }
 
+/// No byte for this long means the stream died without a TCP reset; ureq's `timeout_recv_body` caps the whole body instead.
+const STREAM_IDLE: Duration = Duration::from_secs(120);
+
+/// `body` read on its own thread, so a stalled stream fails after `idle` and Esc ends it at once.
+/// A read on a stalled body that a caller gives up on stays blocked on that thread until the socket closes.
+fn watched_body(mut body: impl std::io::Read + Send + 'static, abort: &AtomicBool, idle: Duration) -> BufReader<WatchedBody<'_>> {
+    let (send, chunks) = std::sync::mpsc::sync_channel(4);
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 16 * 1024];
+        loop {
+            let chunk = body.read(&mut buffer).map(|read| buffer[..read].to_vec());
+            let done = !matches!(&chunk, Ok(bytes) if !bytes.is_empty());
+            if send.send(chunk).is_err() || done {
+                return;
+            }
+        }
+    });
+    BufReader::new(WatchedBody { chunks, chunk: Vec::new(), read: 0, abort, idle })
+}
+
+struct WatchedBody<'a> {
+    chunks: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    chunk: Vec<u8>,
+    read: usize,
+    abort: &'a AtomicBool,
+    idle: Duration,
+}
+
+impl std::io::Read for WatchedBody<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        use std::sync::mpsc::RecvTimeoutError;
+        let deadline = Instant::now() + self.idle;
+        while self.read == self.chunk.len() {
+            if self.abort.load(Ordering::Relaxed) {
+                return Err(std::io::Error::other("aborted"));
+            }
+            match self.chunks.recv_timeout(Duration::from_millis(100)) {
+                Ok(chunk) => {
+                    let chunk = chunk?;
+                    if chunk.is_empty() {
+                        return Ok(0);
+                    }
+                    (self.chunk, self.read) = (chunk, 0);
+                }
+                Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
+                Err(RecvTimeoutError::Timeout) => return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("no data for {}s", self.idle.as_secs_f32()))),
+                Err(RecvTimeoutError::Disconnected) => return Ok(0),
+            }
+        }
+        let count = out.len().min(self.chunk.len() - self.read);
+        out[..count].copy_from_slice(&self.chunk[self.read..self.read + count]);
+        self.read += count;
+        Ok(count)
+    }
+}
+
 fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn FnMut(Delta)) -> Result<Reply, ApiError> {
     let mut blocks: Vec<Value> = Vec::new();
     let mut tool_json: Vec<String> = Vec::new();
@@ -599,7 +655,13 @@ fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn
             break;
         }
         line.clear();
-        let read = reader.read_line(&mut line).map_err(|e| ApiError::retryable(format!("Stream read failed: {e}.")))?;
+        let read = match reader.read_line(&mut line) {
+            Err(_) if abort.load(Ordering::Relaxed) => {
+                stop_reason = "aborted".into();
+                break;
+            }
+            read => read.map_err(|e| ApiError::retryable(format!("Stream read failed: {e}.")))?,
+        };
         if read == 0 {
             return Err(cut_off("before message_stop"));
         }
@@ -744,5 +806,28 @@ mod tests {
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(body["system"][1], json!({"type": "text", "text": "<cwd>/a</cwd>"}));
         assert_eq!(request("m", 1000, "high", "sys", "", &tools, &messages)["system"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_stalled_stream_times_out_and_esc_ends_it_as_aborted() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        let (mut server, client) = UnixStream::pair().unwrap();
+        server.write_all(b"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{}}}\n").unwrap();
+        let not_aborted = AtomicBool::new(false);
+        let error = parse_stream(&mut watched_body(client.try_clone().unwrap(), &not_aborted, Duration::from_millis(200)), &not_aborted, &mut |_| {}).err().unwrap();
+        assert!(error.retryable && error.message.contains("no data"), "{}", error.message);
+
+        let abort = Arc::new(AtomicBool::new(false));
+        let setter = Arc::clone(&abort);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            setter.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let reply = parse_stream(&mut watched_body(client, &abort, Duration::from_secs(60)), &abort, &mut |_| {}).ok().unwrap();
+        assert_eq!(reply.stop_reason, "aborted");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        drop(server);
     }
 }
