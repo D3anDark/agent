@@ -203,8 +203,9 @@ pub fn post(url: &str, content_type: &str, body: &str) -> Result<Value, String> 
     let status = response.status();
     let text = response.body_mut().read_to_string().map_err(|e| format!("Token response unreadable: {e}."))?;
     if !status.is_success() {
+        let body: Value = serde_json::from_str(&text).unwrap_or_default();
         // The body comes from a third-party server and ends up on the terminal, so escapes are dropped.
-        let shown: String = text.trim().chars().filter(|c| !c.is_control()).take(500).collect();
+        let shown: String = body["error_description"].as_str().unwrap_or(&text).trim().chars().filter(|c| !c.is_control()).take(500).collect();
         return Err(format!("Token request failed ({}): {shown}.", status.as_u16()));
     }
     serde_json::from_str(&text).map_err(|e| format!("Token response is not JSON: {e}."))
@@ -357,6 +358,13 @@ mod tests {
     fn a_failed_post_reports_the_body_without_terminal_escapes() {
         let url = serve_once("HTTP/1.1 400 Bad Request\r\ncontent-length: 14\r\n\r\nbad\x1b]0;x\x07grant");
         assert_eq!(post(&url, "application/json", "{}").unwrap_err(), "Token request failed (400): bad]0;xgrant.");
+    }
+
+    #[test]
+    fn a_failed_post_reports_the_oauth_error_description() {
+        let body = r#"{"error": "invalid_grant", "error_description": "Refresh token not found or invalid"}"#;
+        let url = serve_once(format!("HTTP/1.1 400 Bad Request\r\ncontent-length: {}\r\n\r\n{body}", body.len()).leak());
+        assert_eq!(post(&url, "application/json", "{}").unwrap_err(), "Token request failed (400): Refresh token not found or invalid.");
     }
 
     #[test]
