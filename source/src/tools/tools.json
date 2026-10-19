@@ -215,63 +215,6 @@
     }
   },
   {
-    "name": "move",
-    "description": "Move the lines from `source_from` to `source_to` after or before `anchor`, in this or another file. In one file the destination must sit outside the source range.",
-    "eager_input_streaming": true,
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "source_from": {
-          "type": "string",
-          "description": "Anchor of the first source line."
-        },
-        "source_to": {
-          "type": "string",
-          "description": "Anchor of the last source line."
-        },
-        "anchor": {
-          "type": "string",
-          "description": "Anchor of the destination line."
-        },
-        "direction": {
-          "anyOf": [
-            {
-              "type": "string",
-              "const": "after"
-            },
-            {
-              "type": "string",
-              "const": "before"
-            }
-          ]
-        }
-      },
-      "required": [
-        "source_from",
-        "source_to",
-        "anchor",
-        "direction"
-      ]
-    }
-  },
-  {
-    "name": "undo_last_change",
-    "description": "Undo the last replace, replace_match, insert or move on a file. Refused if the file changed since.",
-    "eager_input_streaming": true,
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string",
-          "description": "Path to the file to undo"
-        }
-      },
-      "required": [
-        "path"
-      ]
-    }
-  },
-  {
     "name": "context_tree_query",
     "description": "Get back the original outputs of tool calls a pruner summary replaced, by the short refs it lists (e.g. [\"t12\", \"t3\"]).",
     "eager_input_streaming": true,

@@ -923,7 +923,7 @@ impl Agent {
     /// Snapshots around a tool that can change files, so a rewind touches only what this session changed.
     /// A file another session edits while this call runs still counts as this session's.
     fn run_tool_with_checkpoint(&mut self, name: &str, input: &Value, targets: &[PathBuf], user_request: &str, emit: &mut dyn FnMut(Event)) -> Result<(String, bool), String> {
-        const CHANGES_FILES: [&str; 8] = ["write", "replace", "replace_match", "insert", "move", "undo_last_change", "bash", "subagent"];
+        const CHANGES_FILES: [&str; 6] = ["write", "replace", "replace_match", "insert", "bash", "subagent"];
         let Some(snapshots) = self.snapshots.as_ref().filter(|_| CHANGES_FILES.contains(&name)) else {
             return Ok(self.run_tool(name, input, targets, user_request, emit));
         };

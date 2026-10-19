@@ -51,8 +51,6 @@ pub fn run(name: &str, input: &Value, cwd: &Path, anchors: &mut Anchors, rtk: &R
         "replace" => anchors.replace(input),
         "replace_match" => anchors.replace_match(input),
         "insert" => anchors.insert(input),
-        "move" => anchors.move_lines(input),
-        "undo_last_change" => anchors.undo(cwd, input),
         "rg" => rg(input, cwd, anchors, abort),
         _ => Err(format!("Tool {name} not found")),
     };

@@ -6,7 +6,6 @@ const DEFAULT_PREAMBLE: &str = "You are an expert coding assistant. You help use
 <tools>
 - read: Read a file as anchored rows
 - replace, replace_match, insert: Edit a file by the anchors read returned
-- move, undo_last_change: Move lines between places or files, or revert the last edit
 - write: Create a file, or overwrite one whole
 - bash: Run shell commands
 - rg: Search file contents

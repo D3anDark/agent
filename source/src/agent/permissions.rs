@@ -103,7 +103,7 @@ pub fn request_for(tool: &str, input: &Value, edited_files: &[PathBuf]) -> Optio
             };
             Some(Request { kind: Kind::Command, question: "Would you like to run the following command?", grant: format!("bash:{command}"), detail: command })
         }
-        "write" | "undo_last_change" | "replace" | "replace_match" | "insert" | "move" => {
+        "write" | "replace" | "replace_match" | "insert" => {
             // One per line: a file named `a, b` must not share a grant with the files `a` and `b`.
             let files = edited_files.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("\n");
             // Unresolved anchors get a grant for this exact call, so one "don't ask again" cannot cover every later bad anchor.
@@ -283,8 +283,8 @@ mod tests {
     #[test]
     fn edit_grants_cover_every_changed_file_and_never_unresolved_ones() {
         let files = [PathBuf::from("/p/dest.rs"), PathBuf::from("/p/source.rs")];
-        let moved = request_for("move", &json!({"anchor": "a", "source_from": "b"}), &files).unwrap();
-        assert_eq!(moved.detail, "move in /p/dest.rs\n/p/source.rs");
+        let request = request_for("insert", &json!({"anchor": "a"}), &files).unwrap();
+        assert_eq!(request.detail, "insert in /p/dest.rs\n/p/source.rs");
         let mut grants = Grants::default();
         grants.add(&request_for("insert", &json!({"anchor": "bogus1"}), &[]).unwrap());
         assert!(!grants.allows(&request_for("insert", &json!({"anchor": "bogus2"}), &[]).unwrap()));

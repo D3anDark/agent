@@ -26,8 +26,6 @@ pub struct Anchors {
     owner: HashMap<Anchor, Arc<Path>>,
     minted: u32,
     files: HashMap<PathBuf, Snapshot>,
-    /// One level per file, like pi: the bytes before and after the last anchored edit.
-    undo: HashMap<PathBuf, (Vec<u8>, Vec<u8>)>,
 }
 
 #[derive(Default)]
@@ -92,7 +90,7 @@ impl Anchors {
         for byte in seed.bytes().chain(crate::process::now_ms().to_le_bytes()) {
             probe = (probe ^ byte as u64).wrapping_mul(FNV_PRIME);
         }
-        Anchors { row_starts, probe: (probe % ANCHOR_COUNT as u64) as u32, minted: 0, owner: HashMap::new(), files: HashMap::new(), undo: HashMap::new() }
+        Anchors { row_starts, probe: (probe % ANCHOR_COUNT as u64) as u32, minted: 0, owner: HashMap::new(), files: HashMap::new() }
     }
 
     fn anchor_at(&self, index: u32) -> Anchor {
@@ -327,68 +325,6 @@ impl Anchors {
         self.commit(&path, file)
     }
 
-    /// Moves the source range next to `anchor`; across files the destination is written first, then the source.
-    pub fn move_lines(&mut self, input: &Value) -> Result<String, String> {
-        let (source, mut source_file, first, last) = self.resolve_range(str_arg(input, "source_from")?, str_arg(input, "source_to")?)?;
-        let (path, mut file, at) = self.destination(input)?;
-        let block: Vec<String> = source_file.lines.drain(first..=last).collect();
-        if path == source {
-            refuse_inside(at, first, last)?;
-            let at = if at > last { at - block.len() } else { at };
-            let count = block.len();
-            source_file.lines.splice(at..at, block);
-            return Ok(format!("Successfully moved {count} line(s) within {}.\n\n{}", path.display(), self.commit(&path, source_file)?));
-        }
-        let count = block.len();
-        file.lines.splice(at..at, block);
-        let destination_diff = self.commit(&path, file)?;
-        let source_diff = self.commit(&source, source_file).map_err(|e| format!("{e}. The block was already added to {}; call undo_last_change on {0} to remove it.", path.display()))?;
-        Ok(format!(
-            "Successfully moved {count} line(s) from {} to {}. Undoing the move takes undo_last_change on both files.\n\n{0}:\n{source_diff}\n\n{1}:\n{destination_diff}",
-            source.display(),
-            path.display()
-        ))
-    }
-
-    /// Restores the bytes from before the last anchored edit of `path`, unless the file changed since.
-    pub fn undo(&mut self, cwd: &Path, input: &Value) -> Result<String, String> {
-        let raw = str_arg(input, "path")?;
-        let path = canonical_even_if_deleted(resolve(cwd, raw));
-        let Some((before, after)) = self.undo.get(&path) else {
-            return Err(format!("[E_UNDO_NONE] No undo history for {raw}."));
-        };
-        let current = match std::fs::read(&path) {
-            Ok(bytes) => Some(bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
-        };
-        if current.as_ref().is_some_and(|bytes| bytes != after) {
-            return Err(format!(
-                "[E_UNDO_STALE] Cannot undo last change on {raw}: the file was modified after the edit, so nothing was reverted and the file was left untouched. The undo record is kept. Do not edit the file to force the undo. Call read() to inspect the current state."
-            ));
-        }
-        replace_file(&path, before)?;
-        self.undo.remove(&path);
-        let change = self.sync(&path, Text::load(&path)?.lines)?;
-        let mut parts = vec![format!("Undone last change on {raw}.")];
-        if current.is_none() {
-            parts.push("The file was deleted; restored it from undo history.".into());
-        }
-        if change.added > 0 || !change.removed.is_empty() {
-            parts.push(format!("Removed {} line(s), restored {} line(s).", change.removed.len(), change.added));
-        }
-        parts.push("Call read for fresh anchors.".into());
-        Ok(parts.join("\n"))
-    }
-
-    /// The file `anchor` belongs to and the line index a block lands on, from `direction`.
-    fn destination(&mut self, input: &Value) -> Result<(PathBuf, Text, usize), String> {
-        let anchor = str_arg(input, "anchor")?;
-        let after = direction_is_after(input)?;
-        let (path, file, index, _) = self.resolve_range(anchor, anchor)?;
-        Ok((path, file, if after { index + 1 } else { index }))
-    }
-
     /// Finds the file owning both anchors, re-reads it, and returns the line range they address.
     fn resolve_range(&mut self, from: &str, to: &str) -> Result<(PathBuf, Text, usize, usize), String> {
         let path = self.owner_of(from)?;
@@ -431,7 +367,6 @@ impl Anchors {
         // Checked before writing, so the edit is not left on disk without anchors.
         self.anchors_left(path, written.lines.len() - prefix - suffix)?;
         replace_file(path, after.as_bytes())?;
-        self.undo.insert(path.to_path_buf(), (before, after.into_bytes()));
         let empty = written.is_empty();
         let change = self.sync(path, written.lines)?;
         let snapshot = &self.files[path];
@@ -551,14 +486,6 @@ fn direction_is_after(input: &Value) -> Result<bool, String> {
     }
 }
 
-/// A block landing at index `at` of its own file must not split its source lines `first..=last`.
-fn refuse_inside(at: usize, first: usize, last: usize) -> Result<(), String> {
-    if at > first && at <= last {
-        return Err(format!("[E_BAD_SHAPE] \"anchor\" places the block inside the source range (lines {}-{}). Use a line outside the source range.", first + 1, last + 1));
-    }
-    Ok(())
-}
-
 pub fn str_arg<'a>(input: &'a Value, name: &str) -> Result<&'a str, String> {
     input[name].as_str().ok_or_else(|| format!("[E_BAD_SHAPE] Missing string field \"{name}\"."))
 }
@@ -580,17 +507,6 @@ pub(super) fn replace_file(path: &Path, new: &[u8]) -> Result<(), String> {
         let _ = std::fs::remove_file(&temp);
         format!("Cannot write {}: {e}. The file was left as it was.", path.display())
     })
-}
-
-/// A deleted file has no canonical path, but its directory still does.
-fn canonical_even_if_deleted(path: PathBuf) -> PathBuf {
-    if let Ok(canonical) = path.canonicalize() {
-        return canonical;
-    }
-    match (path.parent().and_then(|dir| dir.canonicalize().ok()), path.file_name()) {
-        (Some(dir), Some(name)) => dir.join(name),
-        _ => path,
-    }
 }
 
 pub fn resolve(cwd: &Path, path: &str) -> PathBuf {
@@ -772,40 +688,6 @@ mod tests {
     }
 
     #[test]
-    fn move_relocates_within_and_across_files() {
-        let path = temp_file("move", "a\nb\nc\n");
-        let other = path.with_file_name("g.txt");
-        std::fs::write(&other, "x\n").unwrap();
-        let mut anchors = Anchors::new("s");
-        let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
-        let inside = anchors.move_lines(&json!({"source_from": a[0], "source_to": a[2], "anchor": a[1], "direction": "after"})).unwrap_err();
-        assert!(inside.contains("inside the source range"));
-        anchors.move_lines(&json!({"source_from": a[0], "source_to": a[0], "anchor": a[2], "direction": "after"})).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "b\nc\na\n");
-        let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
-        let x = anchors_of(&anchors.read(Path::new("/"), &json!({"path": other})).unwrap());
-        anchors.move_lines(&json!({"source_from": a[0], "source_to": a[0], "anchor": x[0], "direction": "before"})).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "c\na\n");
-        assert_eq!(std::fs::read_to_string(&other).unwrap(), "b\nx\n");
-    }
-
-    #[test]
-    fn undo_restores_bom_and_crlf_and_a_deleted_file_but_refuses_a_changed_one() {
-        let path = temp_file("undo", "\u{feff}a\r\nb\r\n");
-        let mut anchors = Anchors::new("s");
-        let undo = json!({"path": path});
-        let a = anchors_of(&anchors.read(Path::new("/"), &undo).unwrap());
-        anchors.replace(&json!({"remove_from": a[0], "remove_to": a[0], "text": "A\n"})).unwrap();
-        std::fs::write(&path, "changed").unwrap();
-        assert!(anchors.undo(Path::new("/"), &undo).unwrap_err().starts_with("[E_UNDO_STALE]"));
-        std::fs::remove_file(&path).unwrap();
-        let out = anchors.undo(Path::new("/"), &undo).unwrap();
-        assert!(out.contains("The file was deleted; restored it from undo history."));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "\u{feff}a\r\nb\r\n");
-        assert!(anchors.undo(Path::new("/"), &undo).unwrap_err().starts_with("[E_UNDO_NONE]"));
-    }
-
-    #[test]
     fn a_resumed_session_never_serves_the_anchors_of_its_previous_run() {
         let path = temp_file("resume", "a\nb\n");
         let first = anchors_of(&Anchors::new("s").read(Path::new("/"), &json!({"path": path})).unwrap());
@@ -865,21 +747,6 @@ mod tests {
         let out = anchors.insert(&json!({"anchor": a[0], "direction": "after", "text": ""})).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\n");
         assert!(!out.lines().any(|row| row.starts_with('+')), "{out}");
-    }
-
-    #[test]
-    fn undo_restores_a_file_deleted_after_an_edit_through_a_symlinked_dir() {
-        let path = temp_file("undolink", "a\n");
-        let link = path.parent().unwrap().with_extension("link");
-        let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink(path.parent().unwrap(), &link).unwrap();
-        let through = json!({"path": link.join("f.txt")});
-        let mut anchors = Anchors::new("s");
-        let a = anchors_of(&anchors.read(Path::new("/"), &through).unwrap());
-        anchors.replace(&json!({"remove_from": a[0], "remove_to": a[0], "text": "b\n"})).unwrap();
-        std::fs::remove_file(&path).unwrap();
-        anchors.undo(Path::new("/"), &through).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\n");
     }
 
     #[test]
