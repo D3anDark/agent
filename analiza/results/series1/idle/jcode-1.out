@@ -1,0 +1,12 @@
+{
+  "session_id": "session_duckling_1792414499668_ab8f30067f99650f",
+  "provider": "Claude",
+  "model": "claude-opus-5-5",
+  "text": "OK",
+  "usage": {
+    "input_tokens": 220,
+    "output_tokens": 4,
+    "cache_read_input_tokens": 23890,
+    "cache_creation_input_tokens": 0
+  }
+}

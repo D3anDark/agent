@@ -1,0 +1,2674 @@
+{"model":"claude-opus-5-5","provider":"Claude","session_id":"session_blossom_1792425075518_f88e3def6e586da3","type":"start"}
+{"connection":"https/sse","type":"connection_type"}
+{"phase":"sending request","type":"connection_phase"}
+{"phase":"waiting for response","type":"connection_phase"}
+{"id":"toolu_015usrQV6fXF5pVF8PgQCkAi","name":"bash","type":"tool_start"}
+{"phase":"streaming","type":"connection_phase"}
+{"delta":"","type":"tool_input"}
+{"delta":"{\"comma","type":"tool_input"}
+{"delta":"nd\": \"c","type":"tool_input"}
+{"delta":"at TASK","type":"tool_input"}
+{"delta":".md; ls","type":"tool_input"}
+{"delta":" -R | g","type":"tool_input"}
+{"delta":"rep -v ","type":"tool_input"}
+{"delta":"node_mo","type":"tool_input"}
+{"delta":"dules |","type":"tool_input"}
+{"delta":" head -","type":"tool_input"}
+{"delta":"50; cat","type":"tool_input"}
+{"delta":" packag","type":"tool_input"}
+{"delta":"e.json\"","type":"tool_input"}
+{"delta":", \"inte","type":"tool_input"}
+{"delta":"nt\": \"R","type":"tool_input"}
+{"delta":"ead tas","type":"tool_input"}
+{"delta":"k\"}","type":"tool_input"}
+{"id":"toolu_015usrQV6fXF5pVF8PgQCkAi","name":"bash","type":"tool_exec"}
+{"stop_reason":"tool_use","type":"message_end"}
+{"cache_creation_input":0,"cache_read_input":26277,"input":278,"output":101,"type":"tokens"}
+{"error":null,"id":"toolu_015usrQV6fXF5pVF8PgQCkAi","name":"bash","output":"# Version ranges\n\nImplement `satisfies` and `maxSatisfying` in `src/semver.ts` with the same results as\nthe npm package `semver` (node-semver v7) with default options: not loose, prereleases\nexcluded unless a comparator in the same comparator set has a prerelease on the same\n`major.minor.patch`.\n\nSupport the full range grammar of node-semver: primitive comparators (`<`, `<=`, `>`,\n`>=`, `=`, bare version), `||`, space-separated AND sets, hyphen ranges (`1.2 - 2.3.4`),\nX-ranges (`*`, `x`, `X`, `1.x`, `1.2.*`, partial versions like `1` or `1.2`), tilde\nranges (`~1.2.3`, `~1.2`, `~1`, `~0.2.3`) and caret ranges (`^1.2.3`, `^0.2.3`,\n`^0.0.3`, `^1.2.x`, `^0.0.x`, `^0.x`), with or without prereleases and build metadata.\nPrecedence follows SemVer 2.0.0 (prerelease identifiers compared numerically when\nnumeric, numeric ones lower than alphanumeric ones, build metadata ignored).\n\nAn invalid version makes `satisfies` return `false`. An invalid range makes `satisfies`\nreturn `false` and `maxSatisfying` return `null`. `maxSatisfying` returns the highest\nversion in the list that satisfies the range, or `null`.\n\nDo not add dependencies; write the implementation yourself.\npackage.json\nsrc\nTASK.md\ntest\n\n./src:\nsemver.ts\n\n./test:\nvisible.test.ts\n{\n  \"name\": \"ranges\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": { \"test\": \"bun test\" }\n}\n\n--- Command finished with exit code: 0 ---\n","type":"tool_done"}
+{"connection":"https/sse","type":"connection_type"}
+{"phase":"sending request","type":"connection_phase"}
+{"phase":"waiting for response","type":"connection_phase"}
+{"id":"toolu_01KnNNAiLVJax9oJt3jTv7qK","name":"bash","type":"tool_start"}
+{"phase":"streaming","type":"connection_phase"}
+{"delta":"","type":"tool_input"}
+{"delta":"{\"comma","type":"tool_input"}
+{"delta":"nd\": \"c","type":"tool_input"}
+{"delta":"at src/","type":"tool_input"}
+{"delta":"semver.","type":"tool_input"}
+{"delta":"ts; cat","type":"tool_input"}
+{"delta":" test/v","type":"tool_input"}
+{"delta":"isible.","type":"tool_input"}
+{"delta":"test.ts","type":"tool_input"}
+{"delta":"\"","type":"tool_input"}
+{"delta":", \"inte","type":"tool_input"}
+{"delta":"nt\": \"R","type":"tool_input"}
+{"delta":"ead sou","type":"tool_input"}
+{"delta":"rce and","type":"tool_input"}
+{"delta":" tests\"}","type":"tool_input"}
+{"id":"toolu_01KnNNAiLVJax9oJt3jTv7qK","name":"bash","type":"tool_exec"}
+{"stop_reason":"tool_use","type":"message_end"}
+{"cache_creation_input":379,"cache_read_input":26277,"input":671,"output":94,"type":"tokens"}
+{"error":null,"id":"toolu_01KnNNAiLVJax9oJt3jTv7qK","name":"bash","output":"export function satisfies(version: string, range: string): boolean {\n  return version === range;\n}\n\nexport function maxSatisfying(versions: string[], range: string): string | null {\n  const matching = versions.filter((v) => satisfies(v, range));\n  return matching.sort().at(-1) ?? null;\n}\nimport { expect, test } from \"bun:test\";\nimport { maxSatisfying, satisfies } from \"../src/semver\";\n\ntest(\"caret\", () => {\n  expect(satisfies(\"1.4.0\", \"^1.2.3\")).toBe(true);\n  expect(satisfies(\"2.0.0\", \"^1.2.3\")).toBe(false);\n});\n\ntest(\"prerelease is excluded unless the comparator names the same tuple\", () => {\n  expect(satisfies(\"1.3.0-beta\", \"^1.2.3\")).toBe(false);\n  expect(satisfies(\"1.2.3-beta.2\", \">=1.2.3-beta.1\")).toBe(true);\n});\n\ntest(\"maxSatisfying compares by precedence, not string order\", () => {\n  expect(maxSatisfying([\"1.9.0\", \"1.10.0\", \"2.0.0\"], \"1.x\")).toBe(\"1.10.0\");\n});\n\n--- Command finished with exit code: 0 ---\n","type":"tool_done"}
+{"connection":"https/sse","type":"connection_type"}
+{"phase":"sending request","type":"connection_phase"}
+{"phase":"waiting for response","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"id":"toolu_0149nFXdvWKeubBhUyLnZ9wQ","name":"write","type":"tool_start"}
+{"delta":"","type":"tool_input"}
+{"delta":"{\"file_","type":"tool_input"}
+{"delta":"path\": ","type":"tool_input"}
+{"delta":"\"src/se","type":"tool_input"}
+{"delta":"mver.ts","type":"tool_input"}
+{"delta":"\"","type":"tool_input"}
+{"phase":"streaming","type":"connection_phase"}
+{"delta":", \"cont","type":"tool_input"}
+{"delta":"ent\": \"","type":"tool_input"}
+{"delta":"// Port","type":"tool_input"}
+{"delta":" of nod","type":"tool_input"}
+{"delta":"e-semve","type":"tool_input"}
+{"delta":"r v7 ra","type":"tool_input"}
+{"delta":"nge mat","type":"tool_input"}
+{"delta":"ching (","type":"tool_input"}
+{"delta":"default","type":"tool_input"}
+{"delta":" option","type":"tool_input"}
+{"delta":"s: not ","type":"tool_input"}
+{"delta":"loose, ","type":"tool_input"}
+{"delta":"no incl","type":"tool_input"}
+{"delta":"udePrer","type":"tool_input"}
+{"delta":"elease)","type":"tool_input"}
+{"delta":".\\n\\nco","type":"tool_input"}
+{"delta":"nst MAX","type":"tool_input"}
+{"delta":"_LENGTH","type":"tool_input"}
+{"delta":" = 256;","type":"tool_input"}
+{"delta":"\\nconst","type":"tool_input"}
+{"delta":" MAX_SA","type":"tool_input"}
+{"delta":"FE_INTE","type":"tool_input"}
+{"delta":"GER = N","type":"tool_input"}
+{"delta":"umber.M","type":"tool_input"}
+{"delta":"AX_SAFE","type":"tool_input"}
+{"delta":"_INTEGE","type":"tool_input"}
+{"delta":"R;\\n\\n/","type":"tool_input"}
+{"delta":"/ ---- ","type":"tool_input"}
+{"delta":"regex s","type":"tool_input"}
+{"delta":"ources ","type":"tool_input"}
+{"delta":"----\\nc","type":"tool_input"}
+{"delta":"onst NU","type":"tool_input"}
+{"delta":"MERICID","type":"tool_input"}
+{"delta":"ENTIFIE","type":"tool_input"}
+{"delta":"R = \\\"0","type":"tool_input"}
+{"delta":"|[1-9]\\","type":"tool_input"}
+{"delta":"\\\\\\d*\\\"","type":"tool_input"}
+{"delta":";\\ncons","type":"tool_input"}
+{"delta":"t NUMER","type":"tool_input"}
+{"delta":"ICIDENT","type":"tool_input"}
+{"delta":"IFIERLO","type":"tool_input"}
+{"delta":"OSE = \\","type":"tool_input"}
+{"delta":"\"\\\\\\\\d+","type":"tool_input"}
+{"delta":"\\\";\\nco","type":"tool_input"}
+{"delta":"nst NON","type":"tool_input"}
+{"delta":"NUMERIC","type":"tool_input"}
+{"delta":"IDENTIF","type":"tool_input"}
+{"delta":"IER = \\","type":"tool_input"}
+{"delta":"\"\\\\\\\\d*","type":"tool_input"}
+{"delta":"[a-zA-Z","type":"tool_input"}
+{"delta":"-][a-zA","type":"tool_input"}
+{"delta":"-Z0-9-]","type":"tool_input"}
+{"delta":"*\\\";\\nc","type":"tool_input"}
+{"delta":"onst MA","type":"tool_input"}
+{"delta":"INVERSI","type":"tool_input"}
+{"delta":"ON = `(","type":"tool_input"}
+{"delta":"${NUMER","type":"tool_input"}
+{"delta":"ICIDENT","type":"tool_input"}
+{"delta":"IFIER})","type":"tool_input"}
+{"delta":"\\\\\\\\.($","type":"tool_input"}
+{"delta":"{NUMERI","type":"tool_input"}
+{"delta":"CIDENTI","type":"tool_input"}
+{"delta":"FIER})\\","type":"tool_input"}
+{"delta":"\\\\\\.(${","type":"tool_input"}
+{"delta":"NUMERIC","type":"tool_input"}
+{"delta":"IDENTIF","type":"tool_input"}
+{"delta":"IER})`;","type":"tool_input"}
+{"delta":"\\nconst","type":"tool_input"}
+{"delta":" MAINVE","type":"tool_input"}
+{"delta":"RSIONLO","type":"tool_input"}
+{"delta":"OSE = `","type":"tool_input"}
+{"delta":"(${NUME","type":"tool_input"}
+{"delta":"RICIDEN","type":"tool_input"}
+{"delta":"TIFIERL","type":"tool_input"}
+{"delta":"OOSE})\\","type":"tool_input"}
+{"delta":"\\\\\\.(${","type":"tool_input"}
+{"delta":"NUMERIC","type":"tool_input"}
+{"delta":"IDENTIF","type":"tool_input"}
+{"delta":"IERLOOS","type":"tool_input"}
+{"delta":"E})\\\\\\\\","type":"tool_input"}
+{"delta":".(${NUM","type":"tool_input"}
+{"delta":"ERICIDE","type":"tool_input"}
+{"delta":"NTIFIER","type":"tool_input"}
+{"delta":"LOOSE})","type":"tool_input"}
+{"delta":"`;\\ncon","type":"tool_input"}
+{"delta":"st PRER","type":"tool_input"}
+{"delta":"ELEASEI","type":"tool_input"}
+{"delta":"DENTIFI","type":"tool_input"}
+{"delta":"ER = `(","type":"tool_input"}
+{"delta":"?:${NON","type":"tool_input"}
+{"delta":"NUMERIC","type":"tool_input"}
+{"delta":"IDENTIF","type":"tool_input"}
+{"delta":"IER}|${","type":"tool_input"}
+{"delta":"NUMERIC","type":"tool_input"}
+{"delta":"IDENTIF","type":"tool_input"}
+{"delta":"IER})`;","type":"tool_input"}
+{"delta":"\\nconst","type":"tool_input"}
+{"delta":" PREREL","type":"tool_input"}
+{"delta":"EASEIDE","type":"tool_input"}
+{"delta":"NTIFIER","type":"tool_input"}
+{"delta":"LOOSE =","type":"tool_input"}
+{"delta":" `(?:${","type":"tool_input"}
+{"delta":"NONNUME","type":"tool_input"}
+{"delta":"RICIDEN","type":"tool_input"}
+{"delta":"TIFIER}","type":"tool_input"}
+{"delta":"|${NUME","type":"tool_input"}
+{"delta":"RICIDEN","type":"tool_input"}
+{"delta":"TIFIERL","type":"tool_input"}
+{"delta":"OOSE})`","type":"tool_input"}
+{"delta":";\\ncons","type":"tool_input"}
+{"delta":"t PRERE","type":"tool_input"}
+{"delta":"LEASE =","type":"tool_input"}
+{"delta":" `(?:-(","type":"tool_input"}
+{"delta":"${PRERE","type":"tool_input"}
+{"delta":"LEASEID","type":"tool_input"}
+{"delta":"ENTIFIE","type":"tool_input"}
+{"delta":"R}(?:\\\\","type":"tool_input"}
+{"delta":"\\\\.${PR","type":"tool_input"}
+{"delta":"ERELEAS","type":"tool_input"}
+{"delta":"EIDENTI","type":"tool_input"}
+{"delta":"FIER})*","type":"tool_input"}
+{"delta":"))`;\\nc","type":"tool_input"}
+{"delta":"onst PR","type":"tool_input"}
+{"delta":"ERELEAS","type":"tool_input"}
+{"delta":"ELOOSE ","type":"tool_input"}
+{"delta":"= `(?:-","type":"tool_input"}
+{"delta":"?(${PRE","type":"tool_input"}
+{"delta":"RELEASE","type":"tool_input"}
+{"delta":"IDENTIF","type":"tool_input"}
+{"delta":"IERLOOS","type":"tool_input"}
+{"delta":"E}(?:\\\\","type":"tool_input"}
+{"delta":"\\\\.${PR","type":"tool_input"}
+{"delta":"ERELEAS","type":"tool_input"}
+{"delta":"EIDENTI","type":"tool_input"}
+{"delta":"FIERLOO","type":"tool_input"}
+{"delta":"SE})*))","type":"tool_input"}
+{"delta":"`;\\ncon","type":"tool_input"}
+{"delta":"st BUIL","type":"tool_input"}
+{"delta":"DIDENTI","type":"tool_input"}
+{"delta":"FIER = ","type":"tool_input"}
+{"delta":"\\\"[a-zA","type":"tool_input"}
+{"delta":"-Z0-9-]","type":"tool_input"}
+{"delta":"+\\\";\\nc","type":"tool_input"}
+{"delta":"onst BU","type":"tool_input"}
+{"delta":"ILD = `","type":"tool_input"}
+{"delta":"(?:\\\\\\\\","type":"tool_input"}
+{"delta":"+(${BUI","type":"tool_input"}
+{"delta":"LDIDENT","type":"tool_input"}
+{"delta":"IFIER}(","type":"tool_input"}
+{"delta":"?:\\\\\\\\.","type":"tool_input"}
+{"delta":"${BUILD","type":"tool_input"}
+{"delta":"IDENTIF","type":"tool_input"}
+{"delta":"IER})*)","type":"tool_input"}
+{"delta":")`;\\nco","type":"tool_input"}
+{"delta":"nst FUL","type":"tool_input"}
+{"delta":"LPLAIN ","type":"tool_input"}
+{"delta":"= `v?${","type":"tool_input"}
+{"delta":"MAINVER","type":"tool_input"}
+{"delta":"SION}${","type":"tool_input"}
+{"delta":"PRERELE","type":"tool_input"}
+{"delta":"ASE}?${","type":"tool_input"}
+{"delta":"BUILD}?","type":"tool_input"}
+{"delta":"`;\\ncon","type":"tool_input"}
+{"delta":"st LOOS","type":"tool_input"}
+{"delta":"EPLAIN ","type":"tool_input"}
+{"delta":"= `[v=\\","type":"tool_input"}
+{"delta":"\\\\\\s]*$","type":"tool_input"}
+{"delta":"{MAINVE","type":"tool_input"}
+{"delta":"RSIONLO","type":"tool_input"}
+{"delta":"OSE}${P","type":"tool_input"}
+{"delta":"RERELEA","type":"tool_input"}
+{"delta":"SELOOSE","type":"tool_input"}
+{"delta":"}?${BUI","type":"tool_input"}
+{"delta":"LD}?`;\\","type":"tool_input"}
+{"delta":"nconst ","type":"tool_input"}
+{"delta":"GTLT = ","type":"tool_input"}
+{"delta":"\\\"((?:<","type":"tool_input"}
+{"delta":"|>)?=?)","type":"tool_input"}
+{"delta":"\\\";\\nco","type":"tool_input"}
+{"delta":"nst XRA","type":"tool_input"}
+{"delta":"NGEIDEN","type":"tool_input"}
+{"delta":"TIFIER ","type":"tool_input"}
+{"delta":"= `${NU","type":"tool_input"}
+{"delta":"MERICID","type":"tool_input"}
+{"delta":"ENTIFIE","type":"tool_input"}
+{"delta":"R}|x|X|","type":"tool_input"}
+{"delta":"\\\\\\\\*`;","type":"tool_input"}
+{"delta":"\\nconst","type":"tool_input"}
+{"delta":" XRANGE","type":"tool_input"}
+{"delta":"PLAIN =","type":"tool_input"}
+{"delta":"\\n  `[v","type":"tool_input"}
+{"delta":"=\\\\\\\\s]","type":"tool_input"}
+{"delta":"*(${XRA","type":"tool_input"}
+{"delta":"NGEIDEN","type":"tool_input"}
+{"delta":"TIFIER}","type":"tool_input"}
+{"delta":")` +\\n ","type":"tool_input"}
+{"delta":" `(?:\\\\","type":"tool_input"}
+{"delta":"\\\\.(${X","type":"tool_input"}
+{"delta":"RANGEID","type":"tool_input"}
+{"delta":"ENTIFIE","type":"tool_input"}
+{"delta":"R})` +\\","type":"tool_input"}
+{"delta":"n  `(?:","type":"tool_input"}
+{"delta":"\\\\\\\\.($","type":"tool_input"}
+{"delta":"{XRANGE","type":"tool_input"}
+{"delta":"IDENTIF","type":"tool_input"}
+{"delta":"IER})` ","type":"tool_input"}
+{"delta":"+\\n  `(","type":"tool_input"}
+{"delta":"?:${PRE","type":"tool_input"}
+{"delta":"RELEASE","type":"tool_input"}
+{"delta":"})?${BU","type":"tool_input"}
+{"delta":"ILD}?` ","type":"tool_input"}
+{"delta":"+\\n  `)","type":"tool_input"}
+{"delta":"?)?`;\\n","type":"tool_input"}
+{"delta":"const L","type":"tool_input"}
+{"delta":"ONETILD","type":"tool_input"}
+{"delta":"E = \\\"(","type":"tool_input"}
+{"delta":"?:~>?)\\","type":"tool_input"}
+{"delta":"\";\\ncon","type":"tool_input"}
+{"delta":"st LONE","type":"tool_input"}
+{"delta":"CARET =","type":"tool_input"}
+{"delta":" \\\"(?:\\","type":"tool_input"}
+{"delta":"\\\\\\^)\\\"","type":"tool_input"}
+{"delta":";\\n\\nco","type":"tool_input"}
+{"delta":"nst RE_","type":"tool_input"}
+{"delta":"FULL = ","type":"tool_input"}
+{"delta":"new Reg","type":"tool_input"}
+{"delta":"Exp(`^$","type":"tool_input"}
+{"delta":"{FULLPL","type":"tool_input"}
+{"delta":"AIN}$`)","type":"tool_input"}
+{"delta":";\\ncons","type":"tool_input"}
+{"delta":"t RE_XR","type":"tool_input"}
+{"delta":"ANGE = ","type":"tool_input"}
+{"delta":"new Reg","type":"tool_input"}
+{"delta":"Exp(`^$","type":"tool_input"}
+{"delta":"{GTLT}\\","type":"tool_input"}
+{"delta":"\\\\\\s*${","type":"tool_input"}
+{"delta":"XRANGEP","type":"tool_input"}
+{"delta":"LAIN}$`","type":"tool_input"}
+{"delta":");\\ncon","type":"tool_input"}
+{"delta":"st RE_T","type":"tool_input"}
+{"delta":"ILDETRI","type":"tool_input"}
+{"delta":"M = new","type":"tool_input"}
+{"delta":" RegExp","type":"tool_input"}
+{"delta":"(`(\\\\\\\\","type":"tool_input"}
+{"delta":"s*)${LO","type":"tool_input"}
+{"delta":"NETILDE","type":"tool_input"}
+{"delta":"}\\\\\\\\s+","type":"tool_input"}
+{"delta":"`, \\\"g\\","type":"tool_input"}
+{"delta":"\");\\nco","type":"tool_input"}
+{"delta":"nst RE_","type":"tool_input"}
+{"delta":"TILDE =","type":"tool_input"}
+{"delta":" new Re","type":"tool_input"}
+{"delta":"gExp(`^","type":"tool_input"}
+{"delta":"${LONET","type":"tool_input"}
+{"delta":"ILDE}${","type":"tool_input"}
+{"delta":"XRANGEP","type":"tool_input"}
+{"delta":"LAIN}$`","type":"tool_input"}
+{"delta":");\\ncon","type":"tool_input"}
+{"delta":"st RE_C","type":"tool_input"}
+{"delta":"ARETTRI","type":"tool_input"}
+{"delta":"M = new","type":"tool_input"}
+{"delta":" RegExp","type":"tool_input"}
+{"delta":"(`(\\\\\\\\","type":"tool_input"}
+{"delta":"s*)${LO","type":"tool_input"}
+{"delta":"NECARET","type":"tool_input"}
+{"delta":"}\\\\\\\\s+","type":"tool_input"}
+{"delta":"`, \\\"g\\","type":"tool_input"}
+{"delta":"\");\\nco","type":"tool_input"}
+{"delta":"nst RE_","type":"tool_input"}
+{"delta":"CARET =","type":"tool_input"}
+{"delta":" new Re","type":"tool_input"}
+{"delta":"gExp(`^","type":"tool_input"}
+{"delta":"${LONEC","type":"tool_input"}
+{"delta":"ARET}${","type":"tool_input"}
+{"delta":"XRANGEP","type":"tool_input"}
+{"delta":"LAIN}$`","type":"tool_input"}
+{"delta":");\\ncon","type":"tool_input"}
+{"delta":"st RE_C","type":"tool_input"}
+{"delta":"OMPARAT","type":"tool_input"}
+{"delta":"OR = ne","type":"tool_input"}
+{"delta":"w RegEx","type":"tool_input"}
+{"delta":"p(`^${G","type":"tool_input"}
+{"delta":"TLT}\\\\\\","type":"tool_input"}
+{"delta":"\\s*(${F","type":"tool_input"}
+{"delta":"ULLPLAI","type":"tool_input"}
+{"delta":"N})$|^$","type":"tool_input"}
+{"delta":"`);\\nco","type":"tool_input"}
+{"delta":"nst RE_","type":"tool_input"}
+{"delta":"COMPARA","type":"tool_input"}
+{"delta":"TORTRIM","type":"tool_input"}
+{"delta":" = new ","type":"tool_input"}
+{"delta":"RegExp(","type":"tool_input"}
+{"delta":"`(\\\\\\\\s","type":"tool_input"}
+{"delta":"*)${GTL","type":"tool_input"}
+{"delta":"T}\\\\\\\\s","type":"tool_input"}
+{"delta":"*(${LOO","type":"tool_input"}
+{"delta":"SEPLAIN","type":"tool_input"}
+{"delta":"}|${XRA","type":"tool_input"}
+{"delta":"NGEPLAI","type":"tool_input"}
+{"delta":"N})`, \\","type":"tool_input"}
+{"delta":"\"g\\\");\\","type":"tool_input"}
+{"delta":"nconst ","type":"tool_input"}
+{"delta":"RE_HYPH","type":"tool_input"}
+{"delta":"ENRANGE","type":"tool_input"}
+{"delta":" = new ","type":"tool_input"}
+{"delta":"RegExp(","type":"tool_input"}
+{"delta":"`^\\\\\\\\s","type":"tool_input"}
+{"delta":"*(${XRA","type":"tool_input"}
+{"delta":"NGEPLAI","type":"tool_input"}
+{"delta":"N})\\\\\\\\","type":"tool_input"}
+{"delta":"s+-\\\\\\\\","type":"tool_input"}
+{"delta":"s+(${XR","type":"tool_input"}
+{"delta":"ANGEPLA","type":"tool_input"}
+{"delta":"IN})\\\\\\","type":"tool_input"}
+{"delta":"\\s*$`);","type":"tool_input"}
+{"delta":"\\nconst","type":"tool_input"}
+{"delta":" RE_STA","type":"tool_input"}
+{"delta":"R = /(<","type":"tool_input"}
+{"delta":"|>)?=?\\","type":"tool_input"}
+{"delta":"\\s*\\\\*/","type":"tool_input"}
+{"delta":";\\ncons","type":"tool_input"}
+{"delta":"t RE_GT","type":"tool_input"}
+{"delta":"E0 = /^","type":"tool_input"}
+{"delta":"\\\\s*>=\\","type":"tool_input"}
+{"delta":"\\s*0\\\\.","type":"tool_input"}
+{"delta":"0\\\\.0\\\\","type":"tool_input"}
+{"delta":"s*$/;\\n","type":"tool_input"}
+{"delta":"\\n// --","type":"tool_input"}
+{"delta":"-- iden","type":"tool_input"}
+{"delta":"tifiers","type":"tool_input"}
+{"delta":" ----\\n","type":"tool_input"}
+{"delta":"type Id","type":"tool_input"}
+{"delta":" = stri","type":"tool_input"}
+{"delta":"ng | nu","type":"tool_input"}
+{"delta":"mber;\\n","type":"tool_input"}
+{"delta":"const n","type":"tool_input"}
+{"delta":"umeric ","type":"tool_input"}
+{"delta":"= /^[0-","type":"tool_input"}
+{"delta":"9]+$/;\\","type":"tool_input"}
+{"delta":"nfuncti","type":"tool_input"}
+{"delta":"on comp","type":"tool_input"}
+{"delta":"areIden","type":"tool_input"}
+{"delta":"tifiers","type":"tool_input"}
+{"delta":"(a: Id,","type":"tool_input"}
+{"delta":" b: Id)","type":"tool_input"}
+{"delta":": numbe","type":"tool_input"}
+{"delta":"r {\\n  ","type":"tool_input"}
+{"delta":"const a","type":"tool_input"}
+{"delta":"num = n","type":"tool_input"}
+{"delta":"umeric.","type":"tool_input"}
+{"delta":"test(St","type":"tool_input"}
+{"delta":"ring(a)","type":"tool_input"}
+{"delta":");\\n  c","type":"tool_input"}
+{"delta":"onst bn","type":"tool_input"}
+{"delta":"um = nu","type":"tool_input"}
+{"delta":"meric.t","type":"tool_input"}
+{"delta":"est(Str","type":"tool_input"}
+{"delta":"ing(b))","type":"tool_input"}
+{"delta":";\\n  if","type":"tool_input"}
+{"delta":" (anum ","type":"tool_input"}
+{"delta":"&& bnum","type":"tool_input"}
+{"delta":") {\\n  ","type":"tool_input"}
+{"delta":"  a = +","type":"tool_input"}
+{"delta":"a;\\n   ","type":"tool_input"}
+{"delta":" b = +b","type":"tool_input"}
+{"delta":";\\n  }\\","type":"tool_input"}
+{"delta":"n  retu","type":"tool_input"}
+{"delta":"rn a ==","type":"tool_input"}
+{"delta":"= b ? 0","type":"tool_input"}
+{"delta":" : anum","type":"tool_input"}
+{"delta":" && !bn","type":"tool_input"}
+{"delta":"um ? -1","type":"tool_input"}
+{"delta":" : bnum","type":"tool_input"}
+{"delta":" && !an","type":"tool_input"}
+{"delta":"um ? 1 ","type":"tool_input"}
+{"delta":": a < b","type":"tool_input"}
+{"delta":" ? -1 :","type":"tool_input"}
+{"delta":" 1;\\n}\\","type":"tool_input"}
+{"delta":"n\\n// -","type":"tool_input"}
+{"delta":"--- Sem","type":"tool_input"}
+{"delta":"Ver ---","type":"tool_input"}
+{"delta":"-\\nclas","type":"tool_input"}
+{"delta":"s SemVe","type":"tool_input"}
+{"delta":"r {\\n  ","type":"tool_input"}
+{"delta":"major: ","type":"tool_input"}
+{"delta":"number;","type":"tool_input"}
+{"delta":"\\n  min","type":"tool_input"}
+{"delta":"or: num","type":"tool_input"}
+{"delta":"ber;\\n ","type":"tool_input"}
+{"delta":" patch:","type":"tool_input"}
+{"delta":" number","type":"tool_input"}
+{"delta":";\\n  pr","type":"tool_input"}
+{"delta":"ereleas","type":"tool_input"}
+{"delta":"e: Id[]","type":"tool_input"}
+{"delta":";\\n  ve","type":"tool_input"}
+{"delta":"rsion: ","type":"tool_input"}
+{"delta":"string;","type":"tool_input"}
+{"delta":"\\n\\n  c","type":"tool_input"}
+{"delta":"onstruc","type":"tool_input"}
+{"delta":"tor(ver","type":"tool_input"}
+{"delta":"sion: s","type":"tool_input"}
+{"delta":"tring) ","type":"tool_input"}
+{"delta":"{\\n    ","type":"tool_input"}
+{"delta":"if (typ","type":"tool_input"}
+{"delta":"eof ver","type":"tool_input"}
+{"delta":"sion !=","type":"tool_input"}
+{"delta":"= \\\"str","type":"tool_input"}
+{"delta":"ing\\\") ","type":"tool_input"}
+{"delta":"throw n","type":"tool_input"}
+{"delta":"ew Type","type":"tool_input"}
+{"delta":"Error(\\","type":"tool_input"}
+{"delta":"\"Invali","type":"tool_input"}
+{"delta":"d versi","type":"tool_input"}
+{"delta":"on\\\");\\","type":"tool_input"}
+{"delta":"n    if","type":"tool_input"}
+{"delta":" (versi","type":"tool_input"}
+{"delta":"on.leng","type":"tool_input"}
+{"delta":"th > MA","type":"tool_input"}
+{"delta":"X_LENGT","type":"tool_input"}
+{"delta":"H) thro","type":"tool_input"}
+{"delta":"w new T","type":"tool_input"}
+{"delta":"ypeErro","type":"tool_input"}
+{"delta":"r(\\\"ver","type":"tool_input"}
+{"delta":"sion to","type":"tool_input"}
+{"delta":"o long\\","type":"tool_input"}
+{"delta":"\");\\n  ","type":"tool_input"}
+{"delta":"  const","type":"tool_input"}
+{"delta":" m = ve","type":"tool_input"}
+{"delta":"rsion.t","type":"tool_input"}
+{"delta":"rim().m","type":"tool_input"}
+{"delta":"atch(RE","type":"tool_input"}
+{"delta":"_FULL);","type":"tool_input"}
+{"delta":"\\n    i","type":"tool_input"}
+{"delta":"f (!m) ","type":"tool_input"}
+{"delta":"throw n","type":"tool_input"}
+{"delta":"ew Type","type":"tool_input"}
+{"delta":"Error(`","type":"tool_input"}
+{"delta":"Invalid","type":"tool_input"}
+{"delta":" Versio","type":"tool_input"}
+{"delta":"n: ${ve","type":"tool_input"}
+{"delta":"rsion}`","type":"tool_input"}
+{"delta":");\\n   ","type":"tool_input"}
+{"delta":" this.m","type":"tool_input"}
+{"delta":"ajor = ","type":"tool_input"}
+{"delta":"+m[1]!;","type":"tool_input"}
+{"delta":"\\n    t","type":"tool_input"}
+{"delta":"his.min","type":"tool_input"}
+{"delta":"or = +m","type":"tool_input"}
+{"delta":"[2]!;\\n","type":"tool_input"}
+{"delta":"    thi","type":"tool_input"}
+{"delta":"s.patch","type":"tool_input"}
+{"delta":" = +m[3","type":"tool_input"}
+{"delta":"]!;\\n  ","type":"tool_input"}
+{"delta":"  for (","type":"tool_input"}
+{"delta":"const n","type":"tool_input"}
+{"delta":" of [th","type":"tool_input"}
+{"delta":"is.majo","type":"tool_input"}
+{"delta":"r, this","type":"tool_input"}
+{"delta":".minor,","type":"tool_input"}
+{"delta":" this.p","type":"tool_input"}
+{"delta":"atch]) ","type":"tool_input"}
+{"delta":"{\\n    ","type":"tool_input"}
+{"delta":"  if (n","type":"tool_input"}
+{"delta":" > MAX_","type":"tool_input"}
+{"delta":"SAFE_IN","type":"tool_input"}
+{"delta":"TEGER |","type":"tool_input"}
+{"delta":"| n < 0","type":"tool_input"}
+{"delta":") throw","type":"tool_input"}
+{"delta":" new Ty","type":"tool_input"}
+{"delta":"peError","type":"tool_input"}
+{"delta":"(\\\"Inva","type":"tool_input"}
+{"delta":"lid ver","type":"tool_input"}
+{"delta":"sion nu","type":"tool_input"}
+{"delta":"mber\\\")","type":"tool_input"}
+{"delta":";\\n    ","type":"tool_input"}
+{"delta":"}\\n    ","type":"tool_input"}
+{"delta":"this.pr","type":"tool_input"}
+{"delta":"ereleas","type":"tool_input"}
+{"delta":"e = !m[","type":"tool_input"}
+{"delta":"4]\\n   ","type":"tool_input"}
+{"delta":"   ? []","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":" : m[4]","type":"tool_input"}
+{"delta":".split(","type":"tool_input"}
+{"delta":"\\\".\\\").","type":"tool_input"}
+{"delta":"map((id","type":"tool_input"}
+{"delta":") => {\\","type":"tool_input"}
+{"delta":"n      ","type":"tool_input"}
+{"delta":"    if ","type":"tool_input"}
+{"delta":"(/^[0-9","type":"tool_input"}
+{"delta":"]+$/.te","type":"tool_input"}
+{"delta":"st(id))","type":"tool_input"}
+{"delta":" {\\n   ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"  const","type":"tool_input"}
+{"delta":" num = ","type":"tool_input"}
+{"delta":"+id;\\n ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"    if ","type":"tool_input"}
+{"delta":"(num >=","type":"tool_input"}
+{"delta":" 0 && n","type":"tool_input"}
+{"delta":"um < MA","type":"tool_input"}
+{"delta":"X_SAFE_","type":"tool_input"}
+{"delta":"INTEGER","type":"tool_input"}
+{"delta":") retur","type":"tool_input"}
+{"delta":"n num;\\","type":"tool_input"}
+{"delta":"n      ","type":"tool_input"}
+{"delta":"    }\\n","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"   retu","type":"tool_input"}
+{"delta":"rn id;\\","type":"tool_input"}
+{"delta":"n      ","type":"tool_input"}
+{"delta":"  });\\n","type":"tool_input"}
+{"delta":"    thi","type":"tool_input"}
+{"delta":"s.versi","type":"tool_input"}
+{"delta":"on = `$","type":"tool_input"}
+{"delta":"{this.m","type":"tool_input"}
+{"delta":"ajor}.$","type":"tool_input"}
+{"delta":"{this.m","type":"tool_input"}
+{"delta":"inor}.$","type":"tool_input"}
+{"delta":"{this.p","type":"tool_input"}
+{"delta":"atch}`;","type":"tool_input"}
+{"delta":"\\n    i","type":"tool_input"}
+{"delta":"f (this","type":"tool_input"}
+{"delta":".prerel","type":"tool_input"}
+{"delta":"ease.le","type":"tool_input"}
+{"delta":"ngth) t","type":"tool_input"}
+{"delta":"his.ver","type":"tool_input"}
+{"delta":"sion +=","type":"tool_input"}
+{"delta":" `-${th","type":"tool_input"}
+{"delta":"is.prer","type":"tool_input"}
+{"delta":"elease.","type":"tool_input"}
+{"delta":"join(\\\"","type":"tool_input"}
+{"delta":".\\\")}`;","type":"tool_input"}
+{"delta":"\\n  }\\n","type":"tool_input"}
+{"delta":"\\n  com","type":"tool_input"}
+{"delta":"pare(ot","type":"tool_input"}
+{"delta":"her: Se","type":"tool_input"}
+{"delta":"mVer): ","type":"tool_input"}
+{"delta":"number ","type":"tool_input"}
+{"delta":"{\\n    ","type":"tool_input"}
+{"delta":"return ","type":"tool_input"}
+{"delta":"this.co","type":"tool_input"}
+{"delta":"mpareMa","type":"tool_input"}
+{"delta":"in(othe","type":"tool_input"}
+{"delta":"r) || t","type":"tool_input"}
+{"delta":"his.com","type":"tool_input"}
+{"delta":"parePre","type":"tool_input"}
+{"delta":"(other)","type":"tool_input"}
+{"delta":";\\n  }\\","type":"tool_input"}
+{"delta":"n\\n  co","type":"tool_input"}
+{"delta":"mpareMa","type":"tool_input"}
+{"delta":"in(othe","type":"tool_input"}
+{"delta":"r: SemV","type":"tool_input"}
+{"delta":"er): nu","type":"tool_input"}
+{"delta":"mber {\\","type":"tool_input"}
+{"delta":"n    re","type":"tool_input"}
+{"delta":"turn (\\","type":"tool_input"}
+{"delta":"n      ","type":"tool_input"}
+{"delta":"compare","type":"tool_input"}
+{"delta":"Identif","type":"tool_input"}
+{"delta":"iers(th","type":"tool_input"}
+{"delta":"is.majo","type":"tool_input"}
+{"delta":"r, othe","type":"tool_input"}
+{"delta":"r.major","type":"tool_input"}
+{"delta":") ||\\n ","type":"tool_input"}
+{"delta":"     co","type":"tool_input"}
+{"delta":"mpareId","type":"tool_input"}
+{"delta":"entifie","type":"tool_input"}
+{"delta":"rs(this","type":"tool_input"}
+{"delta":".minor,","type":"tool_input"}
+{"delta":" other.","type":"tool_input"}
+{"delta":"minor) ","type":"tool_input"}
+{"delta":"||\\n   ","type":"tool_input"}
+{"delta":"   comp","type":"tool_input"}
+{"delta":"areIden","type":"tool_input"}
+{"delta":"tifiers","type":"tool_input"}
+{"delta":"(this.p","type":"tool_input"}
+{"delta":"atch, o","type":"tool_input"}
+{"delta":"ther.pa","type":"tool_input"}
+{"delta":"tch)\\n ","type":"tool_input"}
+{"delta":"   );\\n","type":"tool_input"}
+{"delta":"  }\\n\\n","type":"tool_input"}
+{"delta":"  compa","type":"tool_input"}
+{"delta":"rePre(o","type":"tool_input"}
+{"delta":"ther: S","type":"tool_input"}
+{"delta":"emVer):","type":"tool_input"}
+{"delta":" number","type":"tool_input"}
+{"delta":" {\\n   ","type":"tool_input"}
+{"delta":" if (th","type":"tool_input"}
+{"delta":"is.prer","type":"tool_input"}
+{"delta":"elease.","type":"tool_input"}
+{"delta":"length ","type":"tool_input"}
+{"delta":"&& !oth","type":"tool_input"}
+{"delta":"er.prer","type":"tool_input"}
+{"delta":"elease.","type":"tool_input"}
+{"delta":"length)","type":"tool_input"}
+{"delta":" return","type":"tool_input"}
+{"delta":" -1;\\n ","type":"tool_input"}
+{"delta":"   if (","type":"tool_input"}
+{"delta":"!this.p","type":"tool_input"}
+{"delta":"rerelea","type":"tool_input"}
+{"delta":"se.leng","type":"tool_input"}
+{"delta":"th && o","type":"tool_input"}
+{"delta":"ther.pr","type":"tool_input"}
+{"delta":"ereleas","type":"tool_input"}
+{"delta":"e.lengt","type":"tool_input"}
+{"delta":"h) retu","type":"tool_input"}
+{"delta":"rn 1;\\n","type":"tool_input"}
+{"delta":"    if ","type":"tool_input"}
+{"delta":"(!this.","type":"tool_input"}
+{"delta":"prerele","type":"tool_input"}
+{"delta":"ase.len","type":"tool_input"}
+{"delta":"gth && ","type":"tool_input"}
+{"delta":"!other.","type":"tool_input"}
+{"delta":"prerele","type":"tool_input"}
+{"delta":"ase.len","type":"tool_input"}
+{"delta":"gth) re","type":"tool_input"}
+{"delta":"turn 0;","type":"tool_input"}
+{"delta":"\\n    l","type":"tool_input"}
+{"delta":"et i = ","type":"tool_input"}
+{"delta":"0;\\n   ","type":"tool_input"}
+{"delta":" do {\\n","type":"tool_input"}
+{"delta":"      c","type":"tool_input"}
+{"delta":"onst a ","type":"tool_input"}
+{"delta":"= this.","type":"tool_input"}
+{"delta":"prerele","type":"tool_input"}
+{"delta":"ase[i];","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":" const ","type":"tool_input"}
+{"delta":"b = oth","type":"tool_input"}
+{"delta":"er.prer","type":"tool_input"}
+{"delta":"elease[","type":"tool_input"}
+{"delta":"i];\\n  ","type":"tool_input"}
+{"delta":"    if ","type":"tool_input"}
+{"delta":"(a === ","type":"tool_input"}
+{"delta":"undefin","type":"tool_input"}
+{"delta":"ed && b","type":"tool_input"}
+{"delta":" === un","type":"tool_input"}
+{"delta":"defined","type":"tool_input"}
+{"delta":") retur","type":"tool_input"}
+{"delta":"n 0;\\n ","type":"tool_input"}
+{"delta":"     if","type":"tool_input"}
+{"delta":" (b ===","type":"tool_input"}
+{"delta":" undefi","type":"tool_input"}
+{"delta":"ned) re","type":"tool_input"}
+{"delta":"turn 1;","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":" if (a ","type":"tool_input"}
+{"delta":"=== und","type":"tool_input"}
+{"delta":"efined)","type":"tool_input"}
+{"delta":" return","type":"tool_input"}
+{"delta":" -1;\\n ","type":"tool_input"}
+{"delta":"     if","type":"tool_input"}
+{"delta":" (a ===","type":"tool_input"}
+{"delta":" b) con","type":"tool_input"}
+{"delta":"tinue;\\","type":"tool_input"}
+{"delta":"n      ","type":"tool_input"}
+{"delta":"return ","type":"tool_input"}
+{"delta":"compare","type":"tool_input"}
+{"delta":"Identif","type":"tool_input"}
+{"delta":"iers(a,","type":"tool_input"}
+{"delta":" b);\\n ","type":"tool_input"}
+{"delta":"   } wh","type":"tool_input"}
+{"delta":"ile (++","type":"tool_input"}
+{"delta":"i);\\n  ","type":"tool_input"}
+{"delta":"  retur","type":"tool_input"}
+{"delta":"n 0;\\n ","type":"tool_input"}
+{"delta":" }\\n}\\n","type":"tool_input"}
+{"delta":"\\n// --","type":"tool_input"}
+{"delta":"-- Comp","type":"tool_input"}
+{"delta":"arator ","type":"tool_input"}
+{"delta":"----\\nc","type":"tool_input"}
+{"delta":"lass Co","type":"tool_input"}
+{"delta":"mparato","type":"tool_input"}
+{"delta":"r {\\n  ","type":"tool_input"}
+{"delta":"operato","type":"tool_input"}
+{"delta":"r: stri","type":"tool_input"}
+{"delta":"ng;\\n  ","type":"tool_input"}
+{"delta":"semver:","type":"tool_input"}
+{"delta":" SemVer","type":"tool_input"}
+{"delta":" | null","type":"tool_input"}
+{"delta":"; // nu","type":"tool_input"}
+{"delta":"ll = AN","type":"tool_input"}
+{"delta":"Y\\n  va","type":"tool_input"}
+{"delta":"lue: st","type":"tool_input"}
+{"delta":"ring;\\n","type":"tool_input"}
+{"delta":"\\n  con","type":"tool_input"}
+{"delta":"structo","type":"tool_input"}
+{"delta":"r(comp:","type":"tool_input"}
+{"delta":" string","type":"tool_input"}
+{"delta":") {\\n  ","type":"tool_input"}
+{"delta":"  comp ","type":"tool_input"}
+{"delta":"= comp.","type":"tool_input"}
+{"delta":"trim().","type":"tool_input"}
+{"delta":"split(/","type":"tool_input"}
+{"delta":"\\\\s+/).","type":"tool_input"}
+{"delta":"join(\\\"","type":"tool_input"}
+{"delta":" \\\");\\n","type":"tool_input"}
+{"delta":"    con","type":"tool_input"}
+{"delta":"st m = ","type":"tool_input"}
+{"delta":"comp.ma","type":"tool_input"}
+{"delta":"tch(RE_","type":"tool_input"}
+{"delta":"COMPARA","type":"tool_input"}
+{"delta":"TOR);\\n","type":"tool_input"}
+{"delta":"    if ","type":"tool_input"}
+{"delta":"(!m) th","type":"tool_input"}
+{"delta":"row new","type":"tool_input"}
+{"delta":" TypeEr","type":"tool_input"}
+{"delta":"ror(`In","type":"tool_input"}
+{"delta":"valid c","type":"tool_input"}
+{"delta":"omparat","type":"tool_input"}
+{"delta":"or: ${c","type":"tool_input"}
+{"delta":"omp}`);","type":"tool_input"}
+{"delta":"\\n    t","type":"tool_input"}
+{"delta":"his.ope","type":"tool_input"}
+{"delta":"rator =","type":"tool_input"}
+{"delta":" m[1] !","type":"tool_input"}
+{"delta":"== unde","type":"tool_input"}
+{"delta":"fined ?","type":"tool_input"}
+{"delta":" m[1] :","type":"tool_input"}
+{"delta":" \\\"\\\";\\","type":"tool_input"}
+{"delta":"n    if","type":"tool_input"}
+{"delta":" (this.","type":"tool_input"}
+{"delta":"operato","type":"tool_input"}
+{"delta":"r === \\","type":"tool_input"}
+{"delta":"\"=\\\") t","type":"tool_input"}
+{"delta":"his.ope","type":"tool_input"}
+{"delta":"rator =","type":"tool_input"}
+{"delta":" \\\"\\\";\\","type":"tool_input"}
+{"delta":"n    th","type":"tool_input"}
+{"delta":"is.semv","type":"tool_input"}
+{"delta":"er = m[","type":"tool_input"}
+{"delta":"2] ? ne","type":"tool_input"}
+{"delta":"w SemVe","type":"tool_input"}
+{"delta":"r(m[2])","type":"tool_input"}
+{"delta":" : null","type":"tool_input"}
+{"delta":";\\n    ","type":"tool_input"}
+{"delta":"this.va","type":"tool_input"}
+{"delta":"lue = t","type":"tool_input"}
+{"delta":"his.sem","type":"tool_input"}
+{"delta":"ver ? t","type":"tool_input"}
+{"delta":"his.ope","type":"tool_input"}
+{"delta":"rator +","type":"tool_input"}
+{"delta":" this.s","type":"tool_input"}
+{"delta":"emver.v","type":"tool_input"}
+{"delta":"ersion ","type":"tool_input"}
+{"delta":": \\\"\\\";","type":"tool_input"}
+{"delta":"\\n  }\\n","type":"tool_input"}
+{"delta":"\\n  tes","type":"tool_input"}
+{"delta":"t(versi","type":"tool_input"}
+{"delta":"on: Sem","type":"tool_input"}
+{"delta":"Ver): b","type":"tool_input"}
+{"delta":"oolean ","type":"tool_input"}
+{"delta":"{\\n    ","type":"tool_input"}
+{"delta":"if (!th","type":"tool_input"}
+{"delta":"is.semv","type":"tool_input"}
+{"delta":"er) ret","type":"tool_input"}
+{"delta":"urn tru","type":"tool_input"}
+{"delta":"e;\\n   ","type":"tool_input"}
+{"delta":" const ","type":"tool_input"}
+{"delta":"c = ver","type":"tool_input"}
+{"delta":"sion.co","type":"tool_input"}
+{"delta":"mpare(t","type":"tool_input"}
+{"delta":"his.sem","type":"tool_input"}
+{"delta":"ver);\\n","type":"tool_input"}
+{"delta":"    swi","type":"tool_input"}
+{"delta":"tch (th","type":"tool_input"}
+{"delta":"is.oper","type":"tool_input"}
+{"delta":"ator) {","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":" case \\","type":"tool_input"}
+{"delta":"\"\\\":\\n ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"return ","type":"tool_input"}
+{"delta":"c === 0","type":"tool_input"}
+{"delta":";\\n    ","type":"tool_input"}
+{"delta":"  case ","type":"tool_input"}
+{"delta":"\\\">\\\":\\","type":"tool_input"}
+{"delta":"n      ","type":"tool_input"}
+{"delta":"  retur","type":"tool_input"}
+{"delta":"n c > 0","type":"tool_input"}
+{"delta":";\\n    ","type":"tool_input"}
+{"delta":"  case ","type":"tool_input"}
+{"delta":"\\\">=\\\":","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":"   retu","type":"tool_input"}
+{"delta":"rn c >=","type":"tool_input"}
+{"delta":" 0;\\n  ","type":"tool_input"}
+{"delta":"    cas","type":"tool_input"}
+{"delta":"e \\\"<\\\"","type":"tool_input"}
+{"delta":":\\n    ","type":"tool_input"}
+{"delta":"    ret","type":"tool_input"}
+{"delta":"urn c <","type":"tool_input"}
+{"delta":" 0;\\n  ","type":"tool_input"}
+{"delta":"    cas","type":"tool_input"}
+{"delta":"e \\\"<=\\","type":"tool_input"}
+{"delta":"\":\\n   ","type":"tool_input"}
+{"delta":"     re","type":"tool_input"}
+{"delta":"turn c ","type":"tool_input"}
+{"delta":"<= 0;\\n","type":"tool_input"}
+{"delta":"      d","type":"tool_input"}
+{"delta":"efault:","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":"   thro","type":"tool_input"}
+{"delta":"w new T","type":"tool_input"}
+{"delta":"ypeErro","type":"tool_input"}
+{"delta":"r(`Inva","type":"tool_input"}
+{"delta":"lid ope","type":"tool_input"}
+{"delta":"rator: ","type":"tool_input"}
+{"delta":"${this.","type":"tool_input"}
+{"delta":"operato","type":"tool_input"}
+{"delta":"r}`);\\n","type":"tool_input"}
+{"delta":"    }\\n","type":"tool_input"}
+{"delta":"  }\\n}\\","type":"tool_input"}
+{"delta":"n\\n// -","type":"tool_input"}
+{"delta":"--- ran","type":"tool_input"}
+{"delta":"ge desu","type":"tool_input"}
+{"delta":"garing ","type":"tool_input"}
+{"delta":"----\\nc","type":"tool_input"}
+{"delta":"onst is","type":"tool_input"}
+{"delta":"X = (id","type":"tool_input"}
+{"delta":": strin","type":"tool_input"}
+{"delta":"g | und","type":"tool_input"}
+{"delta":"efined)","type":"tool_input"}
+{"delta":": boole","type":"tool_input"}
+{"delta":"an => !","type":"tool_input"}
+{"delta":"id || i","type":"tool_input"}
+{"delta":"d.toLow","type":"tool_input"}
+{"delta":"erCase(","type":"tool_input"}
+{"delta":") === \\","type":"tool_input"}
+{"delta":"\"x\\\" ||","type":"tool_input"}
+{"delta":" id ===","type":"tool_input"}
+{"delta":" \\\"*\\\";","type":"tool_input"}
+{"delta":"\\n\\nfun","type":"tool_input"}
+{"delta":"ction r","type":"tool_input"}
+{"delta":"eplaceT","type":"tool_input"}
+{"delta":"ilde(co","type":"tool_input"}
+{"delta":"mp: str","type":"tool_input"}
+{"delta":"ing): s","type":"tool_input"}
+{"delta":"tring {","type":"tool_input"}
+{"delta":"\\n  ret","type":"tool_input"}
+{"delta":"urn com","type":"tool_input"}
+{"delta":"p.repla","type":"tool_input"}
+{"delta":"ce(RE_T","type":"tool_input"}
+{"delta":"ILDE, (","type":"tool_input"}
+{"delta":"_: stri","type":"tool_input"}
+{"delta":"ng, M: ","type":"tool_input"}
+{"delta":"string,","type":"tool_input"}
+{"delta":" m: str","type":"tool_input"}
+{"delta":"ing, p:","type":"tool_input"}
+{"delta":" string","type":"tool_input"}
+{"delta":", pr: s","type":"tool_input"}
+{"delta":"tring) ","type":"tool_input"}
+{"delta":"=> {\\n ","type":"tool_input"}
+{"delta":"   if (","type":"tool_input"}
+{"delta":"isX(M))","type":"tool_input"}
+{"delta":" return","type":"tool_input"}
+{"delta":" \\\"\\\";\\","type":"tool_input"}
+{"delta":"n    if","type":"tool_input"}
+{"delta":" (isX(m","type":"tool_input"}
+{"delta":")) retu","type":"tool_input"}
+{"delta":"rn `>=$","type":"tool_input"}
+{"delta":"{M}.0.0","type":"tool_input"}
+{"delta":" <${+M ","type":"tool_input"}
+{"delta":"+ 1}.0.","type":"tool_input"}
+{"delta":"0-0`;\\n","type":"tool_input"}
+{"delta":"    if ","type":"tool_input"}
+{"delta":"(isX(p)","type":"tool_input"}
+{"delta":") retur","type":"tool_input"}
+{"delta":"n `>=${","type":"tool_input"}
+{"delta":"M}.${m}","type":"tool_input"}
+{"delta":".0 <${M","type":"tool_input"}
+{"delta":"}.${+m ","type":"tool_input"}
+{"delta":"+ 1}.0-","type":"tool_input"}
+{"delta":"0`;\\n  ","type":"tool_input"}
+{"delta":"  if (p","type":"tool_input"}
+{"delta":"r) retu","type":"tool_input"}
+{"delta":"rn `>=$","type":"tool_input"}
+{"delta":"{M}.${m","type":"tool_input"}
+{"delta":"}.${p}-","type":"tool_input"}
+{"delta":"${pr} <","type":"tool_input"}
+{"delta":"${M}.${","type":"tool_input"}
+{"delta":"+m + 1}","type":"tool_input"}
+{"delta":".0-0`;\\","type":"tool_input"}
+{"delta":"n    re","type":"tool_input"}
+{"delta":"turn `>","type":"tool_input"}
+{"delta":"=${M}.$","type":"tool_input"}
+{"delta":"{m}.${p","type":"tool_input"}
+{"delta":"} <${M}","type":"tool_input"}
+{"delta":".${+m +","type":"tool_input"}
+{"delta":" 1}.0-0","type":"tool_input"}
+{"delta":"`;\\n  }","type":"tool_input"}
+{"delta":");\\n}\\n","type":"tool_input"}
+{"delta":"\\nfunct","type":"tool_input"}
+{"delta":"ion rep","type":"tool_input"}
+{"delta":"laceCar","type":"tool_input"}
+{"delta":"et(comp","type":"tool_input"}
+{"delta":": strin","type":"tool_input"}
+{"delta":"g): str","type":"tool_input"}
+{"delta":"ing {\\n","type":"tool_input"}
+{"delta":"  retur","type":"tool_input"}
+{"delta":"n comp.","type":"tool_input"}
+{"delta":"replace","type":"tool_input"}
+{"delta":"(RE_CAR","type":"tool_input"}
+{"delta":"ET, (_:","type":"tool_input"}
+{"delta":" string","type":"tool_input"}
+{"delta":", M: st","type":"tool_input"}
+{"delta":"ring, m","type":"tool_input"}
+{"delta":": strin","type":"tool_input"}
+{"delta":"g, p: s","type":"tool_input"}
+{"delta":"tring, ","type":"tool_input"}
+{"delta":"pr: str","type":"tool_input"}
+{"delta":"ing) =>","type":"tool_input"}
+{"delta":" {\\n   ","type":"tool_input"}
+{"delta":" if (is","type":"tool_input"}
+{"delta":"X(M)) r","type":"tool_input"}
+{"delta":"eturn \\","type":"tool_input"}
+{"delta":"\"\\\";\\n ","type":"tool_input"}
+{"delta":"   if (","type":"tool_input"}
+{"delta":"isX(m))","type":"tool_input"}
+{"delta":" return","type":"tool_input"}
+{"delta":" `>=${M","type":"tool_input"}
+{"delta":"}.0.0 <","type":"tool_input"}
+{"delta":"${+M + ","type":"tool_input"}
+{"delta":"1}.0.0-","type":"tool_input"}
+{"delta":"0`;\\n  ","type":"tool_input"}
+{"delta":"  if (i","type":"tool_input"}
+{"delta":"sX(p)) ","type":"tool_input"}
+{"delta":"{\\n    ","type":"tool_input"}
+{"delta":"  if (M","type":"tool_input"}
+{"delta":" === \\\"","type":"tool_input"}
+{"delta":"0\\\") re","type":"tool_input"}
+{"delta":"turn `>","type":"tool_input"}
+{"delta":"=${M}.$","type":"tool_input"}
+{"delta":"{m}.0 <","type":"tool_input"}
+{"delta":"${M}.${","type":"tool_input"}
+{"delta":"+m + 1}","type":"tool_input"}
+{"delta":".0-0`;\\","type":"tool_input"}
+{"delta":"n      ","type":"tool_input"}
+{"delta":"return ","type":"tool_input"}
+{"delta":"`>=${M}","type":"tool_input"}
+{"delta":".${m}.0","type":"tool_input"}
+{"delta":" <${+M ","type":"tool_input"}
+{"delta":"+ 1}.0.","type":"tool_input"}
+{"delta":"0-0`;\\n","type":"tool_input"}
+{"delta":"    }\\n","type":"tool_input"}
+{"delta":"    con","type":"tool_input"}
+{"delta":"st lo =","type":"tool_input"}
+{"delta":" pr ? `","type":"tool_input"}
+{"delta":">=${M}.","type":"tool_input"}
+{"delta":"${m}.${","type":"tool_input"}
+{"delta":"p}-${pr","type":"tool_input"}
+{"delta":"}` : `>","type":"tool_input"}
+{"delta":"=${M}.$","type":"tool_input"}
+{"delta":"{m}.${p","type":"tool_input"}
+{"delta":"}`;\\n  ","type":"tool_input"}
+{"delta":"  if (M","type":"tool_input"}
+{"delta":" === \\\"","type":"tool_input"}
+{"delta":"0\\\") {\\","type":"tool_input"}
+{"delta":"n      ","type":"tool_input"}
+{"delta":"if (m =","type":"tool_input"}
+{"delta":"== \\\"0\\","type":"tool_input"}
+{"delta":"\") retu","type":"tool_input"}
+{"delta":"rn `${l","type":"tool_input"}
+{"delta":"o} <${M","type":"tool_input"}
+{"delta":"}.${m}.","type":"tool_input"}
+{"delta":"${+p + ","type":"tool_input"}
+{"delta":"1}-0`;\\","type":"tool_input"}
+{"delta":"n      ","type":"tool_input"}
+{"delta":"return ","type":"tool_input"}
+{"delta":"`${lo} ","type":"tool_input"}
+{"delta":"<${M}.$","type":"tool_input"}
+{"delta":"{+m + 1","type":"tool_input"}
+{"delta":"}.0-0`;","type":"tool_input"}
+{"delta":"\\n    }","type":"tool_input"}
+{"delta":"\\n    r","type":"tool_input"}
+{"delta":"eturn `","type":"tool_input"}
+{"delta":"${lo} <","type":"tool_input"}
+{"delta":"${+M + ","type":"tool_input"}
+{"delta":"1}.0.0-","type":"tool_input"}
+{"delta":"0`;\\n  ","type":"tool_input"}
+{"delta":"});\\n}\\","type":"tool_input"}
+{"delta":"n\\nfunc","type":"tool_input"}
+{"delta":"tion re","type":"tool_input"}
+{"delta":"placeXR","type":"tool_input"}
+{"delta":"ange(co","type":"tool_input"}
+{"delta":"mp: str","type":"tool_input"}
+{"delta":"ing): s","type":"tool_input"}
+{"delta":"tring {","type":"tool_input"}
+{"delta":"\\n  com","type":"tool_input"}
+{"delta":"p = com","type":"tool_input"}
+{"delta":"p.trim(","type":"tool_input"}
+{"delta":");\\n  r","type":"tool_input"}
+{"delta":"eturn c","type":"tool_input"}
+{"delta":"omp.rep","type":"tool_input"}
+{"delta":"lace(\\n","type":"tool_input"}
+{"delta":"    RE_","type":"tool_input"}
+{"delta":"XRANGE,","type":"tool_input"}
+{"delta":"\\n    (","type":"tool_input"}
+{"delta":"ret: st","type":"tool_input"}
+{"delta":"ring, g","type":"tool_input"}
+{"delta":"tlt: st","type":"tool_input"}
+{"delta":"ring, M","type":"tool_input"}
+{"delta":": strin","type":"tool_input"}
+{"delta":"g | num","type":"tool_input"}
+{"delta":"ber, m:","type":"tool_input"}
+{"delta":" string","type":"tool_input"}
+{"delta":" | numb","type":"tool_input"}
+{"delta":"er, p: ","type":"tool_input"}
+{"delta":"string ","type":"tool_input"}
+{"delta":"| numbe","type":"tool_input"}
+{"delta":"r) => {","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":" const ","type":"tool_input"}
+{"delta":"xM = is","type":"tool_input"}
+{"delta":"X(M as ","type":"tool_input"}
+{"delta":"string)","type":"tool_input"}
+{"delta":";\\n    ","type":"tool_input"}
+{"delta":"  const","type":"tool_input"}
+{"delta":" xm = x","type":"tool_input"}
+{"delta":"M || is","type":"tool_input"}
+{"delta":"X(m as ","type":"tool_input"}
+{"delta":"string)","type":"tool_input"}
+{"delta":";\\n    ","type":"tool_input"}
+{"delta":"  const","type":"tool_input"}
+{"delta":" xp = x","type":"tool_input"}
+{"delta":"m || is","type":"tool_input"}
+{"delta":"X(p as ","type":"tool_input"}
+{"delta":"string)","type":"tool_input"}
+{"delta":";\\n    ","type":"tool_input"}
+{"delta":"  const","type":"tool_input"}
+{"delta":" anyX =","type":"tool_input"}
+{"delta":" xp;\\n ","type":"tool_input"}
+{"delta":"     if","type":"tool_input"}
+{"delta":" (gtlt ","type":"tool_input"}
+{"delta":"=== \\\"=","type":"tool_input"}
+{"delta":"\\\" && a","type":"tool_input"}
+{"delta":"nyX) gt","type":"tool_input"}
+{"delta":"lt = \\\"","type":"tool_input"}
+{"delta":"\\\";\\n  ","type":"tool_input"}
+{"delta":"    let","type":"tool_input"}
+{"delta":" pr = \\","type":"tool_input"}
+{"delta":"\"\\\";\\n ","type":"tool_input"}
+{"delta":"     if","type":"tool_input"}
+{"delta":" (xM) {","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":"   ret ","type":"tool_input"}
+{"delta":"= gtlt ","type":"tool_input"}
+{"delta":"=== \\\">","type":"tool_input"}
+{"delta":"\\\" || g","type":"tool_input"}
+{"delta":"tlt ===","type":"tool_input"}
+{"delta":" \\\"<\\\" ","type":"tool_input"}
+{"delta":"? \\\"<0.","type":"tool_input"}
+{"delta":"0.0-0\\\"","type":"tool_input"}
+{"delta":" : \\\"*\\","type":"tool_input"}
+{"delta":"\";\\n   ","type":"tool_input"}
+{"delta":"   } el","type":"tool_input"}
+{"delta":"se if (","type":"tool_input"}
+{"delta":"gtlt &&","type":"tool_input"}
+{"delta":" anyX) ","type":"tool_input"}
+{"delta":"{\\n    ","type":"tool_input"}
+{"delta":"    if ","type":"tool_input"}
+{"delta":"(xm) m ","type":"tool_input"}
+{"delta":"= 0;\\n ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"p = 0;\\","type":"tool_input"}
+{"delta":"n      ","type":"tool_input"}
+{"delta":"  if (g","type":"tool_input"}
+{"delta":"tlt ===","type":"tool_input"}
+{"delta":" \\\">\\\")","type":"tool_input"}
+{"delta":" {\\n   ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"gtlt = ","type":"tool_input"}
+{"delta":"\\\">=\\\";","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":"     if","type":"tool_input"}
+{"delta":" (xm) {","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"M = +M ","type":"tool_input"}
+{"delta":"+ 1;\\n ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"    m =","type":"tool_input"}
+{"delta":" 0;\\n  ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"   p = ","type":"tool_input"}
+{"delta":"0;\\n   ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"} else ","type":"tool_input"}
+{"delta":"{\\n    ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":" m = +m","type":"tool_input"}
+{"delta":" + 1;\\n","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"     p ","type":"tool_input"}
+{"delta":"= 0;\\n ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"  }\\n  ","type":"tool_input"}
+{"delta":"      }","type":"tool_input"}
+{"delta":" else i","type":"tool_input"}
+{"delta":"f (gtlt","type":"tool_input"}
+{"delta":" === \\\"","type":"tool_input"}
+{"delta":"<=\\\") {","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":"     gt","type":"tool_input"}
+{"delta":"lt = \\\"","type":"tool_input"}
+{"delta":"<\\\";\\n ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"  if (x","type":"tool_input"}
+{"delta":"m) M = ","type":"tool_input"}
+{"delta":"+M + 1;","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":"     el","type":"tool_input"}
+{"delta":"se m = ","type":"tool_input"}
+{"delta":"+m + 1;","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":"   }\\n ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"if (gtl","type":"tool_input"}
+{"delta":"t === \\","type":"tool_input"}
+{"delta":"\"<\\\") p","type":"tool_input"}
+{"delta":"r = \\\"-","type":"tool_input"}
+{"delta":"0\\\";\\n ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"ret = `","type":"tool_input"}
+{"delta":"${gtlt ","type":"tool_input"}
+{"delta":"+ M}.${","type":"tool_input"}
+{"delta":"m}.${p}","type":"tool_input"}
+{"delta":"${pr}`;","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":" } else","type":"tool_input"}
+{"delta":" if (xm","type":"tool_input"}
+{"delta":") {\\n  ","type":"tool_input"}
+{"delta":"      r","type":"tool_input"}
+{"delta":"et = `>","type":"tool_input"}
+{"delta":"=${M}.0","type":"tool_input"}
+{"delta":".0${pr}","type":"tool_input"}
+{"delta":" <${+M ","type":"tool_input"}
+{"delta":"+ 1}.0.","type":"tool_input"}
+{"delta":"0-0`;\\n","type":"tool_input"}
+{"delta":"      }","type":"tool_input"}
+{"delta":" else i","type":"tool_input"}
+{"delta":"f (xp) ","type":"tool_input"}
+{"delta":"{\\n    ","type":"tool_input"}
+{"delta":"    ret","type":"tool_input"}
+{"delta":" = `>=$","type":"tool_input"}
+{"delta":"{M}.${m","type":"tool_input"}
+{"delta":"}.0${pr","type":"tool_input"}
+{"delta":"} <${M}","type":"tool_input"}
+{"delta":".${+m +","type":"tool_input"}
+{"delta":" 1}.0-0","type":"tool_input"}
+{"delta":"`;\\n   ","type":"tool_input"}
+{"delta":"   }\\n ","type":"tool_input"}
+{"delta":"     re","type":"tool_input"}
+{"delta":"turn re","type":"tool_input"}
+{"delta":"t;\\n   ","type":"tool_input"}
+{"delta":" },\\n  ","type":"tool_input"}
+{"delta":");\\n}\\n","type":"tool_input"}
+{"delta":"\\nfunct","type":"tool_input"}
+{"delta":"ion par","type":"tool_input"}
+{"delta":"seCompa","type":"tool_input"}
+{"delta":"rator(c","type":"tool_input"}
+{"delta":"omp: st","type":"tool_input"}
+{"delta":"ring): ","type":"tool_input"}
+{"delta":"string ","type":"tool_input"}
+{"delta":"{\\n  co","type":"tool_input"}
+{"delta":"mp = co","type":"tool_input"}
+{"delta":"mp.trim","type":"tool_input"}
+{"delta":"().spli","type":"tool_input"}
+{"delta":"t(/\\\\s+","type":"tool_input"}
+{"delta":"/).map(","type":"tool_input"}
+{"delta":"replace","type":"tool_input"}
+{"delta":"Caret).","type":"tool_input"}
+{"delta":"join(\\\"","type":"tool_input"}
+{"delta":" \\\");\\n","type":"tool_input"}
+{"delta":"  comp ","type":"tool_input"}
+{"delta":"= comp.","type":"tool_input"}
+{"delta":"trim().","type":"tool_input"}
+{"delta":"split(/","type":"tool_input"}
+{"delta":"\\\\s+/).","type":"tool_input"}
+{"delta":"map(rep","type":"tool_input"}
+{"delta":"laceTil","type":"tool_input"}
+{"delta":"de).joi","type":"tool_input"}
+{"delta":"n(\\\" \\\"","type":"tool_input"}
+{"delta":");\\n  c","type":"tool_input"}
+{"delta":"omp = c","type":"tool_input"}
+{"delta":"omp.spl","type":"tool_input"}
+{"delta":"it(/\\\\s","type":"tool_input"}
+{"delta":"+/).map","type":"tool_input"}
+{"delta":"(replac","type":"tool_input"}
+{"delta":"eXRange","type":"tool_input"}
+{"delta":").join(","type":"tool_input"}
+{"delta":"\\\" \\\");","type":"tool_input"}
+{"delta":"\\n  com","type":"tool_input"}
+{"delta":"p = com","type":"tool_input"}
+{"delta":"p.trim(","type":"tool_input"}
+{"delta":").repla","type":"tool_input"}
+{"delta":"ce(RE_S","type":"tool_input"}
+{"delta":"TAR, \\\"","type":"tool_input"}
+{"delta":"\\\");\\n ","type":"tool_input"}
+{"delta":" return","type":"tool_input"}
+{"delta":" comp;\\","type":"tool_input"}
+{"delta":"n}\\n\\nf","type":"tool_input"}
+{"delta":"unction","type":"tool_input"}
+{"delta":" hyphen","type":"tool_input"}
+{"delta":"Replace","type":"tool_input"}
+{"delta":"(\\n  _0","type":"tool_input"}
+{"delta":": strin","type":"tool_input"}
+{"delta":"g,\\n  f","type":"tool_input"}
+{"delta":"rom: st","type":"tool_input"}
+{"delta":"ring,\\n","type":"tool_input"}
+{"delta":"  fM: s","type":"tool_input"}
+{"delta":"tring,\\","type":"tool_input"}
+{"delta":"n  fm: ","type":"tool_input"}
+{"delta":"string,","type":"tool_input"}
+{"delta":"\\n  fp:","type":"tool_input"}
+{"delta":" string","type":"tool_input"}
+{"delta":",\\n  fp","type":"tool_input"}
+{"delta":"r: stri","type":"tool_input"}
+{"delta":"ng,\\n  ","type":"tool_input"}
+{"delta":"_fb: st","type":"tool_input"}
+{"delta":"ring,\\n","type":"tool_input"}
+{"delta":"  to: s","type":"tool_input"}
+{"delta":"tring,\\","type":"tool_input"}
+{"delta":"n  tM: ","type":"tool_input"}
+{"delta":"string,","type":"tool_input"}
+{"delta":"\\n  tm:","type":"tool_input"}
+{"delta":" string","type":"tool_input"}
+{"delta":",\\n  tp","type":"tool_input"}
+{"delta":": strin","type":"tool_input"}
+{"delta":"g,\\n  t","type":"tool_input"}
+{"delta":"pr: str","type":"tool_input"}
+{"delta":"ing,\\n)","type":"tool_input"}
+{"delta":": strin","type":"tool_input"}
+{"delta":"g {\\n  ","type":"tool_input"}
+{"delta":"if (isX","type":"tool_input"}
+{"delta":"(fM)) f","type":"tool_input"}
+{"delta":"rom = \\","type":"tool_input"}
+{"delta":"\"\\\";\\n ","type":"tool_input"}
+{"delta":" else i","type":"tool_input"}
+{"delta":"f (isX(","type":"tool_input"}
+{"delta":"fm)) fr","type":"tool_input"}
+{"delta":"om = `>","type":"tool_input"}
+{"delta":"=${fM}.","type":"tool_input"}
+{"delta":"0.0`;\\n","type":"tool_input"}
+{"delta":"  else ","type":"tool_input"}
+{"delta":"if (isX","type":"tool_input"}
+{"delta":"(fp)) f","type":"tool_input"}
+{"delta":"rom = `","type":"tool_input"}
+{"delta":">=${fM}","type":"tool_input"}
+{"delta":".${fm}.","type":"tool_input"}
+{"delta":"0`;\\n  ","type":"tool_input"}
+{"delta":"else fr","type":"tool_input"}
+{"delta":"om = `>","type":"tool_input"}
+{"delta":"=${from","type":"tool_input"}
+{"delta":"}`;\\n\\n","type":"tool_input"}
+{"delta":"  if (i","type":"tool_input"}
+{"delta":"sX(tM))","type":"tool_input"}
+{"delta":" to = \\","type":"tool_input"}
+{"delta":"\"\\\";\\n ","type":"tool_input"}
+{"delta":" else i","type":"tool_input"}
+{"delta":"f (isX(","type":"tool_input"}
+{"delta":"tm)) to","type":"tool_input"}
+{"delta":" = `<${","type":"tool_input"}
+{"delta":"+tM + 1","type":"tool_input"}
+{"delta":"}.0.0-0","type":"tool_input"}
+{"delta":"`;\\n  e","type":"tool_input"}
+{"delta":"lse if ","type":"tool_input"}
+{"delta":"(isX(tp","type":"tool_input"}
+{"delta":")) to =","type":"tool_input"}
+{"delta":" `<${tM","type":"tool_input"}
+{"delta":"}.${+tm","type":"tool_input"}
+{"delta":" + 1}.0","type":"tool_input"}
+{"delta":"-0`;\\n ","type":"tool_input"}
+{"delta":" else i","type":"tool_input"}
+{"delta":"f (tpr)","type":"tool_input"}
+{"delta":" to = `","type":"tool_input"}
+{"delta":"<=${tM}","type":"tool_input"}
+{"delta":".${tm}.","type":"tool_input"}
+{"delta":"${tp}-$","type":"tool_input"}
+{"delta":"{tpr}`;","type":"tool_input"}
+{"delta":"\\n  els","type":"tool_input"}
+{"delta":"e to = ","type":"tool_input"}
+{"delta":"`<=${to","type":"tool_input"}
+{"delta":"}`;\\n  ","type":"tool_input"}
+{"delta":"return ","type":"tool_input"}
+{"delta":"`${from","type":"tool_input"}
+{"delta":"} ${to}","type":"tool_input"}
+{"delta":"`.trim(","type":"tool_input"}
+{"delta":");\\n}\\n","type":"tool_input"}
+{"delta":"\\nconst","type":"tool_input"}
+{"delta":" isNull","type":"tool_input"}
+{"delta":"Set = (","type":"tool_input"}
+{"delta":"c: Comp","type":"tool_input"}
+{"delta":"arator)","type":"tool_input"}
+{"delta":" => c.v","type":"tool_input"}
+{"delta":"alue ==","type":"tool_input"}
+{"delta":"= \\\"<0.","type":"tool_input"}
+{"delta":"0.0-0\\\"","type":"tool_input"}
+{"delta":";\\ncons","type":"tool_input"}
+{"delta":"t isAny","type":"tool_input"}
+{"delta":" = (c: ","type":"tool_input"}
+{"delta":"Compara","type":"tool_input"}
+{"delta":"tor) =>","type":"tool_input"}
+{"delta":" c.valu","type":"tool_input"}
+{"delta":"e === \\","type":"tool_input"}
+{"delta":"\"\\\";\\n\\","type":"tool_input"}
+{"delta":"nfuncti","type":"tool_input"}
+{"delta":"on pars","type":"tool_input"}
+{"delta":"eRange(","type":"tool_input"}
+{"delta":"range: ","type":"tool_input"}
+{"delta":"string)","type":"tool_input"}
+{"delta":": Compa","type":"tool_input"}
+{"delta":"rator[]","type":"tool_input"}
+{"delta":" {\\n  r","type":"tool_input"}
+{"delta":"ange = ","type":"tool_input"}
+{"delta":"range.r","type":"tool_input"}
+{"delta":"eplace(","type":"tool_input"}
+{"delta":"RE_HYPH","type":"tool_input"}
+{"delta":"ENRANGE","type":"tool_input"}
+{"delta":", hyphe","type":"tool_input"}
+{"delta":"nReplac","type":"tool_input"}
+{"delta":"e as (.","type":"tool_input"}
+{"delta":"..a: an","type":"tool_input"}
+{"delta":"y[]) =>","type":"tool_input"}
+{"delta":" string","type":"tool_input"}
+{"delta":");\\n  r","type":"tool_input"}
+{"delta":"ange = ","type":"tool_input"}
+{"delta":"range.r","type":"tool_input"}
+{"delta":"eplace(","type":"tool_input"}
+{"delta":"RE_COMP","type":"tool_input"}
+{"delta":"ARATORT","type":"tool_input"}
+{"delta":"RIM, \\\"","type":"tool_input"}
+{"delta":"$1$2$3\\","type":"tool_input"}
+{"delta":"\");\\n  ","type":"tool_input"}
+{"delta":"range =","type":"tool_input"}
+{"delta":" range.","type":"tool_input"}
+{"delta":"replace","type":"tool_input"}
+{"delta":"(RE_TIL","type":"tool_input"}
+{"delta":"DETRIM,","type":"tool_input"}
+{"delta":" \\\"$1~\\","type":"tool_input"}
+{"delta":"\");\\n  ","type":"tool_input"}
+{"delta":"range =","type":"tool_input"}
+{"delta":" range.","type":"tool_input"}
+{"delta":"replace","type":"tool_input"}
+{"delta":"(RE_CAR","type":"tool_input"}
+{"delta":"ETTRIM,","type":"tool_input"}
+{"delta":" \\\"$1^\\","type":"tool_input"}
+{"delta":"\");\\n  ","type":"tool_input"}
+{"delta":"const r","type":"tool_input"}
+{"delta":"angeLis","type":"tool_input"}
+{"delta":"t = ran","type":"tool_input"}
+{"delta":"ge\\n   ","type":"tool_input"}
+{"delta":" .split","type":"tool_input"}
+{"delta":"(\\\" \\\")","type":"tool_input"}
+{"delta":"\\n    .","type":"tool_input"}
+{"delta":"map(par","type":"tool_input"}
+{"delta":"seCompa","type":"tool_input"}
+{"delta":"rator)\\","type":"tool_input"}
+{"delta":"n    .j","type":"tool_input"}
+{"delta":"oin(\\\" ","type":"tool_input"}
+{"delta":"\\\")\\n  ","type":"tool_input"}
+{"delta":"  .spli","type":"tool_input"}
+{"delta":"t(/\\\\s+","type":"tool_input"}
+{"delta":"/)\\n   ","type":"tool_input"}
+{"delta":" .map((","type":"tool_input"}
+{"delta":"c) => c","type":"tool_input"}
+{"delta":".trim()","type":"tool_input"}
+{"delta":".replac","type":"tool_input"}
+{"delta":"e(RE_GT","type":"tool_input"}
+{"delta":"E0, \\\"\\","type":"tool_input"}
+{"delta":"\"));\\n ","type":"tool_input"}
+{"delta":" const ","type":"tool_input"}
+{"delta":"map = n","type":"tool_input"}
+{"delta":"ew Map<","type":"tool_input"}
+{"delta":"string,","type":"tool_input"}
+{"delta":" Compar","type":"tool_input"}
+{"delta":"ator>()","type":"tool_input"}
+{"delta":";\\n  fo","type":"tool_input"}
+{"delta":"r (cons","type":"tool_input"}
+{"delta":"t s of ","type":"tool_input"}
+{"delta":"rangeLi","type":"tool_input"}
+{"delta":"st) {\\n","type":"tool_input"}
+{"delta":"    con","type":"tool_input"}
+{"delta":"st comp","type":"tool_input"}
+{"delta":" = new ","type":"tool_input"}
+{"delta":"Compara","type":"tool_input"}
+{"delta":"tor(s);","type":"tool_input"}
+{"delta":"\\n    i","type":"tool_input"}
+{"delta":"f (isNu","type":"tool_input"}
+{"delta":"llSet(c","type":"tool_input"}
+{"delta":"omp)) r","type":"tool_input"}
+{"delta":"eturn [","type":"tool_input"}
+{"delta":"comp];\\","type":"tool_input"}
+{"delta":"n    ma","type":"tool_input"}
+{"delta":"p.set(c","type":"tool_input"}
+{"delta":"omp.val","type":"tool_input"}
+{"delta":"ue, com","type":"tool_input"}
+{"delta":"p);\\n  ","type":"tool_input"}
+{"delta":"}\\n  if","type":"tool_input"}
+{"delta":" (map.s","type":"tool_input"}
+{"delta":"ize > 1","type":"tool_input"}
+{"delta":" && map","type":"tool_input"}
+{"delta":".has(\\\"","type":"tool_input"}
+{"delta":"\\\")) ma","type":"tool_input"}
+{"delta":"p.delet","type":"tool_input"}
+{"delta":"e(\\\"\\\")","type":"tool_input"}
+{"delta":";\\n  re","type":"tool_input"}
+{"delta":"turn [.","type":"tool_input"}
+{"delta":"..map.v","type":"tool_input"}
+{"delta":"alues()","type":"tool_input"}
+{"delta":"];\\n}\\n","type":"tool_input"}
+{"delta":"\\nclass","type":"tool_input"}
+{"delta":" Range ","type":"tool_input"}
+{"delta":"{\\n  se","type":"tool_input"}
+{"delta":"t: Comp","type":"tool_input"}
+{"delta":"arator[","type":"tool_input"}
+{"delta":"][];\\n\\","type":"tool_input"}
+{"delta":"n  cons","type":"tool_input"}
+{"delta":"tructor","type":"tool_input"}
+{"delta":"(range:","type":"tool_input"}
+{"delta":" string","type":"tool_input"}
+{"delta":") {\\n  ","type":"tool_input"}
+{"delta":"  if (t","type":"tool_input"}
+{"delta":"ypeof r","type":"tool_input"}
+{"delta":"ange !=","type":"tool_input"}
+{"delta":"= \\\"str","type":"tool_input"}
+{"delta":"ing\\\") ","type":"tool_input"}
+{"delta":"throw n","type":"tool_input"}
+{"delta":"ew Type","type":"tool_input"}
+{"delta":"Error(\\","type":"tool_input"}
+{"delta":"\"Invali","type":"tool_input"}
+{"delta":"d range","type":"tool_input"}
+{"delta":"\\\");\\n ","type":"tool_input"}
+{"delta":"   cons","type":"tool_input"}
+{"delta":"t raw =","type":"tool_input"}
+{"delta":" range.","type":"tool_input"}
+{"delta":"trim().","type":"tool_input"}
+{"delta":"split(/","type":"tool_input"}
+{"delta":"\\\\s+/).","type":"tool_input"}
+{"delta":"join(\\\"","type":"tool_input"}
+{"delta":" \\\");\\n","type":"tool_input"}
+{"delta":"    let","type":"tool_input"}
+{"delta":" set = ","type":"tool_input"}
+{"delta":"raw\\n  ","type":"tool_input"}
+{"delta":"    .sp","type":"tool_input"}
+{"delta":"lit(\\\"|","type":"tool_input"}
+{"delta":"|\\\")\\n ","type":"tool_input"}
+{"delta":"     .m","type":"tool_input"}
+{"delta":"ap((r) ","type":"tool_input"}
+{"delta":"=> pars","type":"tool_input"}
+{"delta":"eRange(","type":"tool_input"}
+{"delta":"r.trim(","type":"tool_input"}
+{"delta":")))\\n  ","type":"tool_input"}
+{"delta":"    .fi","type":"tool_input"}
+{"delta":"lter((c","type":"tool_input"}
+{"delta":") => c.","type":"tool_input"}
+{"delta":"length)","type":"tool_input"}
+{"delta":";\\n    ","type":"tool_input"}
+{"delta":"if (!se","type":"tool_input"}
+{"delta":"t.lengt","type":"tool_input"}
+{"delta":"h) thro","type":"tool_input"}
+{"delta":"w new T","type":"tool_input"}
+{"delta":"ypeErro","type":"tool_input"}
+{"delta":"r(`Inva","type":"tool_input"}
+{"delta":"lid Sem","type":"tool_input"}
+{"delta":"Ver Ran","type":"tool_input"}
+{"delta":"ge: ${r","type":"tool_input"}
+{"delta":"aw}`);\\","type":"tool_input"}
+{"delta":"n    if","type":"tool_input"}
+{"delta":" (set.l","type":"tool_input"}
+{"delta":"ength >","type":"tool_input"}
+{"delta":" 1) {\\n","type":"tool_input"}
+{"delta":"      c","type":"tool_input"}
+{"delta":"onst fi","type":"tool_input"}
+{"delta":"rst = s","type":"tool_input"}
+{"delta":"et[0]!;","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":" set = ","type":"tool_input"}
+{"delta":"set.fil","type":"tool_input"}
+{"delta":"ter((c)","type":"tool_input"}
+{"delta":" => !is","type":"tool_input"}
+{"delta":"NullSet","type":"tool_input"}
+{"delta":"(c[0]!)","type":"tool_input"}
+{"delta":");\\n   ","type":"tool_input"}
+{"delta":"   if (","type":"tool_input"}
+{"delta":"set.len","type":"tool_input"}
+{"delta":"gth ===","type":"tool_input"}
+{"delta":" 0) set","type":"tool_input"}
+{"delta":" = [fir","type":"tool_input"}
+{"delta":"st];\\n ","type":"tool_input"}
+{"delta":"     el","type":"tool_input"}
+{"delta":"se if (","type":"tool_input"}
+{"delta":"set.len","type":"tool_input"}
+{"delta":"gth > 1","type":"tool_input"}
+{"delta":") {\\n  ","type":"tool_input"}
+{"delta":"      f","type":"tool_input"}
+{"delta":"or (con","type":"tool_input"}
+{"delta":"st c of","type":"tool_input"}
+{"delta":" set) {","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":"     if","type":"tool_input"}
+{"delta":" (c.len","type":"tool_input"}
+{"delta":"gth ===","type":"tool_input"}
+{"delta":" 1 && i","type":"tool_input"}
+{"delta":"sAny(c[","type":"tool_input"}
+{"delta":"0]!)) {","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"set = [","type":"tool_input"}
+{"delta":"c];\\n  ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"   brea","type":"tool_input"}
+{"delta":"k;\\n   ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"}\\n    ","type":"tool_input"}
+{"delta":"    }\\n","type":"tool_input"}
+{"delta":"      }","type":"tool_input"}
+{"delta":"\\n    }","type":"tool_input"}
+{"delta":"\\n    t","type":"tool_input"}
+{"delta":"his.set","type":"tool_input"}
+{"delta":" = set;","type":"tool_input"}
+{"delta":"\\n  }\\n","type":"tool_input"}
+{"delta":"\\n  tes","type":"tool_input"}
+{"delta":"t(versi","type":"tool_input"}
+{"delta":"on: str","type":"tool_input"}
+{"delta":"ing): b","type":"tool_input"}
+{"delta":"oolean ","type":"tool_input"}
+{"delta":"{\\n    ","type":"tool_input"}
+{"delta":"let v: ","type":"tool_input"}
+{"delta":"SemVer;","type":"tool_input"}
+{"delta":"\\n    t","type":"tool_input"}
+{"delta":"ry {\\n ","type":"tool_input"}
+{"delta":"     v ","type":"tool_input"}
+{"delta":"= new S","type":"tool_input"}
+{"delta":"emVer(v","type":"tool_input"}
+{"delta":"ersion)","type":"tool_input"}
+{"delta":";\\n    ","type":"tool_input"}
+{"delta":"} catch","type":"tool_input"}
+{"delta":" {\\n   ","type":"tool_input"}
+{"delta":"   retu","type":"tool_input"}
+{"delta":"rn fals","type":"tool_input"}
+{"delta":"e;\\n   ","type":"tool_input"}
+{"delta":" }\\n   ","type":"tool_input"}
+{"delta":" return","type":"tool_input"}
+{"delta":" this.s","type":"tool_input"}
+{"delta":"et.some","type":"tool_input"}
+{"delta":"((s) =>","type":"tool_input"}
+{"delta":" testSe","type":"tool_input"}
+{"delta":"t(s, v)","type":"tool_input"}
+{"delta":");\\n  }","type":"tool_input"}
+{"delta":"\\n}\\n\\n","type":"tool_input"}
+{"delta":"functio","type":"tool_input"}
+{"delta":"n testS","type":"tool_input"}
+{"delta":"et(set:","type":"tool_input"}
+{"delta":" Compar","type":"tool_input"}
+{"delta":"ator[],","type":"tool_input"}
+{"delta":" versio","type":"tool_input"}
+{"delta":"n: SemV","type":"tool_input"}
+{"delta":"er): bo","type":"tool_input"}
+{"delta":"olean {","type":"tool_input"}
+{"delta":"\\n  for","type":"tool_input"}
+{"delta":" (const","type":"tool_input"}
+{"delta":" c of s","type":"tool_input"}
+{"delta":"et) if ","type":"tool_input"}
+{"delta":"(!c.tes","type":"tool_input"}
+{"delta":"t(versi","type":"tool_input"}
+{"delta":"on)) re","type":"tool_input"}
+{"delta":"turn fa","type":"tool_input"}
+{"delta":"lse;\\n ","type":"tool_input"}
+{"delta":" if (ve","type":"tool_input"}
+{"delta":"rsion.p","type":"tool_input"}
+{"delta":"rerelea","type":"tool_input"}
+{"delta":"se.leng","type":"tool_input"}
+{"delta":"th) {\\n","type":"tool_input"}
+{"delta":"    for","type":"tool_input"}
+{"delta":" (const","type":"tool_input"}
+{"delta":" c of s","type":"tool_input"}
+{"delta":"et) {\\n","type":"tool_input"}
+{"delta":"      i","type":"tool_input"}
+{"delta":"f (!c.s","type":"tool_input"}
+{"delta":"emver) ","type":"tool_input"}
+{"delta":"continu","type":"tool_input"}
+{"delta":"e;\\n   ","type":"tool_input"}
+{"delta":"   if (","type":"tool_input"}
+{"delta":"c.semve","type":"tool_input"}
+{"delta":"r.prere","type":"tool_input"}
+{"delta":"lease.l","type":"tool_input"}
+{"delta":"ength >","type":"tool_input"}
+{"delta":" 0) {\\n","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":" const ","type":"tool_input"}
+{"delta":"a = c.s","type":"tool_input"}
+{"delta":"emver;\\","type":"tool_input"}
+{"delta":"n      ","type":"tool_input"}
+{"delta":"  if (a","type":"tool_input"}
+{"delta":".major ","type":"tool_input"}
+{"delta":"=== ver","type":"tool_input"}
+{"delta":"sion.ma","type":"tool_input"}
+{"delta":"jor && ","type":"tool_input"}
+{"delta":"a.minor","type":"tool_input"}
+{"delta":" === ve","type":"tool_input"}
+{"delta":"rsion.m","type":"tool_input"}
+{"delta":"inor &&","type":"tool_input"}
+{"delta":" a.patc","type":"tool_input"}
+{"delta":"h === v","type":"tool_input"}
+{"delta":"ersion.","type":"tool_input"}
+{"delta":"patch) ","type":"tool_input"}
+{"delta":"{\\n    ","type":"tool_input"}
+{"delta":"      r","type":"tool_input"}
+{"delta":"eturn t","type":"tool_input"}
+{"delta":"rue;\\n ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"}\\n    ","type":"tool_input"}
+{"delta":"  }\\n  ","type":"tool_input"}
+{"delta":"  }\\n  ","type":"tool_input"}
+{"delta":"  retur","type":"tool_input"}
+{"delta":"n false","type":"tool_input"}
+{"delta":";\\n  }\\","type":"tool_input"}
+{"delta":"n  retu","type":"tool_input"}
+{"delta":"rn true","type":"tool_input"}
+{"delta":";\\n}\\n\\","type":"tool_input"}
+{"delta":"nexport","type":"tool_input"}
+{"delta":" functi","type":"tool_input"}
+{"delta":"on sati","type":"tool_input"}
+{"delta":"sfies(v","type":"tool_input"}
+{"delta":"ersion:","type":"tool_input"}
+{"delta":" string","type":"tool_input"}
+{"delta":", range","type":"tool_input"}
+{"delta":": strin","type":"tool_input"}
+{"delta":"g): boo","type":"tool_input"}
+{"delta":"lean {\\","type":"tool_input"}
+{"delta":"n  let ","type":"tool_input"}
+{"delta":"r: Rang","type":"tool_input"}
+{"delta":"e;\\n  t","type":"tool_input"}
+{"delta":"ry {\\n ","type":"tool_input"}
+{"delta":"   r = ","type":"tool_input"}
+{"delta":"new Ran","type":"tool_input"}
+{"delta":"ge(rang","type":"tool_input"}
+{"delta":"e);\\n  ","type":"tool_input"}
+{"delta":"} catch","type":"tool_input"}
+{"delta":" {\\n   ","type":"tool_input"}
+{"delta":" return","type":"tool_input"}
+{"delta":" false;","type":"tool_input"}
+{"delta":"\\n  }\\n","type":"tool_input"}
+{"delta":"  retur","type":"tool_input"}
+{"delta":"n r.tes","type":"tool_input"}
+{"delta":"t(versi","type":"tool_input"}
+{"delta":"on);\\n}","type":"tool_input"}
+{"delta":"\\n\\nexp","type":"tool_input"}
+{"delta":"ort fun","type":"tool_input"}
+{"delta":"ction m","type":"tool_input"}
+{"delta":"axSatis","type":"tool_input"}
+{"delta":"fying(v","type":"tool_input"}
+{"delta":"ersions","type":"tool_input"}
+{"delta":": strin","type":"tool_input"}
+{"delta":"g[], ra","type":"tool_input"}
+{"delta":"nge: st","type":"tool_input"}
+{"delta":"ring): ","type":"tool_input"}
+{"delta":"string ","type":"tool_input"}
+{"delta":"| null ","type":"tool_input"}
+{"delta":"{\\n  le","type":"tool_input"}
+{"delta":"t r: Ra","type":"tool_input"}
+{"delta":"nge;\\n ","type":"tool_input"}
+{"delta":" try {\\","type":"tool_input"}
+{"delta":"n    r ","type":"tool_input"}
+{"delta":"= new R","type":"tool_input"}
+{"delta":"ange(ra","type":"tool_input"}
+{"delta":"nge);\\n","type":"tool_input"}
+{"delta":"  } cat","type":"tool_input"}
+{"delta":"ch {\\n ","type":"tool_input"}
+{"delta":"   retu","type":"tool_input"}
+{"delta":"rn null","type":"tool_input"}
+{"delta":";\\n  }\\","type":"tool_input"}
+{"delta":"n  let ","type":"tool_input"}
+{"delta":"max: st","type":"tool_input"}
+{"delta":"ring | ","type":"tool_input"}
+{"delta":"null = ","type":"tool_input"}
+{"delta":"null;\\n","type":"tool_input"}
+{"delta":"  let m","type":"tool_input"}
+{"delta":"axSV: S","type":"tool_input"}
+{"delta":"emVer |","type":"tool_input"}
+{"delta":" null =","type":"tool_input"}
+{"delta":" null;\\","type":"tool_input"}
+{"delta":"n  for ","type":"tool_input"}
+{"delta":"(const ","type":"tool_input"}
+{"delta":"v of ve","type":"tool_input"}
+{"delta":"rsions)","type":"tool_input"}
+{"delta":" {\\n   ","type":"tool_input"}
+{"delta":" if (r.","type":"tool_input"}
+{"delta":"test(v)","type":"tool_input"}
+{"delta":") {\\n  ","type":"tool_input"}
+{"delta":"    if ","type":"tool_input"}
+{"delta":"(!maxSV","type":"tool_input"}
+{"delta":" || max","type":"tool_input"}
+{"delta":"SV.comp","type":"tool_input"}
+{"delta":"are(new","type":"tool_input"}
+{"delta":" SemVer","type":"tool_input"}
+{"delta":"(v)) ==","type":"tool_input"}
+{"delta":"= -1) {","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":"   max ","type":"tool_input"}
+{"delta":"= v;\\n ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"maxSV =","type":"tool_input"}
+{"delta":" new Se","type":"tool_input"}
+{"delta":"mVer(v)","type":"tool_input"}
+{"delta":";\\n    ","type":"tool_input"}
+{"delta":"  }\\n  ","type":"tool_input"}
+{"delta":"  }\\n  ","type":"tool_input"}
+{"delta":"}\\n  re","type":"tool_input"}
+{"delta":"turn ma","type":"tool_input"}
+{"delta":"x;\\n}\\n","type":"tool_input"}
+{"delta":"\"","type":"tool_input"}
+{"delta":", \"inte","type":"tool_input"}
+{"delta":"nt\": \"I","type":"tool_input"}
+{"delta":"mplemen","type":"tool_input"}
+{"delta":"t semve","type":"tool_input"}
+{"delta":"r port\"}","type":"tool_input"}
+{"id":"toolu_0149nFXdvWKeubBhUyLnZ9wQ","name":"write","type":"tool_exec"}
+{"stop_reason":"tool_use","type":"message_end"}
+{"cache_creation_input":765,"cache_read_input":26656,"input":465,"output":13674,"type":"tokens"}
+{"error":null,"id":"toolu_0149nFXdvWKeubBhUyLnZ9wQ","name":"write","output":"Updated src/semver.ts (369 lines):\n1+ // Port of node-semver v7 range matching (default options: not loose, no includePrerelease).\n3+ const MAX_LENGTH = 256;\n4+ const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;\n6+ // ---- regex sources ----\n7+ const NUMERICIDENTIFIER = \"0|[1-9]\\\\d*\";\n8+ const NUMERICIDENTIFIERLOOSE = \"\\\\d+\";\n9+ const NONNUMERICIDENTIFIER = \"\\\\d*[a-zA-Z-][a-zA-Z0-9-]*\";\n10+ const MAINVERSION = `(${NUMERICIDENTIFIER})\\\\.(${NUMERICIDENTIFIER})\\\\.(${NUMERICIDENTIFIER})`;\n11+ const MAINVERSIONLOOSE = `(${NUMERICIDENTIFIERLOOSE})\\\\.(${NUMERICIDENTIFIERLOOSE})\\\\.(${NUMERICIDENTIFIERLOOSE})`;\n12+ const PRERELEASEIDENTIFIER = `(?:${NONNUMERICIDENTIFIER}|${NUMERICIDENTIFIER})`;\n13+ const PRERELEASEIDENTIFIERLOOSE = `(?:${NONNUMERICIDENTIFIER}|${NUMERICIDENTIFIERLOOSE})`;\n14+ const PRERELEASE = `(?:-(${PRERELEASEIDENTIFIER}(?:\\\\.${PRERELEASEIDENTIFIER})*))`;\n15+ const PRERELEASELOOSE = `(?:-?(${PRERELEASEIDENTIFIERLOOSE}(?:\\\\.${PRERELEASEIDENTIFIERLOOSE})*))`;\n16+ const BUILDIDENTIFIER = \"[a-zA-Z0-9-]+\";\n17+ const BUILD = `(?:\\\\+(${BUILDIDENTIFIER}(?:\\\\.${BUILDIDENTIFIER})*))`;\n18+ const FULLPLAIN = `v?${MAINVERSION}${PRERELEASE}?${BUILD}?`;\n19+ const LOOSEPLAIN = `[v=\\\\s]*${MAINVERSIONLOOSE}${PRERELEASELOOSE}?${BUILD}?`;\n20+ const GTLT = \"((?:<|>)?=?)\";\n21+ const XRANGEIDENTIFIER = `${NUMERICIDENTIFIER}|x|X|\\\\*`;\n22+ const XRANGEPLAIN =\n...\n\nFile diff:\n```diff\n--- a/src/semver.ts\n+++ b/src/semver.ts\n@@ -1,8 +1,369 @@\n+// Port of node-semver v7 range matching (default options: not loose, no includePrerelease).\n+\n+const MAX_LENGTH = 256;\n+const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;\n+\n+// ---- regex sources ----\n+const NUMERICIDENTIFIER = \"0|[1-9]\\\\d*\";\n+const NUMERICIDENTIFIERLOOSE = \"\\\\d+\";\n+const NONNUMERICIDENTIFIER = \"\\\\d*[a-zA-Z-][a-zA-Z0-9-]*\";\n+const MAINVERSION = `(${NUMERICIDENTIFIER})\\\\.(${NUMERICIDENTIFIER})\\\\.(${NUMERICIDENTIFIER})`;\n+const MAINVERSIONLOOSE = `(${NUMERICIDENTIFIERLOOSE})\\\\.(${NUMERICIDENTIFIERLOOSE})\\\\.(${NUMERICIDENTIFIERLOOSE})`;\n+const PRERELEASEIDENTIFIER = `(?:${NONNUMERICIDENTIFIER}|${NUMERICIDENTIFIER})`;\n+const PRERELEASEIDENTIFIERLOOSE = `(?:${NONNUMERICIDENTIFIER}|${NUMERICIDENTIFIERLOOSE})`;\n+const PRERELEASE = `(?:-(${PRERELEASEIDENTIFIER}(?:\\\\.${PRERELEASEIDENTIFIER})*))`;\n+const PRERELEASELOOSE = `(?:-?(${PRERELEASEIDENTIFIERLOOSE}(?:\\\\.${PRERELEASEIDENTIFIERLOOSE})*))`;\n+const BUILDIDENTIFIER = \"[a-zA-Z0-9-]+\";\n+const BUILD = `(?:\\\\+(${BUILDIDENTIFIER}(?:\\\\.${BUILDIDENTIFIER})*))`;\n+const FULLPLAIN = `v?${MAINVERSION}${PRERELEASE}?${BUILD}?`;\n+const LOOSEPLAIN = `[v=\\\\s]*${MAINVERSIONLOOSE}${PRERELEASELOOSE}?${BUILD}?`;\n+const GTLT = \"((?:<|>)?=?)\";\n+const XRANGEIDENTIFIER = `${NUMERICIDENTIFIER}|x|X|\\\\*`;\n+const XRANGEPLAIN =\n+  `[v=\\\\s]*(${XRANGEIDENTIFIER})` +\n+  `(?:\\\\.(${XRANGEIDENTIFIER})` +\n+  `(?:\\\\.(${XRANGEIDENTIFIER})` +\n+  `(?:${PRERELEASE})?${BUILD}?` +\n+  `)?)?`;\n+const LONETILDE = \"(?:~>?)\";\n+const LONECARET = \"(?:\\\\^)\";\n+\n+const RE_FULL = new RegExp(`^${FULLPLAIN}$`);\n+const RE_XRANGE = new RegExp(`^${GTLT}\\\\s*${XRANGEPLAIN}$`);\n+const RE_TILDETRIM = new RegExp(`(\\\\s*)${LONETILDE}\\\\s+`, \"g\");\n+const RE_TILDE = new RegExp(`^${LONETILDE}${XRANGEPLAIN}$`);\n+const RE_CARETTRIM = new RegExp(`(\\\\s*)${LONECARET}\\\\s+`, \"g\");\n+const RE_CARET = new RegExp(`^${LONECARET}${XRANGEPLAIN}$`);\n+const RE_COMPARATOR = new RegExp(`^${GTLT}\\\\s*(${FULLPLAIN})$|^$`);\n+const RE_COMPARATORTRIM = new RegExp(`(\\\\s*)${GTLT}\\\\s*(${LOOSEPLAIN}|${XRANGEPLAIN})`, \"g\");\n+const RE_HYPHENRANGE = new RegExp(`^\\\\s*(${XRANGEPLAIN})\\\\s+-\\\\s+(${XRANGEPLAIN})\\\\s*$`);\n+const RE_STAR = /(<|>)?=?\\s*\\*/;\n+const RE_GTE0 = /^\\s*>=\\s*0\\.0\\.0\\s*$/;\n+\n+// ---- identifiers ----\n+type Id = string | number;\n+const numeric = /^[0-9]+$/;\n+function compareIdentifiers(a: Id, b: Id): number {\n+  const anum = numeric.test(String(a));\n+  const bnum = numeric.test(String(b));\n+  if (anum && bnum) {\n+    a = +a;\n+    b = +b;\n+  }\n+  return a === b ? 0 : anum && !bnum ? -1 : bnum && !anum ? 1 : a < b ? -1 : 1;\n+}\n+\n+// ---- SemVer ----\n+class SemVer {\n+  major: number;\n+  minor: number;\n+  patch: number;\n+  prerelease: Id[];\n+  version: string;\n+\n+  constructor(version: string) {\n+    if (typeof version !== \"string\") throw new TypeError(\"Invalid version\");\n+    if (version.length > MAX_LENGTH) throw new TypeError(\"version too long\");\n+    const m = version.trim().match(RE_FULL);\n+    if (!m) throw new TypeError(`Invalid Version: ${version}`);\n+    this.major = +m[1]!;\n+    this.minor = +m[2]!;\n+    this.patch = +m[3]!;\n+    for (const n of [this.major, this.minor, this.patch]) {\n+      if (n > MAX_SAFE_INTEGER || n < 0) throw new TypeError(\"Invalid version number\");\n+    }\n+    this.prerelease = !m[4]\n+      ? []\n+      : m[4].split(\".\").map((id) => {\n+          if (/^[0-9]+$/.test(id)) {\n+            const num = +id;\n+            if (num >= 0 && num < MAX_SAFE_INTEGER) return num;\n+          }\n+          return id;\n+        });\n+    this.version = `${this.major}.${this.minor}.${this.patch}`;\n+    if (this.prerelease.length) this.version += `-${this.prerelease.join(\".\")}`;\n+  }\n+\n+  compare(other: SemVer): number {\n+    return this.compareMain(other) || this.comparePre(other);\n+  }\n+\n+  compareMain(other: SemVer): number {\n+    return (\n+      compareIdentifiers(this.major, other.major) ||\n+      compareIdentifiers(this.minor, other.minor) ||\n+      compareIdentifiers(this.patch, other.patch)\n+    );\n+  }\n+\n+  comparePre(other: SemVer): number {\n+    if (this.prerelease.length && !other.prerelease.length) return -1;\n+    if (!this.prerelease.length && other.prerelease.length) return 1;\n+    if (!this.prerelease.length && !other.prerelease.length) return 0;\n+    let i = 0;\n+    do {\n+      const a = this.prerelease[i];\n+      const b = other.prerelease[i];\n+      if (a === undefined && b === undefined) return 0;\n+      if (b === undefined) return 1;\n+      if (a === undefined) return -1;\n+      if (a === b) continue;\n+      return compareIdentifiers(a, b);\n+    } while (++i);\n+    return 0;\n+  }\n+}\n+\n+// ---- Comparator ----\n+class Comparator {\n+  operator: string;\n+  semver: SemVer | null; // null = ANY\n+  value: string;\n+\n+  constructor(comp: string) {\n+    comp = comp.trim().split(/\\s+/).join(\" \");\n+    const m = comp.match(RE_COMPARATOR);\n+    if (!m) throw new TypeError(`Invalid comparator: ${comp}`);\n+    this.operator = m[1] !== undefined ? m[1] : \"\";\n+    if (this.operator === \"=\") this.operator = \"\";\n+    this.semver = m[2] ? new SemVer(m[2]) : null;\n+    this.value = this.semver ? this.operator + this.semver.version : \"\";\n+  }\n+\n+  test(version: SemVer): boolean {\n+    if (!this.semver) return true;\n+    const c = version.compare(this.semver);\n+    switch (this.operator) {\n+      case \"\":\n+        return c === 0;\n+      case \">\":\n+        return c > 0;\n+      case \">=\":\n+        return c >= 0;\n+      case \"<\":\n+        return c < 0;\n+      case \"<=\":\n+        return c <= 0;\n+      default:\n+        throw new TypeError(`Invalid operator: ${this.operator}`);\n+    }\n+  }\n+}\n+\n+// ---- range desugaring ----\n+const isX = (id: string | undefined): boolean => !id || id.toLowerCase() === \"x\" || id === \"*\";\n+\n+function replaceTilde(comp: string): string {\n+  return comp.replace(RE_TILDE, (_: string, M: string, m: string, p: string, pr: string) => {\n+    if (isX(M)) return \"\";\n+    if (isX(m)) return `>=${M}.0.0 <${+M + 1}.0.0-0`;\n+    if (isX(p)) return `>=${M}.${m}.0 <${M}.${+m + 1}.0-0`;\n+    if (pr) return `>=${M}.${m}.${p}-${pr} <${M}.${+m + 1}.0-0`;\n+    return `>=${M}.${m}.${p} <${M}.${+m + 1}.0-0`;\n+  });\n+}\n+\n+function replaceCaret(comp: string): string {\n+  return comp.replace(RE_CARET, (_: string, M: string, m: string, p: string, pr: string) => {\n+    if (isX(M)) return \"\";\n+    if (isX(m)) return `>=${M}.0.0 <${+M + 1}.0.0-0`;\n+    if (isX(p)) {\n+      if (M === \"0\") return `>=${M}.${m}.0 <${M}.${+m + 1}.0-0`;\n+      return `>=${M}.${m}.0 <${+M + 1}.0.0-0`;\n+    }\n+    const lo = pr ? `>=${M}.${m}.${p}-${pr}` : `>=${M}.${m}.${p}`;\n+    if (M === \"0\") {\n+      if (m === \"0\") return `${lo} <${M}.${m}.${+p + 1}-0`;\n+      return `${lo} <${M}.${+m + 1}.0-0`;\n+    }\n+    return `${lo} <${+M + 1}.0.0-0`;\n+  });\n+}\n+\n+function replaceXRange(comp: string): string {\n+  comp = comp.trim();\n+  return comp.replace(\n+    RE_XRANGE,\n+    (ret: string, gtlt: string, M: string | number, m: string | number, p: string | number) => {\n+      const xM = isX(M as string);\n+      const xm = xM || isX(m as string);\n+      const xp = xm || isX(p as string);\n+      const anyX = xp;\n+      if (gtlt === \"=\" && anyX) gtlt = \"\";\n+      let pr = \"\";\n+      if (xM) {\n+        ret = gtlt === \">\" || gtlt === \"<\" ? \"<0.0.0-0\" : \"*\";\n+      } else if (gtlt && anyX) {\n+        if (xm) m = 0;\n+        p = 0;\n+        if (gtlt === \">\") {\n+          gtlt = \">=\";\n+          if (xm) {\n+            M = +M + 1;\n+            m = 0;\n+            p = 0;\n+          } else {\n+            m = +m + 1;\n+            p = 0;\n+          }\n+        } else if (gtlt === \"<=\") {\n+          gtlt = \"<\";\n+          if (xm) M = +M + 1;\n+          else m = +m + 1;\n+        }\n+        if (gtlt === \"<\") pr = \"-0\";\n+        ret = `${gtlt + M}.${m}.${p}${pr}`;\n+      } else if (xm) {\n+        ret = `>=${M}.0.0${pr} <${+M + 1}.0.0-0`;\n+      } else if (xp) {\n+        ret = `>=${M}.${m}.0${pr} <${M}.${+m + 1}.0-0`;\n+      }\n+      return ret;\n+    },\n+  );\n+}\n+\n+function parseComparator(comp: string): string {\n+  comp = comp.trim().split(/\\s+/).map(replaceCaret).join(\" \");\n+  comp = comp.trim().split(/\\s+/).map(replaceTilde).join(\" \");\n+  comp = comp.split(/\\s+/).map(replaceXRange).join(\" \");\n+  comp = comp.trim().replace(RE_STAR, \"\");\n+  return comp;\n+}\n+\n+function hyphenReplace(\n+  _0: string,\n+  from: string,\n+  fM: string,\n+  fm: string,\n+  fp: string,\n+  fpr: string,\n+  _fb: string,\n+  to: string,\n+  tM: string,\n+  tm: string,\n+  tp: string,\n+  tpr: string,\n+): string {\n+  if (isX(fM)) from = \"\";\n+  else if (isX(fm)) from = `>=${fM}.0.0`;\n+  else if (isX(fp)) from = `>=${fM}.${fm}.0`;\n+  else from = `>=${from}`;\n+\n+  if (isX(tM)) to = \"\";\n+  else if (isX(tm)) to = `<${+tM + 1}.0.0-0`;\n+  else if (isX(tp)) to = `<${tM}.${+tm + 1}.0-0`;\n+  else if (tpr) to = `<=${tM}.${tm}.${tp}-${tpr}`;\n+  else to = `<=${to}`;\n+  return `${from} ${to}`.trim();\n+}\n+\n+const isNullSet = (c: Comparator) => c.value === \"<0.0.0-0\";\n+const isAny = (c: Comparator) => c.value === \"\";\n+\n+function parseRange(range: string): Comparator[] {\n+  range = range.replace(RE_HYPHENRANGE, hyphenReplace as (...a: any[]) => string);\n+  range = range.replace(RE_COMPARATORTRIM, \"$1$2$3\");\n+  range = range.replace(RE_TILDETRIM, \"$1~\");\n+  range = range.replace(RE_CARETTRIM, \"$1^\");\n+  const rangeList = range\n+    .split(\" \")\n+    .map(parseComparator)\n+    .join(\" \")\n+    .split(/\\s+/)\n+    .map((c) => c.trim().replace(RE_GTE0, \"\"));\n+  const map = new Map<string, Comparator>();\n+  for (const s of rangeList) {\n+    const comp = new Comparator(s);\n+    if (isNullSet(comp)) return [comp];\n+    map.set(comp.value, comp);\n+  }\n+  if (map.size > 1 && map.has(\"\")) map.delete(\"\");\n+  return [...map.values()];\n+}\n+\n+class Range {\n+  set: Comparator[][];\n+\n+  constructor(range: string) {\n+    if (typeof range !== \"string\") throw new TypeError(\"Invalid range\");\n+    const raw = range.trim().split(/\\s+/).join(\" \");\n+    let set = raw\n+      .split(\"||\")\n+      .map((r) => parseRange(r.trim()))\n+      .filter((c) => c.length);\n+    if (!set.length) throw new TypeError(`Invalid SemVer Range: ${raw}`);\n+    if (set.length > 1) {\n+      const first = set[0]!;\n+      set = set.filter((c) => !isNullSet(c[0]!));\n+      if (set.length === 0) set = [first];\n+      else if (set.length > 1) {\n+        for (const c of set) {\n+          if (c.length === 1 && isAny(c[0]!)) {\n+            set = [c];\n+            break;\n+          }\n+        }\n+      }\n+    }\n+    this.set = set;\n+  }\n+\n+  test(version: string): boolean {\n+    let v: SemVer;\n+    try {\n+      v = new SemVer(version);\n+    } catch {\n+      return false;\n+    }\n+    return this.set.some((s) => testSet(s, v));\n+  }\n+}\n+\n+function testSet(set: Comparator[], version: SemVer): boolean {\n+  for (const c of set) if (!c.test(version)) return false;\n+  if (version.prerelease.length) {\n+    for (const c of set) {\n+      if (!c.semver) continue;\n+      if (c.semver.prerelease.length > 0) {\n+        const a = c.semver;\n+        if (a.major === version.major && a.minor === version.minor && a.patch === version.patch) {\n+          return true;\n+        }\n+      }\n+    }\n+    return false;\n+  }\n+  return true;\n+}\n+\n export function satisfies(version: string, range: string): boolean {\n-  return version === range;\n+  let r: Range;\n+  try {\n+    r = new Range(range);\n+  } catch {\n+    return false;\n+  }\n+  return r.test(version);\n }\n \n export function maxSatisfying(versions: string[], range: string): string | null {\n-  const matching = versions.filter((v) => satisfies(v, range));\n-  return matching.sort().at(-1) ?? null;\n+  let r: Range;\n+  try {\n+    r = new Range(range);\n+  } catch {\n+    return null;\n+  }\n+  let max: string | null = null;\n+  let maxSV: SemVer | null = null;\n+  for (const v of versions) {\n+    if (r.test(v)) {\n+      if (!maxSV || maxSV.compare(new SemVer(v)) === -1) {\n+        max = v;\n+        maxSV = new SemVer(v);\n+      }\n+    }\n+  }\n+  return max;\n }\n```\n","type":"tool_done"}
+{"connection":"https/sse","type":"connection_type"}
+{"phase":"sending request","type":"connection_phase"}
+{"phase":"waiting for response","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"id":"toolu_015GHwBYPjJUomtsB1hy3qM4","name":"edit","type":"tool_start"}
+{"delta":"","type":"tool_input"}
+{"delta":"{\"file_","type":"tool_input"}
+{"delta":"path\": ","type":"tool_input"}
+{"delta":"\"src/se","type":"tool_input"}
+{"delta":"mver.ts","type":"tool_input"}
+{"delta":"\"","type":"tool_input"}
+{"delta":", \"inte","type":"tool_input"}
+{"delta":"nt\": \"S","type":"tool_input"}
+{"delta":"trip bu","type":"tool_input"}
+{"delta":"ild lik","type":"tool_input"}
+{"delta":"e node-","type":"tool_input"}
+{"delta":"semver ","type":"tool_input"}
+{"delta":"parseCo","type":"tool_input"}
+{"delta":"mparato","type":"tool_input"}
+{"delta":"r\"","type":"tool_input"}
+{"delta":", \"old_","type":"tool_input"}
+{"delta":"string\"","type":"tool_input"}
+{"delta":": \"  co","type":"tool_input"}
+{"delta":"mp = co","type":"tool_input"}
+{"delta":"mp.trim","type":"tool_input"}
+{"delta":"().spli","type":"tool_input"}
+{"delta":"t(/\\\\s+","type":"tool_input"}
+{"delta":"/).map(","type":"tool_input"}
+{"delta":"replace","type":"tool_input"}
+{"delta":"Caret).","type":"tool_input"}
+{"delta":"join(\\\"","type":"tool_input"}
+{"delta":" \\\");\"","type":"tool_input"}
+{"delta":", \"new_","type":"tool_input"}
+{"delta":"string\"","type":"tool_input"}
+{"delta":": \"  co","type":"tool_input"}
+{"delta":"mp = co","type":"tool_input"}
+{"delta":"mp.repl","type":"tool_input"}
+{"delta":"ace(RE_","type":"tool_input"}
+{"delta":"BUILD, ","type":"tool_input"}
+{"delta":"\\\"\\\");\\","type":"tool_input"}
+{"delta":"n  comp","type":"tool_input"}
+{"delta":" = comp","type":"tool_input"}
+{"delta":".trim()","type":"tool_input"}
+{"delta":".split(","type":"tool_input"}
+{"delta":"/\\\\s+/)","type":"tool_input"}
+{"delta":".map(re","type":"tool_input"}
+{"delta":"placeCa","type":"tool_input"}
+{"delta":"ret).jo","type":"tool_input"}
+{"delta":"in(\\\" \\","type":"tool_input"}
+{"delta":"\");\"}","type":"tool_input"}
+{"id":"toolu_015GHwBYPjJUomtsB1hy3qM4","name":"edit","type":"tool_exec"}
+{"id":"toolu_01PQebsuy97UMvnNsvkgb6fR","name":"edit","type":"tool_start"}
+{"delta":"","type":"tool_input"}
+{"delta":"{\"file_","type":"tool_input"}
+{"delta":"path\": ","type":"tool_input"}
+{"delta":"\"src/se","type":"tool_input"}
+{"delta":"mver.ts","type":"tool_input"}
+{"delta":"\"","type":"tool_input"}
+{"delta":", \"inte","type":"tool_input"}
+{"delta":"nt\": \"A","type":"tool_input"}
+{"delta":"dd RE_B","type":"tool_input"}
+{"delta":"UILD\"","type":"tool_input"}
+{"delta":", \"old_","type":"tool_input"}
+{"delta":"string\"","type":"tool_input"}
+{"delta":": \"cons","type":"tool_input"}
+{"delta":"t RE_ST","type":"tool_input"}
+{"delta":"AR = \"","type":"tool_input"}
+{"delta":", \"new_","type":"tool_input"}
+{"delta":"string\"","type":"tool_input"}
+{"delta":": \"cons","type":"tool_input"}
+{"delta":"t RE_BU","type":"tool_input"}
+{"delta":"ILD = n","type":"tool_input"}
+{"delta":"ew RegE","type":"tool_input"}
+{"delta":"xp(BUIL","type":"tool_input"}
+{"delta":"D);\\nco","type":"tool_input"}
+{"delta":"nst RE_","type":"tool_input"}
+{"delta":"STAR = ","type":"tool_input"}
+{"delta":"\"}","type":"tool_input"}
+{"id":"toolu_01PQebsuy97UMvnNsvkgb6fR","name":"edit","type":"tool_exec"}
+{"id":"toolu_01RjcsgEHMEbpjUFVouaZtRn","name":"bash","type":"tool_start"}
+{"delta":"","type":"tool_input"}
+{"delta":"{\"comma","type":"tool_input"}
+{"delta":"nd\": \"b","type":"tool_input"}
+{"delta":"un test","type":"tool_input"}
+{"delta":" 2>&1 |","type":"tool_input"}
+{"delta":" tail -","type":"tool_input"}
+{"delta":"5; cat ","type":"tool_input"}
+{"delta":"> $JCOD","type":"tool_input"}
+{"delta":"E_SCRAT","type":"tool_input"}
+{"delta":"CH_DIR/","type":"tool_input"}
+{"delta":"t.ts <<","type":"tool_input"}
+{"delta":"'EOF'\\n","type":"tool_input"}
+{"delta":"import ","type":"tool_input"}
+{"delta":"{ satis","type":"tool_input"}
+{"delta":"fies as","type":"tool_input"}
+{"delta":" s, max","type":"tool_input"}
+{"delta":"Satisfy","type":"tool_input"}
+{"delta":"ing as ","type":"tool_input"}
+{"delta":"m } fro","type":"tool_input"}
+{"delta":"m \\\"/pr","type":"tool_input"}
+{"delta":"ivate/t","type":"tool_input"}
+{"delta":"mp/bc-w","type":"tool_input"}
+{"delta":"ork/B/j","type":"tool_input"}
+{"delta":"code-4/","type":"tool_input"}
+{"delta":"src/sem","type":"tool_input"}
+{"delta":"ver\\\";\\","type":"tool_input"}
+{"delta":"nconst ","type":"tool_input"}
+{"delta":"cases: ","type":"tool_input"}
+{"delta":"[string","type":"tool_input"}
+{"delta":",string","type":"tool_input"}
+{"delta":",boolea","type":"tool_input"}
+{"delta":"n][] = ","type":"tool_input"}
+{"delta":"[\\n[\\\"1","type":"tool_input"}
+{"delta":".2.3\\\",","type":"tool_input"}
+{"delta":"\\\"1.2 -","type":"tool_input"}
+{"delta":" 2.3.4\\","type":"tool_input"}
+{"delta":"\",true]","type":"tool_input"}
+{"delta":",[\\\"2.3","type":"tool_input"}
+{"delta":".5\\\",\\\"","type":"tool_input"}
+{"delta":"1.2 - 2","type":"tool_input"}
+{"delta":".3.4\\\",","type":"tool_input"}
+{"delta":"false],","type":"tool_input"}
+{"delta":"[\\\"2.3.","type":"tool_input"}
+{"delta":"9\\\",\\\"1","type":"tool_input"}
+{"delta":".2 - 2.","type":"tool_input"}
+{"delta":"3\\\",tru","type":"tool_input"}
+{"delta":"e],[\\\"2","type":"tool_input"}
+{"delta":".4.0\\\",","type":"tool_input"}
+{"delta":"\\\"1.2 -","type":"tool_input"}
+{"delta":" 2.3\\\",","type":"tool_input"}
+{"delta":"false],","type":"tool_input"}
+{"delta":"\\n[\\\"0.","type":"tool_input"}
+{"delta":"2.5\\\",\\","type":"tool_input"}
+{"delta":"\"^0.2.3","type":"tool_input"}
+{"delta":"\\\",true","type":"tool_input"}
+{"delta":"],[\\\"0.","type":"tool_input"}
+{"delta":"3.0\\\",\\","type":"tool_input"}
+{"delta":"\"^0.2.3","type":"tool_input"}
+{"delta":"\\\",fals","type":"tool_input"}
+{"delta":"e],[\\\"0","type":"tool_input"}
+{"delta":".0.4\\\",","type":"tool_input"}
+{"delta":"\\\"^0.0.","type":"tool_input"}
+{"delta":"3\\\",fal","type":"tool_input"}
+{"delta":"se],[\\\"","type":"tool_input"}
+{"delta":"0.0.3\\\"","type":"tool_input"}
+{"delta":",\\\"^0.0","type":"tool_input"}
+{"delta":".3\\\",tr","type":"tool_input"}
+{"delta":"ue],\\n[","type":"tool_input"}
+{"delta":"\\\"1.9.9","type":"tool_input"}
+{"delta":"\\\",\\\"^1","type":"tool_input"}
+{"delta":".2.x\\\",","type":"tool_input"}
+{"delta":"true],[","type":"tool_input"}
+{"delta":"\\\"0.0.9","type":"tool_input"}
+{"delta":"\\\",\\\"^0","type":"tool_input"}
+{"delta":".0.x\\\",","type":"tool_input"}
+{"delta":"true],[","type":"tool_input"}
+{"delta":"\\\"0.1.0","type":"tool_input"}
+{"delta":"\\\",\\\"^0","type":"tool_input"}
+{"delta":".0.x\\\",","type":"tool_input"}
+{"delta":"false],","type":"tool_input"}
+{"delta":"[\\\"0.9.","type":"tool_input"}
+{"delta":"0\\\",\\\"^","type":"tool_input"}
+{"delta":"0.x\\\",t","type":"tool_input"}
+{"delta":"rue],\\n","type":"tool_input"}
+{"delta":"[\\\"1.2.","type":"tool_input"}
+{"delta":"9\\\",\\\"~","type":"tool_input"}
+{"delta":"1.2\\\",t","type":"tool_input"}
+{"delta":"rue],[\\","type":"tool_input"}
+{"delta":"\"1.3.0\\","type":"tool_input"}
+{"delta":"\",\\\"~1.","type":"tool_input"}
+{"delta":"2\\\",fal","type":"tool_input"}
+{"delta":"se],[\\\"","type":"tool_input"}
+{"delta":"1.9.0\\\"","type":"tool_input"}
+{"delta":",\\\"~1\\\"","type":"tool_input"}
+{"delta":",true],","type":"tool_input"}
+{"delta":"[\\\"0.2.","type":"tool_input"}
+{"delta":"9\\\",\\\"~","type":"tool_input"}
+{"delta":"0.2.3\\\"","type":"tool_input"}
+{"delta":",true],","type":"tool_input"}
+{"delta":"\\n[\\\"1.","type":"tool_input"}
+{"delta":"2.3-bet","type":"tool_input"}
+{"delta":"a.4\\\",\\","type":"tool_input"}
+{"delta":"\"~1.2.3","type":"tool_input"}
+{"delta":"-beta.2","type":"tool_input"}
+{"delta":"\\\",true","type":"tool_input"}
+{"delta":"],[\\\"1.","type":"tool_input"}
+{"delta":"2.4-bet","type":"tool_input"}
+{"delta":"a.4\\\",\\","type":"tool_input"}
+{"delta":"\"~1.2.3","type":"tool_input"}
+{"delta":"-beta.2","type":"tool_input"}
+{"delta":"\\\",fals","type":"tool_input"}
+{"delta":"e],\\n[\\","type":"tool_input"}
+{"delta":"\"1.0.0\\","type":"tool_input"}
+{"delta":"\",\\\"*\\\"","type":"tool_input"}
+{"delta":",true],","type":"tool_input"}
+{"delta":"[\\\"1.0.","type":"tool_input"}
+{"delta":"0-pre\\\"","type":"tool_input"}
+{"delta":",\\\"*\\\",","type":"tool_input"}
+{"delta":"false],","type":"tool_input"}
+{"delta":"[\\\"2.0.","type":"tool_input"}
+{"delta":"0\\\",\\\">","type":"tool_input"}
+{"delta":"1\\\",tru","type":"tool_input"}
+{"delta":"e],[\\\"1","type":"tool_input"}
+{"delta":".9.0\\\",","type":"tool_input"}
+{"delta":"\\\">1\\\",","type":"tool_input"}
+{"delta":"false],","type":"tool_input"}
+{"delta":"[\\\"1.9.","type":"tool_input"}
+{"delta":"0\\\",\\\"<","type":"tool_input"}
+{"delta":"=1\\\",tr","type":"tool_input"}
+{"delta":"ue],\\n[","type":"tool_input"}
+{"delta":"\\\"1.2.3","type":"tool_input"}
+{"delta":"+build\\","type":"tool_input"}
+{"delta":"\",\\\"1.2","type":"tool_input"}
+{"delta":".3\\\",tr","type":"tool_input"}
+{"delta":"ue],[\\\"","type":"tool_input"}
+{"delta":"1.2.3\\\"","type":"tool_input"}
+{"delta":",\\\"1.2.","type":"tool_input"}
+{"delta":"3+x\\\",t","type":"tool_input"}
+{"delta":"rue],[\\","type":"tool_input"}
+{"delta":"\"abc\\\",","type":"tool_input"}
+{"delta":"\\\"*\\\",f","type":"tool_input"}
+{"delta":"alse],[","type":"tool_input"}
+{"delta":"\\\"1.0.0","type":"tool_input"}
+{"delta":"\\\",\\\"bl","type":"tool_input"}
+{"delta":"ah\\\",fa","type":"tool_input"}
+{"delta":"lse],[\\","type":"tool_input"}
+{"delta":"\"1.0.0\\","type":"tool_input"}
+{"delta":"\",\\\"\\\",","type":"tool_input"}
+{"delta":"true],\\","type":"tool_input"}
+{"delta":"n[\\\"1.0","type":"tool_input"}
+{"delta":".0\\\",\\\"","type":"tool_input"}
+{"delta":"<1.0.0 ","type":"tool_input"}
+{"delta":"|| >=1.","type":"tool_input"}
+{"delta":"0.0\\\",t","type":"tool_input"}
+{"delta":"rue],[\\","type":"tool_input"}
+{"delta":"\"1.0.0-","type":"tool_input"}
+{"delta":"rc.10\\\"","type":"tool_input"}
+{"delta":",\\\"^1.0","type":"tool_input"}
+{"delta":".0-rc.2","type":"tool_input"}
+{"delta":"\\\",true","type":"tool_input"}
+{"delta":"],[\\\"1.","type":"tool_input"}
+{"delta":"0.0-alp","type":"tool_input"}
+{"delta":"ha.beta","type":"tool_input"}
+{"delta":"\\\",\\\">1","type":"tool_input"}
+{"delta":".0.0-al","type":"tool_input"}
+{"delta":"pha.1\\\"","type":"tool_input"}
+{"delta":",true],","type":"tool_input"}
+{"delta":"\\n[\\\"1.","type":"tool_input"}
+{"delta":"0.0\\\",\\","type":"tool_input"}
+{"delta":"\"= 1.0.","type":"tool_input"}
+{"delta":"0\\\",tru","type":"tool_input"}
+{"delta":"e],[\\\"1","type":"tool_input"}
+{"delta":".0.0\\\",","type":"tool_input"}
+{"delta":"\\\">= 1.","type":"tool_input"}
+{"delta":"0.0\\\",t","type":"tool_input"}
+{"delta":"rue],[\\","type":"tool_input"}
+{"delta":"\"1.0.0\\","type":"tool_input"}
+{"delta":"\",\\\"~ 1","type":"tool_input"}
+{"delta":".0\\\",tr","type":"tool_input"}
+{"delta":"ue],[\\\"","type":"tool_input"}
+{"delta":"1.0.0\\\"","type":"tool_input"}
+{"delta":",\\\"^ 1\\","type":"tool_input"}
+{"delta":"\",true]","type":"tool_input"}
+{"delta":",[\\\"v1.","type":"tool_input"}
+{"delta":"0.0\\\",\\","type":"tool_input"}
+{"delta":"\"1\\\",tr","type":"tool_input"}
+{"delta":"ue],\\n]","type":"tool_input"}
+{"delta":";\\nfor ","type":"tool_input"}
+{"delta":"(const ","type":"tool_input"}
+{"delta":"[v,r,e]","type":"tool_input"}
+{"delta":" of cas","type":"tool_input"}
+{"delta":"es) if ","type":"tool_input"}
+{"delta":"(s(v,r)","type":"tool_input"}
+{"delta":"!==e) c","type":"tool_input"}
+{"delta":"onsole.","type":"tool_input"}
+{"delta":"log(\\\"F","type":"tool_input"}
+{"delta":"AIL\\\",v","type":"tool_input"}
+{"delta":",r,e);\\","type":"tool_input"}
+{"delta":"nconsol","type":"tool_input"}
+{"delta":"e.log(m","type":"tool_input"}
+{"delta":"([\\\"1.2","type":"tool_input"}
+{"delta":".3\\\",\\\"","type":"tool_input"}
+{"delta":"1.2.4-b","type":"tool_input"}
+{"delta":"eta\\\",\\","type":"tool_input"}
+{"delta":"\"1.2.10","type":"tool_input"}
+{"delta":"\\\"],\\\"~","type":"tool_input"}
+{"delta":"1.2.0\\\"","type":"tool_input"}
+{"delta":"), m([\\","type":"tool_input"}
+{"delta":"\"a\\\"],\\","type":"tool_input"}
+{"delta":"\"x\\\"), ","type":"tool_input"}
+{"delta":"m([\\\"1.","type":"tool_input"}
+{"delta":"0.0\\\"],","type":"tool_input"}
+{"delta":"\\\"%%\\\")","type":"tool_input"}
+{"delta":");\\nEOF","type":"tool_input"}
+{"delta":"\\nbun $","type":"tool_input"}
+{"delta":"JCODE_S","type":"tool_input"}
+{"delta":"CRATCH_","type":"tool_input"}
+{"delta":"DIR/t.t","type":"tool_input"}
+{"delta":"s\"","type":"tool_input"}
+{"delta":", \"inte","type":"tool_input"}
+{"delta":"nt\": \"R","type":"tool_input"}
+{"delta":"un test","type":"tool_input"}
+{"delta":"s and s","type":"tool_input"}
+{"delta":"pot che","type":"tool_input"}
+{"delta":"cks\"}","type":"tool_input"}
+{"id":"toolu_01RjcsgEHMEbpjUFVouaZtRn","name":"bash","type":"tool_exec"}
+{"stop_reason":"tool_use","type":"message_end"}
+{"cache_creation_input":6302,"cache_read_input":27421,"input":7241,"output":3441,"type":"tokens"}
+{"error":null,"id":"toolu_015GHwBYPjJUomtsB1hy3qM4","name":"edit","output":"Edited src/semver.ts: replaced 1 occurrence(s)\n228+ comp = comp.replace(RE_BUILD, \"\");\n\nContext after edit (lines 225-232):\n 225│ }\n 226│ \n 227│ function parseComparator(comp: string): string {\n 228│   comp = comp.replace(RE_BUILD, \"\");\n 229│   comp = comp.trim().split(/\\s+/).map(replaceCaret).join(\" \");\n 230│   comp = comp.trim().split(/\\s+/).map(replaceTilde).join(\" \");\n 231│   comp = comp.split(/\\s+/).map(replaceXRange).join(\" \");\n 232│   comp = comp.trim().replace(RE_STAR, \"\");\n\nFile diff:\n```diff\n--- a/src/semver.ts\n+++ b/src/semver.ts\n@@ -225,6 +225,7 @@\n }\n \n function parseComparator(comp: string): string {\n+  comp = comp.replace(RE_BUILD, \"\");\n   comp = comp.trim().split(/\\s+/).map(replaceCaret).join(\" \");\n   comp = comp.trim().split(/\\s+/).map(replaceTilde).join(\" \");\n   comp = comp.split(/\\s+/).map(replaceXRange).join(\" \");\n```\n","type":"tool_done"}
+{"error":null,"id":"toolu_01PQebsuy97UMvnNsvkgb6fR","name":"edit","output":"Edited src/semver.ts: replaced 1 occurrence(s)\n40+ const RE_BUILD = new RegExp(BUILD);\n\nContext after edit (lines 37-44):\n  37│ const RE_COMPARATOR = new RegExp(`^${GTLT}\\\\s*(${FULLPLAIN})$|^$`);\n  38│ const RE_COMPARATORTRIM = new RegExp(`(\\\\s*)${GTLT}\\\\s*(${LOOSEPLAIN}|${XRANGEPLAIN})`, \"g\");\n  39│ const RE_HYPHENRANGE = new RegExp(`^\\\\s*(${XRANGEPLAIN})\\\\s+-\\\\s+(${XRANGEPLAIN})\\\\s*$`);\n  40│ const RE_BUILD = new RegExp(BUILD);\n  41│ const RE_STAR = /(<|>)?=?\\s*\\*/;\n  42│ const RE_GTE0 = /^\\s*>=\\s*0\\.0\\.0\\s*$/;\n  43│ \n  44│ // ---- identifiers ----\n\nFile diff:\n```diff\n--- a/src/semver.ts\n+++ b/src/semver.ts\n@@ -37,6 +37,7 @@\n const RE_COMPARATOR = new RegExp(`^${GTLT}\\\\s*(${FULLPLAIN})$|^$`);\n const RE_COMPARATORTRIM = new RegExp(`(\\\\s*)${GTLT}\\\\s*(${LOOSEPLAIN}|${XRANGEPLAIN})`, \"g\");\n const RE_HYPHENRANGE = new RegExp(`^\\\\s*(${XRANGEPLAIN})\\\\s+-\\\\s+(${XRANGEPLAIN})\\\\s*$`);\n+const RE_BUILD = new RegExp(BUILD);\n const RE_STAR = /(<|>)?=?\\s*\\*/;\n const RE_GTE0 = /^\\s*>=\\s*0\\.0\\.0\\s*$/;\n \n```\n","type":"tool_done"}
+{"error":null,"id":"toolu_01RjcsgEHMEbpjUFVouaZtRn","name":"bash","output":"\n 3 pass\n 0 fail\n 5 expect() calls\nRan 3 tests across 1 file. [6.00ms]\n1.2.10 null null\n\n--- Command finished with exit code: 0 ---\n","type":"tool_done"}
+{"connection":"https/sse","type":"connection_type"}
+{"phase":"sending request","type":"connection_phase"}
+{"phase":"waiting for response","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"text":"Vis","type":"text_delta"}
+{"text":"ible tests pass, as","type":"text_delta"}
+{"text":" do my spot checks.","type":"text_delta"}
+{"text":" Let me try a differential test against","type":"text_delta"}
+{"text":" the real `","type":"text_delta"}
+{"text":"semver` package if one","type":"text_delta"}
+{"text":" is available.","type":"text_delta"}
+{"id":"toolu_018vpzBcer8G66dYDFBwruy6","name":"bash","type":"tool_start"}
+{"delta":"","type":"tool_input"}
+{"delta":"{\"comma","type":"tool_input"}
+{"delta":"nd\": \"c","type":"tool_input"}
+{"delta":"d $JCOD","type":"tool_input"}
+{"delta":"E_SCRAT","type":"tool_input"}
+{"delta":"CH_DIR ","type":"tool_input"}
+{"delta":"&& mkdi","type":"tool_input"}
+{"delta":"r -p re","type":"tool_input"}
+{"delta":"f && cd","type":"tool_input"}
+{"delta":" ref &&","type":"tool_input"}
+{"delta":" (npm i","type":"tool_input"}
+{"delta":" semver","type":"tool_input"}
+{"delta":"@7 --si","type":"tool_input"}
+{"delta":"lent 2>","type":"tool_input"}
+{"delta":"&1 | ta","type":"tool_input"}
+{"delta":"il -2) ","type":"tool_input"}
+{"delta":"&& cat ","type":"tool_input"}
+{"delta":"> d.ts ","type":"tool_input"}
+{"delta":"<<'EOF'","type":"tool_input"}
+{"delta":"\\nimpor","type":"tool_input"}
+{"delta":"t sv fr","type":"tool_input"}
+{"delta":"om \\\"./","type":"tool_input"}
+{"delta":"node_mo","type":"tool_input"}
+{"delta":"dules/s","type":"tool_input"}
+{"delta":"emver/i","type":"tool_input"}
+{"delta":"ndex.js","type":"tool_input"}
+{"delta":"\\\";\\nim","type":"tool_input"}
+{"delta":"port { ","type":"tool_input"}
+{"delta":"satisfi","type":"tool_input"}
+{"delta":"es, max","type":"tool_input"}
+{"delta":"Satisfy","type":"tool_input"}
+{"delta":"ing } f","type":"tool_input"}
+{"delta":"rom \\\"/","type":"tool_input"}
+{"delta":"private","type":"tool_input"}
+{"delta":"/tmp/bc","type":"tool_input"}
+{"delta":"-work/B","type":"tool_input"}
+{"delta":"/jcode-","type":"tool_input"}
+{"delta":"4/src/s","type":"tool_input"}
+{"delta":"emver\\\"","type":"tool_input"}
+{"delta":";\\ncons","type":"tool_input"}
+{"delta":"t vs=[\\","type":"tool_input"}
+{"delta":"\"0.0.0\\","type":"tool_input"}
+{"delta":"\",\\\"0.0","type":"tool_input"}
+{"delta":".1\\\",\\\"","type":"tool_input"}
+{"delta":"0.0.3\\\"","type":"tool_input"}
+{"delta":",\\\"0.0.","type":"tool_input"}
+{"delta":"4\\\",\\\"0","type":"tool_input"}
+{"delta":".1.0\\\",","type":"tool_input"}
+{"delta":"\\\"0.2.3","type":"tool_input"}
+{"delta":"\\\",\\\"0.","type":"tool_input"}
+{"delta":"2.9\\\",\\","type":"tool_input"}
+{"delta":"\"0.3.0\\","type":"tool_input"}
+{"delta":"\",\\\"1.0","type":"tool_input"}
+{"delta":".0\\\",\\\"","type":"tool_input"}
+{"delta":"1.0.0-0","type":"tool_input"}
+{"delta":"\\\",\\\"1.","type":"tool_input"}
+{"delta":"0.0-alp","type":"tool_input"}
+{"delta":"ha\\\",\\\"","type":"tool_input"}
+{"delta":"1.0.0-a","type":"tool_input"}
+{"delta":"lpha.1\\","type":"tool_input"}
+{"delta":"\",\\\"1.0","type":"tool_input"}
+{"delta":".0-alph","type":"tool_input"}
+{"delta":"a.beta\\","type":"tool_input"}
+{"delta":"\",\\\"1.0","type":"tool_input"}
+{"delta":".0-rc.1","type":"tool_input"}
+{"delta":"0\\\",\\\"1","type":"tool_input"}
+{"delta":".0.0-rc","type":"tool_input"}
+{"delta":".2\\\",\\\"","type":"tool_input"}
+{"delta":"1.2.3\\\"","type":"tool_input"}
+{"delta":",\\\"1.2.","type":"tool_input"}
+{"delta":"3-beta.","type":"tool_input"}
+{"delta":"2\\\",\\\"1","type":"tool_input"}
+{"delta":".2.3+b\\","type":"tool_input"}
+{"delta":"\",\\\"1.2","type":"tool_input"}
+{"delta":".4\\\",\\\"","type":"tool_input"}
+{"delta":"1.2.4-p","type":"tool_input"}
+{"delta":"re\\\",\\\"","type":"tool_input"}
+{"delta":"1.3.0\\\"","type":"tool_input"}
+{"delta":",\\\"1.9.","type":"tool_input"}
+{"delta":"9\\\",\\\"2","type":"tool_input"}
+{"delta":".0.0\\\",","type":"tool_input"}
+{"delta":"\\\"2.0.0","type":"tool_input"}
+{"delta":"-0\\\",\\\"","type":"tool_input"}
+{"delta":"2.3.4\\\"","type":"tool_input"}
+{"delta":",\\\"2.3.","type":"tool_input"}
+{"delta":"5\\\",\\\"2","type":"tool_input"}
+{"delta":".4.0\\\",","type":"tool_input"}
+{"delta":"\\\"3.0.0","type":"tool_input"}
+{"delta":"\\\",\\\"v1","type":"tool_input"}
+{"delta":".2.3\\\",","type":"tool_input"}
+{"delta":"\\\"=1.2.","type":"tool_input"}
+{"delta":"3\\\",\\\" ","type":"tool_input"}
+{"delta":"1.2.3 \\","type":"tool_input"}
+{"delta":"\",\\\"01.","type":"tool_input"}
+{"delta":"2.3\\\",\\","type":"tool_input"}
+{"delta":"\"1.2\\\",","type":"tool_input"}
+{"delta":"\\\"x\\\"];","type":"tool_input"}
+{"delta":"\\nconst","type":"tool_input"}
+{"delta":" rs=[\\\"","type":"tool_input"}
+{"delta":"*\\\",\\\"\\","type":"tool_input"}
+{"delta":"\",\\\"x\\\"","type":"tool_input"}
+{"delta":",\\\"1\\\",","type":"tool_input"}
+{"delta":"\\\"1.x\\\"","type":"tool_input"}
+{"delta":",\\\"1.2.","type":"tool_input"}
+{"delta":"*\\\",\\\"1","type":"tool_input"}
+{"delta":".2\\\",\\\"","type":"tool_input"}
+{"delta":"~1.2.3\\","type":"tool_input"}
+{"delta":"\",\\\"~1.","type":"tool_input"}
+{"delta":"2\\\",\\\"~","type":"tool_input"}
+{"delta":"1\\\",\\\"~","type":"tool_input"}
+{"delta":"0.2.3\\\"","type":"tool_input"}
+{"delta":",\\\"~1.2","type":"tool_input"}
+{"delta":".3-beta","type":"tool_input"}
+{"delta":".1\\\",\\\"","type":"tool_input"}
+{"delta":"^1.2.3\\","type":"tool_input"}
+{"delta":"\",\\\"^0.","type":"tool_input"}
+{"delta":"2.3\\\",\\","type":"tool_input"}
+{"delta":"\"^0.0.3","type":"tool_input"}
+{"delta":"\\\",\\\"^1","type":"tool_input"}
+{"delta":".2.x\\\",","type":"tool_input"}
+{"delta":"\\\"^0.0.","type":"tool_input"}
+{"delta":"x\\\",\\\"^","type":"tool_input"}
+{"delta":"0.x\\\",\\","type":"tool_input"}
+{"delta":"\"^0.0\\\"","type":"tool_input"}
+{"delta":",\\\"^1.2","type":"tool_input"}
+{"delta":".3-beta","type":"tool_input"}
+{"delta":".1\\\",\\\"","type":"tool_input"}
+{"delta":"^0.0.3-","type":"tool_input"}
+{"delta":"beta\\\",","type":"tool_input"}
+{"delta":"\\\"1.2 -","type":"tool_input"}
+{"delta":" 2.3.4\\","type":"tool_input"}
+{"delta":"\",\\\"1.2","type":"tool_input"}
+{"delta":".3 - 2.","type":"tool_input"}
+{"delta":"3\\\",\\\"1","type":"tool_input"}
+{"delta":" - 2\\\",","type":"tool_input"}
+{"delta":"\\\"1.0.0","type":"tool_input"}
+{"delta":"-alpha ","type":"tool_input"}
+{"delta":"- 1.2.3","type":"tool_input"}
+{"delta":"\\\",\\\"* ","type":"tool_input"}
+{"delta":"- 2\\\",\\","type":"tool_input"}
+{"delta":"\">1\\\",\\","type":"tool_input"}
+{"delta":"\">=1.2\\","type":"tool_input"}
+{"delta":"\",\\\"<1.","type":"tool_input"}
+{"delta":"2\\\",\\\"<","type":"tool_input"}
+{"delta":"=1.2\\\",","type":"tool_input"}
+{"delta":"\\\">1.2.","type":"tool_input"}
+{"delta":"3\\\",\\\"<","type":"tool_input"}
+{"delta":"2.0.0-0","type":"tool_input"}
+{"delta":"\\\",\\\">=","type":"tool_input"}
+{"delta":"1.0.0-a","type":"tool_input"}
+{"delta":"lpha <1","type":"tool_input"}
+{"delta":".0.0\\\",","type":"tool_input"}
+{"delta":"\\\">=1.0","type":"tool_input"}
+{"delta":".0-rc.2","type":"tool_input"}
+{"delta":"\\\",\\\"=1","type":"tool_input"}
+{"delta":".2.3\\\",","type":"tool_input"}
+{"delta":"\\\"1.2.3","type":"tool_input"}
+{"delta":"+x\\\",\\\"","type":"tool_input"}
+{"delta":"<1 || >","type":"tool_input"}
+{"delta":"=2\\\",\\\"","type":"tool_input"}
+{"delta":"~> 1.2\\","type":"tool_input"}
+{"delta":"\",\\\"^ 1","type":"tool_input"}
+{"delta":".2\\\",\\\"","type":"tool_input"}
+{"delta":"> 1.2.3","type":"tool_input"}
+{"delta":"\\\",\\\"bl","type":"tool_input"}
+{"delta":"ah\\\",\\\"","type":"tool_input"}
+{"delta":"1.2.3 |","type":"tool_input"}
+{"delta":"|\\\",\\\"|","type":"tool_input"}
+{"delta":"|\\\",\\\"<","type":"tool_input"}
+{"delta":"0.0.0-0","type":"tool_input"}
+{"delta":"\\\",\\\">*","type":"tool_input"}
+{"delta":"\\\",\\\"<*","type":"tool_input"}
+{"delta":"\\\",\\\">=","type":"tool_input"}
+{"delta":"*\\\",\\\"1","type":"tool_input"}
+{"delta":".2.3 - ","type":"tool_input"}
+{"delta":"*\\\",\\\"~","type":"tool_input"}
+{"delta":"1.2.3+b","type":"tool_input"}
+{"delta":"\\\",\\\">=","type":"tool_input"}
+{"delta":"0.0.0\\\"","type":"tool_input"}
+{"delta":",\\\"1.2.","type":"tool_input"}
+{"delta":"3-beta ","type":"tool_input"}
+{"delta":"- 1.2.4","type":"tool_input"}
+{"delta":"-pre\\\",","type":"tool_input"}
+{"delta":"\\\"^0.0.","type":"tool_input"}
+{"delta":"0\\\",\\\"~","type":"tool_input"}
+{"delta":"0\\\",\\\"=","type":"tool_input"}
+{"delta":"1\\\",\\\">","type":"tool_input"}
+{"delta":"=1.x <2","type":"tool_input"}
+{"delta":"\\\",\\\"1 ","type":"tool_input"}
+{"delta":"2\\\",\\\"1","type":"tool_input"}
+{"delta":".2.3 1.","type":"tool_input"}
+{"delta":"2.4\\\",\\","type":"tool_input"}
+{"delta":"\">01.2.","type":"tool_input"}
+{"delta":"3\\\",\\\"1","type":"tool_input"}
+{"delta":".x.3\\\"]","type":"tool_input"}
+{"delta":";\\nlet ","type":"tool_input"}
+{"delta":"f=0;\\nf","type":"tool_input"}
+{"delta":"or(cons","type":"tool_input"}
+{"delta":"t r of ","type":"tool_input"}
+{"delta":"rs){for","type":"tool_input"}
+{"delta":"(const ","type":"tool_input"}
+{"delta":"v of vs","type":"tool_input"}
+{"delta":"){let e","type":"tool_input"}
+{"delta":";try{e=","type":"tool_input"}
+{"delta":"sv.sati","type":"tool_input"}
+{"delta":"sfies(v","type":"tool_input"}
+{"delta":",r)}cat","type":"tool_input"}
+{"delta":"ch{e=fa","type":"tool_input"}
+{"delta":"lse}con","type":"tool_input"}
+{"delta":"st a=sa","type":"tool_input"}
+{"delta":"tisfies","type":"tool_input"}
+{"delta":"(v,r);i","type":"tool_input"}
+{"delta":"f(a!==e","type":"tool_input"}
+{"delta":"){f++;c","type":"tool_input"}
+{"delta":"onsole.","type":"tool_input"}
+{"delta":"log(\\\"s","type":"tool_input"}
+{"delta":"at\\\",JS","type":"tool_input"}
+{"delta":"ON.stri","type":"tool_input"}
+{"delta":"ngify(v","type":"tool_input"}
+{"delta":"),JSON.","type":"tool_input"}
+{"delta":"stringi","type":"tool_input"}
+{"delta":"fy(r),e","type":"tool_input"}
+{"delta":",a)}}\\n","type":"tool_input"}
+{"delta":"const e","type":"tool_input"}
+{"delta":"=sv.max","type":"tool_input"}
+{"delta":"Satisfy","type":"tool_input"}
+{"delta":"ing(vs,","type":"tool_input"}
+{"delta":"r),a=ma","type":"tool_input"}
+{"delta":"xSatisf","type":"tool_input"}
+{"delta":"ying(vs","type":"tool_input"}
+{"delta":",r);if(","type":"tool_input"}
+{"delta":"e!==a){","type":"tool_input"}
+{"delta":"f++;con","type":"tool_input"}
+{"delta":"sole.lo","type":"tool_input"}
+{"delta":"g(\\\"max","type":"tool_input"}
+{"delta":"\\\",r,e,","type":"tool_input"}
+{"delta":"a)}}\\nc","type":"tool_input"}
+{"delta":"onsole.","type":"tool_input"}
+{"delta":"log(\\\"f","type":"tool_input"}
+{"delta":"ails\\\",","type":"tool_input"}
+{"delta":"f);\\nEO","type":"tool_input"}
+{"delta":"F\\nbun ","type":"tool_input"}
+{"delta":"d.ts\"","type":"tool_input"}
+{"delta":", \"inte","type":"tool_input"}
+{"delta":"nt\": \"D","type":"tool_input"}
+{"delta":"ifferen","type":"tool_input"}
+{"delta":"tial te","type":"tool_input"}
+{"delta":"st agai","type":"tool_input"}
+{"delta":"nst nod","type":"tool_input"}
+{"delta":"e-semve","type":"tool_input"}
+{"delta":"r\"}","type":"tool_input"}
+{"id":"toolu_018vpzBcer8G66dYDFBwruy6","name":"bash","type":"tool_exec"}
+{"stop_reason":"tool_use","type":"message_end"}
+{"cache_creation_input":8548,"cache_read_input":33723,"input":1443,"output":1148,"type":"tokens"}
+{"error":null,"id":"toolu_018vpzBcer8G66dYDFBwruy6","name":"bash","output":"sat \"1.0.0\" \"1.x.3\" false true\nsat \"1.2.3\" \"1.x.3\" false true\nsat \"1.2.3+b\" \"1.x.3\" false true\nsat \"1.2.4\" \"1.x.3\" false true\nsat \"1.3.0\" \"1.x.3\" false true\nsat \"1.9.9\" \"1.x.3\" false true\nsat \"v1.2.3\" \"1.x.3\" false true\nsat \" 1.2.3 \" \"1.x.3\" false true\nmax 1.x.3 null 1.9.9\nfails 9\n\n--- Command finished with exit code: 0 ---\n","type":"tool_done"}
+{"connection":"https/sse","type":"connection_type"}
+{"phase":"sending request","type":"connection_phase"}
+{"phase":"waiting for response","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"id":"toolu_01Fg556ocEaMsKJEjJEjzgd8","name":"bash","type":"tool_start"}
+{"delta":"","type":"tool_input"}
+{"delta":"{\"comma","type":"tool_input"}
+{"delta":"nd\": \"c","type":"tool_input"}
+{"delta":"d $JCOD","type":"tool_input"}
+{"delta":"E_SCRAT","type":"tool_input"}
+{"delta":"CH_DIR/","type":"tool_input"}
+{"delta":"ref && ","type":"tool_input"}
+{"delta":"cat nod","type":"tool_input"}
+{"delta":"e_modul","type":"tool_input"}
+{"delta":"es/semv","type":"tool_input"}
+{"delta":"er/pack","type":"tool_input"}
+{"delta":"age.jso","type":"tool_input"}
+{"delta":"n | gre","type":"tool_input"}
+{"delta":"p '\\\"ve","type":"tool_input"}
+{"delta":"rsion\\\"","type":"tool_input"}
+{"delta":"'; grep","type":"tool_input"}
+{"delta":" -n \\\"r","type":"tool_input"}
+{"delta":"eplaceX","type":"tool_input"}
+{"delta":"Range =","type":"tool_input"}
+{"delta":" \\\" -A5","type":"tool_input"}
+{"delta":"0 node_","type":"tool_input"}
+{"delta":"modules","type":"tool_input"}
+{"delta":"/semver","type":"tool_input"}
+{"delta":"/classe","type":"tool_input"}
+{"delta":"s/range","type":"tool_input"}
+{"delta":".js | h","type":"tool_input"}
+{"delta":"ead -70","type":"tool_input"}
+{"delta":"\"","type":"tool_input"}
+{"delta":", \"inte","type":"tool_input"}
+{"delta":"nt\": \"C","type":"tool_input"}
+{"delta":"heck re","type":"tool_input"}
+{"delta":"ference","type":"tool_input"}
+{"delta":" xrange","type":"tool_input"}
+{"delta":" code\"}","type":"tool_input"}
+{"id":"toolu_01Fg556ocEaMsKJEjJEjzgd8","name":"bash","type":"tool_exec"}
+{"stop_reason":"tool_use","type":"message_end"}
+{"cache_creation_input":2549,"cache_read_input":42271,"input":250,"output":267,"type":"tokens"}
+{"error":null,"id":"toolu_01Fg556ocEaMsKJEjJEjzgd8","name":"bash","output":"  \"version\": \"7.8.5\",\n    \"version\": \"5.0.0\",\n409:const replaceXRange = (comp, options) => {\n410-  comp = comp.trim()\n411-  const r = options.loose ? re[t.XRANGELOOSE] : re[t.XRANGE]\n412-  return comp.replace(r, (ret, gtlt, M, m, p, pr) => {\n413-    debug('xRange', comp, ret, gtlt, M, m, p, pr)\n414-    if (invalidXRangeOrder(M, m, p)) {\n415-      return comp\n416-    }\n417-\n418-    const xM = isX(M)\n419-    const xm = xM || isX(m)\n420-    const xp = xm || isX(p)\n421-    const anyX = xp\n422-\n423-    if (gtlt === '=' && anyX) {\n424-      gtlt = ''\n425-    }\n426-\n427-    // if we're including prereleases in the match, then we need\n428-    // to fix this to -0, the lowest possible prerelease value\n429-    pr = options.includePrerelease ? '-0' : ''\n430-\n431-    if (xM) {\n432-      if (gtlt === '>' || gtlt === '<') {\n433-        // nothing is allowed\n434-        ret = '<0.0.0-0'\n435-      } else {\n436-        // nothing is forbidden\n437-        ret = '*'\n438-      }\n439-    } else if (gtlt && anyX) {\n440-      // we know patch is an x, because we have any x at all.\n441-      // replace X with 0\n442-      if (xm) {\n443-        m = 0\n444-      }\n445-      p = 0\n446-\n447-      if (gtlt === '>') {\n448-        // >1 => >=2.0.0\n449-        // >1.2 => >=1.3.0\n450-        gtlt = '>='\n451-        if (xm) {\n452-          M = +M + 1\n453-          m = 0\n454-          p = 0\n455-        } else {\n456-          m = +m + 1\n457-          p = 0\n458-        }\n459-      } else if (gtlt === '<=') {\n\n--- Command finished with exit code: 0 ---\n","type":"tool_done"}
+{"connection":"https/sse","type":"connection_type"}
+{"phase":"sending request","type":"connection_phase"}
+{"phase":"waiting for response","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"text":"Newer ","type":"text_delta"}
+{"text":"7.x","type":"text_delta"}
+{"text":" has an","type":"text_delta"}
+{"text":" `invalidXRange","type":"text_delta"}
+{"text":"Order` check. Let","type":"text_delta"}
+{"text":" me look for it","type":"text_delta"}
+{"text":" and any other rec","type":"text_delta"}
+{"text":"ent changes.","type":"text_delta"}
+{"id":"toolu_0183qydx4mf9iBY4PvBmZcXp","name":"bash","type":"tool_start"}
+{"delta":"","type":"tool_input"}
+{"delta":"{\"comma","type":"tool_input"}
+{"delta":"nd\": \"c","type":"tool_input"}
+{"delta":"d $JCOD","type":"tool_input"}
+{"delta":"E_SCRAT","type":"tool_input"}
+{"delta":"CH_DIR/","type":"tool_input"}
+{"delta":"ref && ","type":"tool_input"}
+{"delta":"grep -n","type":"tool_input"}
+{"delta":" \\\"inva","type":"tool_input"}
+{"delta":"lidXRan","type":"tool_input"}
+{"delta":"geOrder","type":"tool_input"}
+{"delta":"\\\\|cons","type":"tool_input"}
+{"delta":"t isX\\\"","type":"tool_input"}
+{"delta":" -A8 no","type":"tool_input"}
+{"delta":"de_modu","type":"tool_input"}
+{"delta":"les/sem","type":"tool_input"}
+{"delta":"ver/cla","type":"tool_input"}
+{"delta":"sses/ra","type":"tool_input"}
+{"delta":"nge.js ","type":"tool_input"}
+{"delta":"| head ","type":"tool_input"}
+{"delta":"-80\"","type":"tool_input"}
+{"delta":", \"inte","type":"tool_input"}
+{"delta":"nt\": \"I","type":"tool_input"}
+{"delta":"nspect ","type":"tool_input"}
+{"delta":"invalid","type":"tool_input"}
+{"delta":"XRangeO","type":"tool_input"}
+{"delta":"rder us","type":"tool_input"}
+{"delta":"age\"}","type":"tool_input"}
+{"id":"toolu_0183qydx4mf9iBY4PvBmZcXp","name":"bash","type":"tool_exec"}
+{"stop_reason":"tool_use","type":"message_end"}
+{"cache_creation_input":404,"cache_read_input":44820,"input":768,"output":232,"type":"tokens"}
+{"error":null,"id":"toolu_0183qydx4mf9iBY4PvBmZcXp","name":"bash","output":"278:const isX = id => !id || id.toLowerCase() === 'x' || id === '*'\n279-\n280:const invalidXRangeOrder = (M, m, p) => (\n281-  (isX(M) && !isX(m)) ||\n282-  (isX(m) && p && !isX(p))\n283-)\n284-\n285-// ~, ~> --> * (any, kinda silly)\n286-// ~2, ~2.x, ~2.x.x, ~>2, ~>2.x ~>2.x.x --> >=2.0.0 <3.0.0-0\n287-// ~2.0, ~2.0.x, ~>2.0, ~>2.0.x --> >=2.0.0 <2.1.0-0\n288-// ~1.2, ~1.2.x, ~>1.2, ~>1.2.x --> >=1.2.0 <1.3.0-0\n--\n414:    if (invalidXRangeOrder(M, m, p)) {\n415-      return comp\n416-    }\n417-\n418-    const xM = isX(M)\n419-    const xm = xM || isX(m)\n420-    const xp = xm || isX(p)\n421-    const anyX = xp\n422-\n\n--- Command finished with exit code: 0 ---\n","type":"tool_done"}
+{"connection":"https/sse","type":"connection_type"}
+{"phase":"sending request","type":"connection_phase"}
+{"phase":"waiting for response","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"id":"toolu_01CxmgAsUJn2UJidm9ApXxUq","name":"edit","type":"tool_start"}
+{"delta":"","type":"tool_input"}
+{"delta":"{\"file_","type":"tool_input"}
+{"delta":"path\": ","type":"tool_input"}
+{"delta":"\"src/se","type":"tool_input"}
+{"delta":"mver.ts","type":"tool_input"}
+{"delta":"\"","type":"tool_input"}
+{"delta":", \"inte","type":"tool_input"}
+{"delta":"nt\": \"R","type":"tool_input"}
+{"delta":"eject o","type":"tool_input"}
+{"delta":"ut-of-o","type":"tool_input"}
+{"delta":"rder X-","type":"tool_input"}
+{"delta":"ranges ","type":"tool_input"}
+{"delta":"like 1.","type":"tool_input"}
+{"delta":"x.3\"","type":"tool_input"}
+{"delta":", \"old_","type":"tool_input"}
+{"delta":"string\"","type":"tool_input"}
+{"delta":": \"    ","type":"tool_input"}
+{"delta":"  const","type":"tool_input"}
+{"delta":" xM = i","type":"tool_input"}
+{"delta":"sX(M as","type":"tool_input"}
+{"delta":" string","type":"tool_input"}
+{"delta":");\"","type":"tool_input"}
+{"delta":", \"new_","type":"tool_input"}
+{"delta":"string\"","type":"tool_input"}
+{"delta":": \"    ","type":"tool_input"}
+{"delta":"  if (\\","type":"tool_input"}
+{"delta":"n      ","type":"tool_input"}
+{"delta":"  (isX(","type":"tool_input"}
+{"delta":"M as st","type":"tool_input"}
+{"delta":"ring) &","type":"tool_input"}
+{"delta":"& !isX(","type":"tool_input"}
+{"delta":"m as st","type":"tool_input"}
+{"delta":"ring)) ","type":"tool_input"}
+{"delta":"||\\n   ","type":"tool_input"}
+{"delta":"     (i","type":"tool_input"}
+{"delta":"sX(m as","type":"tool_input"}
+{"delta":" string","type":"tool_input"}
+{"delta":") && p ","type":"tool_input"}
+{"delta":"&& !isX","type":"tool_input"}
+{"delta":"(p as s","type":"tool_input"}
+{"delta":"tring))","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":" ) {\\n ","type":"tool_input"}
+{"delta":"       ","type":"tool_input"}
+{"delta":"return ","type":"tool_input"}
+{"delta":"comp;\\n","type":"tool_input"}
+{"delta":"      }","type":"tool_input"}
+{"delta":"\\n     ","type":"tool_input"}
+{"delta":" const ","type":"tool_input"}
+{"delta":"xM = is","type":"tool_input"}
+{"delta":"X(M as ","type":"tool_input"}
+{"delta":"string)","type":"tool_input"}
+{"delta":";\"}","type":"tool_input"}
+{"id":"toolu_01CxmgAsUJn2UJidm9ApXxUq","name":"edit","type":"tool_exec"}
+{"id":"toolu_01FbXDgF9dC22C9H3b7wafS8","name":"bash","type":"tool_start"}
+{"delta":"","type":"tool_input"}
+{"delta":"{\"comma","type":"tool_input"}
+{"delta":"nd\": \"c","type":"tool_input"}
+{"delta":"d $JCOD","type":"tool_input"}
+{"delta":"E_SCRAT","type":"tool_input"}
+{"delta":"CH_DIR/","type":"tool_input"}
+{"delta":"ref && ","type":"tool_input"}
+{"delta":"sed -i ","type":"tool_input"}
+{"delta":"'' 's/\\","type":"tool_input"}
+{"delta":"\"1.x.3\\","type":"tool_input"}
+{"delta":"\"\\\\]/\\\"","type":"tool_input"}
+{"delta":"1.x.3\\\"","type":"tool_input"}
+{"delta":",\\\"x.1\\","type":"tool_input"}
+{"delta":"\",\\\"*.2","type":"tool_input"}
+{"delta":".3\\\",\\\"","type":"tool_input"}
+{"delta":"1.*.x\\\"","type":"tool_input"}
+{"delta":",\\\"~1.x","type":"tool_input"}
+{"delta":".3\\\",\\\"","type":"tool_input"}
+{"delta":"^x.1\\\",","type":"tool_input"}
+{"delta":"\\\"1.x.3","type":"tool_input"}
+{"delta":" - 2\\\",","type":"tool_input"}
+{"delta":"\\\"1.2.3","type":"tool_input"}
+{"delta":"-x - 2\\","type":"tool_input"}
+{"delta":"\",\\\"~1.","type":"tool_input"}
+{"delta":"2.3-0\\\"","type":"tool_input"}
+{"delta":",\\\"^1.2","type":"tool_input"}
+{"delta":".3-0\\\",","type":"tool_input"}
+{"delta":"\\\"<=1.2","type":"tool_input"}
+{"delta":".3-pre\\","type":"tool_input"}
+{"delta":"\",\\\"1.2","type":"tool_input"}
+{"delta":".3-pre\\","type":"tool_input"}
+{"delta":"\",\\\"<1.","type":"tool_input"}
+{"delta":"2.x\\\",\\","type":"tool_input"}
+{"delta":"\"<=1.2.","type":"tool_input"}
+{"delta":"x\\\",\\\">","type":"tool_input"}
+{"delta":"=1.2.3-","type":"tool_input"}
+{"delta":"0 <1.2.","type":"tool_input"}
+{"delta":"4\\\",\\\"*","type":"tool_input"}
+{"delta":".*.*\\\",","type":"tool_input"}
+{"delta":"\\\"X.X\\\"","type":"tool_input"}
+{"delta":",\\\"1.2.","type":"tool_input"}
+{"delta":"x-pre\\\"","type":"tool_input"}
+{"delta":",\\\"~1.2","type":"tool_input"}
+{"delta":".x-pre\\","type":"tool_input"}
+{"delta":"\"]/' d.","type":"tool_input"}
+{"delta":"ts && b","type":"tool_input"}
+{"delta":"un d.ts","type":"tool_input"}
+{"delta":"; cd /p","type":"tool_input"}
+{"delta":"rivate/","type":"tool_input"}
+{"delta":"tmp/bc-","type":"tool_input"}
+{"delta":"work/B/","type":"tool_input"}
+{"delta":"jcode-4","type":"tool_input"}
+{"delta":" && bun","type":"tool_input"}
+{"delta":" test 2","type":"tool_input"}
+{"delta":">&1 | t","type":"tool_input"}
+{"delta":"ail -3\"","type":"tool_input"}
+{"delta":", \"inte","type":"tool_input"}
+{"delta":"nt\": \"R","type":"tool_input"}
+{"delta":"erun di","type":"tool_input"}
+{"delta":"fferent","type":"tool_input"}
+{"delta":"ial and","type":"tool_input"}
+{"delta":" unit t","type":"tool_input"}
+{"delta":"ests\"}","type":"tool_input"}
+{"id":"toolu_01FbXDgF9dC22C9H3b7wafS8","name":"bash","type":"tool_exec"}
+{"stop_reason":"tool_use","type":"message_end"}
+{"cache_creation_input":954,"cache_read_input":45224,"input":462,"output":649,"type":"tokens"}
+{"error":null,"id":"toolu_01CxmgAsUJn2UJidm9ApXxUq","name":"edit","output":"Edited src/semver.ts: replaced 1 occurrence(s)\n190+ if (\n191+ (isX(M as string) && !isX(m as string)) ||\n192+ (isX(m as string) && p && !isX(p as string))\n193+ ) {\n194+ return comp;\n195+ }\n\nContext after edit (lines 187-199):\n 187│   return comp.replace(\n 188│     RE_XRANGE,\n 189│     (ret: string, gtlt: string, M: string | number, m: string | number, p: string | number) => {\n 190│       if (\n 191│         (isX(M as string) && !isX(m as string)) ||\n 192│         (isX(m as string) && p && !isX(p as string))\n 193│       ) {\n 194│         return comp;\n 195│       }\n 196│       const xM = isX(M as string);\n 197│       const xm = xM || isX(m as string);\n 198│       const xp = xm || isX(p as string);\n 199│       const anyX = xp;\n\nFile diff:\n```diff\n--- a/src/semver.ts\n+++ b/src/semver.ts\n@@ -187,6 +187,12 @@\n   return comp.replace(\n     RE_XRANGE,\n     (ret: string, gtlt: string, M: string | number, m: string | number, p: string | number) => {\n+      if (\n+        (isX(M as string) && !isX(m as string)) ||\n+        (isX(m as string) && p && !isX(p as string))\n+      ) {\n+        return comp;\n+      }\n       const xM = isX(M as string);\n       const xm = xM || isX(m as string);\n       const xp = xm || isX(p as string);\n```\n","type":"tool_done"}
+{"error":null,"id":"toolu_01FbXDgF9dC22C9H3b7wafS8","name":"bash","output":"fails 0\n 0 fail\n 5 expect() calls\nRan 3 tests across 1 file. [5.00ms]\n\n--- Command finished with exit code: 0 ---\n\n\nNote: this command edits files in place. Next time use `edit` (exact replacements, all-or-nothing, pass `edits` for several), `replace` (regex or multi-file, with expected_count), or `apply_patch` (multi-file patches). They fail loudly on a missed match instead of silently writing nothing, and show a reviewable diff.","type":"tool_done"}
+{"connection":"https/sse","type":"connection_type"}
+{"phase":"sending request","type":"connection_phase"}
+{"phase":"waiting for response","type":"connection_phase"}
+{"id":"toolu_01DXLqwKDFDm4ejfshB6rpUr","name":"bash","type":"tool_start"}
+{"phase":"streaming","type":"connection_phase"}
+{"delta":"","type":"tool_input"}
+{"delta":"{\"comma","type":"tool_input"}
+{"delta":"nd\": \"g","type":"tool_input"}
+{"delta":"it add ","type":"tool_input"}
+{"delta":"-A && g","type":"tool_input"}
+{"delta":"it comm","type":"tool_input"}
+{"delta":"it -qm ","type":"tool_input"}
+{"delta":"\\\"Imple","type":"tool_input"}
+{"delta":"ment se","type":"tool_input"}
+{"delta":"mver sa","type":"tool_input"}
+{"delta":"tisfies","type":"tool_input"}
+{"delta":" and ma","type":"tool_input"}
+{"delta":"xSatisf","type":"tool_input"}
+{"delta":"ying (n","type":"tool_input"}
+{"delta":"ode-sem","type":"tool_input"}
+{"delta":"ver v7 ","type":"tool_input"}
+{"delta":"compati","type":"tool_input"}
+{"delta":"ble)\\\" ","type":"tool_input"}
+{"delta":"&& git ","type":"tool_input"}
+{"delta":"log --o","type":"tool_input"}
+{"delta":"neline ","type":"tool_input"}
+{"delta":"| head ","type":"tool_input"}
+{"delta":"-1\"","type":"tool_input"}
+{"delta":", \"inte","type":"tool_input"}
+{"delta":"nt\": \"C","type":"tool_input"}
+{"delta":"ommit\"}","type":"tool_input"}
+{"id":"toolu_01DXLqwKDFDm4ejfshB6rpUr","name":"bash","type":"tool_exec"}
+{"stop_reason":"tool_use","type":"message_end"}
+{"cache_creation_input":1010,"cache_read_input":46178,"input":866,"output":123,"type":"tokens"}
+{"error":null,"id":"toolu_01DXLqwKDFDm4ejfshB6rpUr","name":"bash","output":"1a2e872 Implement semver satisfies and maxSatisfying (node-semver v7 compatible)\n\n--- Command finished with exit code: 0 ---\n","type":"tool_done"}
+{"connection":"https/sse","type":"connection_type"}
+{"phase":"sending request","type":"connection_phase"}
+{"phase":"waiting for response","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"phase":"streaming","type":"connection_phase"}
+{"text":"I've","type":"text_delta"}
+{"text":" implemented `satisfies","type":"text_delta"}
+{"text":"` and `maxSatis","type":"text_delta"}
+{"text":"fying` in `src/sem","type":"text_delta"}
+{"text":"ver.ts` by r","type":"text_delta"}
+{"text":"ewriting node-semver v","type":"text_delta"}
+{"text":"7's range logic my","type":"text_delta"}
+{"text":"self, with no new dependenc","type":"text_delta"}
+{"text":"ies. `bun test` pass","type":"text_delta"}
+{"text":"es (","type":"text_delta"}
+{"text":"3/3).\n\nI also chec","type":"text_delta"}
+{"text":"ked it against the real `semver","type":"text_delta"}
+{"text":"@7.8.5` package","type":"text_delta"}
+{"text":",","type":"text_delta"}
+{"text":" which I installed only in a sc","type":"text_delta"}
+{"text":"ratch folder outside the project","type":"text_delta"}
+{"text":".","type":"text_delta"}
+{"text":" Across about 80","type":"text_delta"}
+{"text":" ","type":"text_delta"}
+{"text":"ranges and 34 versions","type":"text_delta"}
+{"text":", including","type":"text_delta"}
+{"text":" invalid ones, both","type":"text_delta"}
+{"text":" `","type":"text_delta"}
+{"text":"satisfies` and `ma","type":"text_delta"}
+{"text":"xSatisfying` g","type":"text_delta"}
+{"text":"ave the same results","type":"text_delta"}
+{"text":" as the","type":"text_delta"}
+{"text":" real package.","type":"text_delta"}
+{"text":" The first run found","type":"text_delta"}
+{"text":" one dif","type":"text_delta"}
+{"text":"ference:","type":"text_delta"}
+{"text":" out","type":"text_delta"}
+{"text":"-of-order X","type":"text_delta"}
+{"text":"-ranges like `1.","type":"text_delta"}
+{"text":"x.3` were","type":"text_delta"}
+{"text":" accepted when","type":"text_delta"}
+{"text":" node-semver tre","type":"text_delta"}
+{"text":"ats them as invalid.","type":"text_delta"}
+{"text":" Rec","type":"text_delta"}
+{"text":"ent 7.x versions add","type":"text_delta"}
+{"text":" that check, so","type":"text_delta"}
+{"text":" I added it too","type":"text_delta"}
+{"text":".\n\nThe","type":"text_delta"}
+{"text":" change is committed.","type":"text_delta"}
+{"stop_reason":"end_turn","type":"message_end"}
+{"cache_creation_input":989,"cache_read_input":47188,"input":109,"output":243,"type":"tokens"}
+{"connection_phase":"streaming","connection_type":"https/sse","model":"claude-opus-5-5","provider":"Claude","session_id":"session_blossom_1792425075518_f88e3def6e586da3","status_detail":null,"text":"Visible tests pass, as do my spot checks. Let me try a differential test against the real `semver` package if one is available.Newer 7.x has an `invalidXRangeOrder` check. Let me look for it and any other recent changes.I've implemented `satisfies` and `maxSatisfying` in `src/semver.ts` by rewriting node-semver v7's range logic myself, with no new dependencies. `bun test` passes (3/3).\n\nI also checked it against the real `semver@7.8.5` package, which I installed only in a scratch folder outside the project. Across about 80 ranges and 34 versions, including invalid ones, both `satisfies` and `maxSatisfying` gave the same results as the real package. The first run found one difference: out-of-order X-ranges like `1.x.3` were accepted when node-semver treats them as invalid. Recent 7.x versions add that check, so I added it too.\n\nThe change is committed.","type":"done","upstream_provider":null,"usage":{"cache_creation_input_tokens":989,"cache_read_input_tokens":47188,"input_tokens":109,"output_tokens":243}}

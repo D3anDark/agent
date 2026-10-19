@@ -1,0 +1,14 @@
+bun test v1.4.3 (c6da4a4d3)
+
+src/semver.test.ts:
+(pass) range grammar edge cases [1.30ms]
+
+test/visible.test.ts:
+(pass) caret [0.04ms]
+(pass) prerelease is excluded unless the comparator names the same tuple [0.04ms]
+(pass) maxSatisfying compares by precedence, not string order [0.04ms]
+
+ 4 pass
+ 0 fail
+ 15 expect() calls
+Ran 4 tests across 2 files. [6.00ms]
