@@ -262,11 +262,6 @@ impl Anchors {
         out
     }
 
-    pub fn written(&mut self, path: &Path) -> Result<String, String> {
-        self.track(path, usize::MAX)?;
-        Ok(self.rows(path, 0, None))
-    }
-
     pub fn replace(&mut self, input: &Value) -> Result<String, String> {
         let from = str_arg(input, "remove_from")?;
         let to = str_arg(input, "remove_to")?;
