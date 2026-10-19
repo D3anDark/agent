@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub mod condense;
 pub mod context;
@@ -456,6 +456,7 @@ impl Agent {
                 }
                 emit(Event::ToolStart { id: id.clone(), name: name.clone(), input: shown });
                 self.plugins.event(json!({"type": "tool_call", "name": name, "input": input, "context": self.plugin_context()}));
+                let started = Instant::now();
                 let (mut output, is_error) = self.run_tool_with_checkpoint(&name, &input, &targets, text, emit)?;
                 if !is_error {
                     for file in &targets {
@@ -468,6 +469,8 @@ impl Agent {
                     edited.extend(targets);
                 }
                 self.tool_calls += 1;
+                // Includes the LSP check after an edit: the whole wait before the next tool.
+                self.session.append(&json!({"type": "tool_time", "id": id, "name": name, "ms": started.elapsed().as_millis() as u64}))?;
                 self.plugins.event(json!({"type": "tool_result", "name": name, "output": output, "isError": is_error, "context": self.plugin_context()}));
                 emit(Event::ToolEnd { id: id.clone(), output: output.clone(), is_error });
                 results.push(json!({"type": "tool_result", "tool_use_id": id, "content": output, "is_error": is_error}));
