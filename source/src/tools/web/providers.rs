@@ -29,7 +29,7 @@ pub struct Response {
     pub providers: Vec<String>,
 }
 
-/// `~/.pi/agent/web-search.json` for one tool call, with each provider's key resolved at most once.
+/// `~/.agents/web-search.json` for one tool call, with each provider's key resolved at most once.
 pub struct Config {
     path: PathBuf,
     /// The providers "auto" and "all" try, in order.

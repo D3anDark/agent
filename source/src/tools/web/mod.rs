@@ -77,7 +77,7 @@ impl Drop for Web {
 
 impl Web {
     pub fn new(home: &Path, dir: PathBuf) -> Web {
-        Web { home: home.to_path_buf(), config_path: home.join(".pi/agent/web-search.json"), dir, ids: VecDeque::new() }
+        Web { home: home.to_path_buf(), config_path: home.join(".agents/web-search.json"), dir, ids: VecDeque::new() }
     }
 
     /// The provider order from /settings, read per call like the other settings.
