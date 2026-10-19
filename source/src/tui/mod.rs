@@ -1560,16 +1560,22 @@ impl App {
         self.templates = crate::agent::prompt::load_templates(&agent_dir, &self.cwd, self.settings.prefer_global());
     }
 
-    /// Names each skill and prompt defined both in the project and in `~/.agents`, with the file `conflict_priority` picked.
+    /// Names each skill and prompt defined both in the project and in `~/.agents`; `conflict_priority` says which copy loads.
     fn report_conflicts(&mut self) {
-        let skills = self.skills.iter().filter_map(|s| Some((format!("skill:{}", s.name), &s.path, s.shadows.as_ref()?)));
-        let prompts = self.templates.iter().filter_map(|t| Some((format!("prompt:{}", t.name), &t.path, t.shadows.as_ref()?)));
-        let lines: Vec<String> = skills.chain(prompts).map(|(name, used, shadowed)| format!("/{name} uses {} over {}", used.display(), shadowed.display())).collect();
-        if lines.is_empty() {
+        let skills: Vec<&str> = self.skills.iter().filter(|s| s.shadows.is_some()).map(|s| s.name.as_str()).collect();
+        let prompts: Vec<&str> = self.templates.iter().filter(|t| t.shadows.is_some()).map(|t| t.name.as_str()).collect();
+        let count = skills.len() + prompts.len();
+        if count == 0 {
             return;
         }
-        let header = format!("{} skills or prompts are in both the project and ~/.agents; the {} one wins (Name conflicts prefer in /settings)", lines.len(), self.settings.conflict_priority);
-        self.system("conflicts", format!("{header}\n{}", lines.join("\n")));
+        let winner = if self.settings.prefer_global() { "~/.agents" } else { "project" };
+        let mut text = format!("{count} names are in both the project and ~/.agents, the {winner} copy is used (/settings: Name conflicts prefer)");
+        for (kind, names) in [("skills ", skills), ("prompts", prompts)] {
+            if !names.is_empty() {
+                text.push_str(&format!("\n{kind}  {}", names.join(", ")));
+            }
+        }
+        self.system("conflicts", text);
     }
 
     fn skill_usage(&mut self) {
