@@ -1367,6 +1367,10 @@ impl Session {
 
 /// The full id for an exact id or a unique prefix of a saved session's id.
 fn resolve_id(dir: &Path, prefix: &str) -> Result<String, String> {
+    // Ids are ascii alphanumeric (see `import`); anything else could name a file outside `dir`.
+    if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(format!("{prefix:?} is not a session id."));
+    }
     if dir.join(format!("{prefix}.jsonl")).is_file() {
         return Ok(prefix.to_string());
     }
@@ -1938,6 +1942,17 @@ mod tests {
         let forged = root.join("forged.jsonl");
         std::fs::write(&forged, "{\"type\": \"session\", \"id\": \"../x\"}\n").unwrap();
         assert!(Session::import(&root.join("b"), &forged).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resume_refuses_an_id_that_is_not_alphanumeric() {
+        let root = std::env::temp_dir().join(format!("agent-resume-id-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        let outside = Session::start(&root, true, Path::new("/repo"), "m").unwrap();
+        for id in ["", "../", &format!("../{}", outside.id)] {
+            assert_eq!(Session::resume(&root.join("sessions"), id).err().unwrap(), format!("{id:?} is not a session id."));
+        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
