@@ -1,5 +1,6 @@
 mod agent;
 mod api;
+mod image;
 mod mcp;
 mod plugins;
 mod process;

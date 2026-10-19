@@ -457,7 +457,16 @@ impl Agent {
                 emit(Event::ToolStart { id: id.clone(), name: name.clone(), input: shown });
                 self.plugins.event(json!({"type": "tool_call", "name": name, "input": input, "context": self.plugin_context()}));
                 let started = Instant::now();
-                let (mut output, is_error) = self.run_tool_with_checkpoint(&name, &input, &targets, text, emit)?;
+                let (mut output, is_error, image) = match self.requested_image(&name, &input) {
+                    Some(path) => match crate::image::block(&path) {
+                        Ok(block) => (format!("[{} is attached as an image.]", path.display()), false, Some(block)),
+                        Err(error) => (error, true, None),
+                    },
+                    None => {
+                        let (output, is_error) = self.run_tool_with_checkpoint(&name, &input, &targets, text, emit)?;
+                        (output, is_error, None)
+                    }
+                };
                 if !is_error {
                     for file in &targets {
                         match self.lsp.after_edit(file, &self.cwd, &self.abort) {
@@ -473,7 +482,11 @@ impl Agent {
                 self.session.append(&json!({"type": "tool_time", "id": id, "name": name, "ms": started.elapsed().as_millis() as u64}))?;
                 self.plugins.event(json!({"type": "tool_result", "name": name, "output": output, "isError": is_error, "context": self.plugin_context()}));
                 emit(Event::ToolEnd { id: id.clone(), output: output.clone(), is_error });
-                results.push(json!({"type": "tool_result", "tool_use_id": id, "content": output, "is_error": is_error}));
+                let content = match image {
+                    Some(block) => json!([{"type": "text", "text": output}, block]),
+                    None => json!(output),
+                };
+                results.push(json!({"type": "tool_result", "tool_use_id": id, "content": content, "is_error": is_error}));
                 finished.push(condense::Call { id, name, input, output, is_error });
             }
             results.extend(self.take_queued(emit));
@@ -581,6 +594,15 @@ impl Agent {
             }
         }
         (output, is_error)
+    }
+
+    /// The image file a single-path `read` names; it goes to the model as an image block, not as anchored text.
+    fn requested_image(&self, name: &str, input: &Value) -> Option<PathBuf> {
+        if name != "read" {
+            return None;
+        }
+        let path = tools::hashline::resolve(&self.cwd, input["path"].as_str()?);
+        crate::image::media_type(&path).map(|_| path)
     }
 
     /// A read SKILL.md counts as the agent using that skill.

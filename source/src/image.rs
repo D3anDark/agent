@@ -27,17 +27,22 @@ fn unescape(text: &str) -> String {
     out
 }
 
-/// The Anthropic API refuses images over 5 MB.
-const MAX_IMAGE_BYTES: u64 = 5 << 20;
+/// The Anthropic API refuses images whose base64 data is over 5 MB; base64 carries 3 bytes in 4 chars.
+const MAX_IMAGE_BYTES: u64 = (5 << 20) / 4 * 3;
 
 /// Reads an image file into an API image block.
 pub fn block(path: &Path) -> Result<Value, String> {
     let size = std::fs::metadata(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?.len();
     if size > MAX_IMAGE_BYTES {
-        return Err(format!("{} is {}; images over {} are not attached.", path.display(), crate::tools::format_size(size as usize), crate::tools::format_size(MAX_IMAGE_BYTES as usize)));
+        return Err(format!(
+            "{} is {}; images over {} are not attached. Shrink it first, e.g. magick in.png -resize 50% out.jpg.",
+            path.display(),
+            crate::tools::format_size(size as usize),
+            crate::tools::format_size(MAX_IMAGE_BYTES as usize)
+        ));
     }
     let bytes = std::fs::read(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-    bytes_block(&bytes).ok_or_else(|| format!("Not an image: {}", path.display()))
+    bytes_block(&bytes).ok_or_else(|| format!("Not a PNG, JPEG, GIF or WebP image: {}", path.display()))
 }
 
 fn bytes_block(bytes: &[u8]) -> Option<Value> {
@@ -92,7 +97,7 @@ fn from_macos_clipboard() -> Result<Value, String> {
     block
 }
 
-fn media_type(path: &Path) -> Option<&'static str> {
+pub fn media_type(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),

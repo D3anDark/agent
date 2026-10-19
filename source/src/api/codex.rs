@@ -29,11 +29,7 @@ pub fn request(anthropic: &Value, cache_key: &str) -> Value {
             match block["type"].as_str() {
                 Some("tool_result") => input.push(json!({"type": "function_call_output", "call_id": block["tool_use_id"], "output": tool_output(&block["content"])})),
                 Some("text") => parts.push(json!({"type": "input_text", "text": block["text"]})),
-                Some("image") => {
-                    let source = &block["source"];
-                    let url = format!("data:{};base64,{}", source["media_type"].as_str().unwrap_or_default(), source["data"].as_str().unwrap_or_default());
-                    parts.push(json!({"type": "input_image", "image_url": url}));
-                }
+                Some("image") => parts.push(input_image(block)),
                 _ => {}
             }
         }
@@ -71,11 +67,27 @@ pub fn request(anthropic: &Value, cache_key: &str) -> Value {
     body
 }
 
-fn tool_output(content: &Value) -> String {
-    match content.as_array() {
-        Some(blocks) => blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
-        None => content.as_str().unwrap_or_default().to_string(),
+/// Plain text unless the result carries an image, which Responses takes as an `input_image` part, like pi-ai.
+fn tool_output(content: &Value) -> Value {
+    let Some(blocks) = content.as_array() else { return json!(content.as_str().unwrap_or_default()) };
+    if !blocks.iter().any(|b| b["type"] == "image") {
+        return json!(blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"));
     }
+    let mut parts = Vec::new();
+    for block in blocks {
+        match block["type"].as_str() {
+            Some("text") => parts.push(json!({"type": "input_text", "text": block["text"]})),
+            Some("image") => parts.push(input_image(block)),
+            _ => {}
+        }
+    }
+    json!(parts)
+}
+
+fn input_image(block: &Value) -> Value {
+    let source = &block["source"];
+    let url = format!("data:{};base64,{}", source["media_type"].as_str().unwrap_or_default(), source["data"].as_str().unwrap_or_default());
+    json!({"type": "input_image", "image_url": url})
 }
 
 /// Reads Responses SSE into the Anthropic reply shape the agent stores: text and tool_use blocks.
@@ -208,6 +220,12 @@ mod tests {
             ])
         );
         assert_eq!(request(&json!({"model": "m", "messages": []}), "k")["reasoning"], json!({"effort": "none"}));
+    }
+
+    #[test]
+    fn an_image_tool_result_keeps_its_image() {
+        let content = json!([{"type": "text", "text": "a.png"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBO"}}]);
+        assert_eq!(tool_output(&content), json!([{"type": "input_text", "text": "a.png"}, {"type": "input_image", "image_url": "data:image/png;base64,iVBO"}]));
     }
 
     #[test]

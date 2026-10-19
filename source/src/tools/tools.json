@@ -1,7 +1,7 @@
 [
   {
     "name": "read",
-    "description": "Read a text file, or several files or line ranges with `paths`, as `anchor│content` rows; an anchor is 4 case-sensitive letters. Edit by anchor, never by content or line number. One file pages at 400 lines unless `limit` says otherwise; continue with `offset` (line number or anchor) from the hint. A stale anchor is refused: read again. Binary, image, UTF-16/32 and >64MB files are rejected.",
+    "description": "Read a text file, or several files or line ranges with `paths`, as `anchor│content` rows; an anchor is 4 case-sensitive letters. Edit by anchor, never by content or line number. One file pages at 400 lines unless `limit` says otherwise; continue with `offset` (line number or anchor) from the hint. A stale anchor is refused: read again. A PNG, JPEG, GIF or WebP `path` comes back as the image itself, for checking screenshots. Other binary, UTF-16/32 and >64MB files are rejected.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
