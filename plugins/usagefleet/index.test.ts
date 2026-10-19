@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { accountLabels, assignToken, blockMessage, claudeAccount, formatGroupLimits, formatLimits, resolveToken, tokenReport, type Context } from "./index.ts";
+import { accountLabels, assignToken, blockMessage, claudeAccount, formatGroupLimits, formatLimits, inheritToken, resolveToken, tokenReport, type Context } from "./index.ts";
 
 const now = Date.parse("2026-10-15T12:00:00Z");
 const context: Context = { provider: "anthropic", model: "claude-opus-5-5", accountId: "uuid-2", accountName: "home", cwd: "/", sessionId: "s" };
@@ -41,6 +41,12 @@ describe("usagefleet", () => {
 			state: { deviceId: "d" },
 			accountTokens: { "uuid-1": "first", "uuid-2": "uf_second" },
 		});
+	});
+
+	test("a replaced account's token is copied to its new account id", () => {
+		const config = { token: "shared", accountTokens: { "uuid-1": "first" } };
+		expect(inheritToken(config, "uuid-1", "uuid-3")).toEqual({ token: "shared", accountTokens: { "uuid-1": "first", "uuid-3": "first" } });
+		expect(inheritToken(config, "uuid-2", "uuid-3")).toBeNull();
 	});
 
 	test("labels each account with its assigned token, masked", () => {

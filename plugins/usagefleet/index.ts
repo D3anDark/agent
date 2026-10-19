@@ -131,6 +131,15 @@ export function assignToken(config: Record<string, unknown>, accountId: string, 
 	return { ...config, accountTokens: { ...accountTokens, [accountId]: token } };
 }
 
+/** After /login overwrote a saved account with another Claude account: the config with the old account's token
+ * copied to the new one, or null when the old account had no token of its own. */
+export function inheritToken(config: Record<string, unknown>, previousId: string, accountId: string): Record<string, unknown> | null {
+	const accountTokens = isRecord(config.accountTokens) ? config.accountTokens : {};
+	const token = accountTokens[previousId];
+	if (typeof token !== "string" || !token) return null;
+	return assignToken(config, accountId, token);
+}
+
 /** Unlike readJson, a broken config throws: writing over it would lose the watcher's state. */
 async function readConfigForWrite(): Promise<Record<string, unknown>> {
 	const text = await readFile(CONFIG_PATH, "utf8").catch((error: NodeJS.ErrnoException) => {
@@ -142,6 +151,14 @@ async function readConfigForWrite(): Promise<Record<string, unknown>> {
 	return config;
 }
 
+async function writeConfig(config: Record<string, unknown>): Promise<void> {
+	await mkdir(dirname(CONFIG_PATH), { recursive: true });
+	// The watcher reads this file every few seconds, so it must never see a half-written one.
+	const partial = `${CONFIG_PATH}.${process.pid}.tmp`;
+	await writeFile(partial, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+	await rename(partial, CONFIG_PATH);
+}
+
 /** `/usagefleet [token]`: shows or sets the device token of the session's Claude account. */
 async function usagefleetCommand(args: string, context: Context): Promise<string> {
 	const account = claudeAccount(context);
@@ -151,12 +168,7 @@ async function usagefleetCommand(args: string, context: Context): Promise<string
 	const name = context.accountName ?? account;
 	if (!args) return tokenReport(await readJson(CONFIG_PATH), account, name);
 	if (/\s/.test(args)) throw new Error("Usage: /usagefleet <token>");
-	const config = assignToken(await readConfigForWrite(), account, args);
-	await mkdir(dirname(CONFIG_PATH), { recursive: true });
-	// The watcher reads this file every few seconds, so it must never see a half-written one.
-	const partial = `${CONFIG_PATH}.${process.pid}.tmp`;
-	await writeFile(partial, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-	await rename(partial, CONFIG_PATH);
+	await writeConfig(assignToken(await readConfigForWrite(), account, args));
 	return `Account ${name} now uses token ${maskToken(args)}.`;
 }
 /** Mirrors `usagefleet guard`: the reason to refuse a prompt, or null unless the server says `blocked: true`. */
@@ -218,7 +230,11 @@ async function blockedReason(context: Context): Promise<string | null> {
 
 const send = (message: object) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
 
-type Message = { id?: number; method?: string; params?: { type?: string; args?: string; context?: Context } };
+type Message = {
+	id?: number;
+	method?: string;
+	params?: { type?: string; args?: string; previousAccountId?: string; accountId?: string; context?: Context };
+};
 
 async function handle(message: Message): Promise<void> {
 	const context = message.params?.context;
@@ -226,6 +242,14 @@ async function handle(message: Message): Promise<void> {
 	const type = message.params?.type;
 	if (message.method === "event" && (type === "session_start" || type === "prompt_end" || type === "account_change")) {
 		if (type === "session_start") await refreshAccountLabels();
+		await refreshStatus(context);
+	} else if (message.method === "event" && type === "account_replace") {
+		const { previousAccountId, accountId } = message.params ?? {};
+		if (!previousAccountId || !accountId) return;
+		const config = inheritToken(await readConfigForWrite(), previousAccountId, accountId);
+		if (!config) return;
+		await writeConfig(config);
+		await refreshAccountLabels();
 		await refreshStatus(context);
 	} else if (message.method === "input") {
 		const reason = await blockedReason(context).catch(() => null);

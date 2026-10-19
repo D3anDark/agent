@@ -1,5 +1,5 @@
 {
-	"version": "0.2.1",
+	"version": "0.3.0",
 	"description": "usagefleet limits in the footer; refuses prompts while the group budget is blocked",
 	"author": "rokartur",
 	"command": ["bun", "index.ts"],
