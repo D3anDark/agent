@@ -533,6 +533,12 @@ impl Agent {
             return (ABORTED.into(), true);
         }
         if matches!(name, "bash" | "bg_start")
+            && let Some(read) = guard::file_read(input["command"].as_str().unwrap_or_default())
+        {
+            let (output, is_error) = self.run_tool("read", &read, &[], user_request, emit);
+            return (format!("Ran as read, so these anchors are what edits use.\n{output}"), is_error);
+        }
+        if matches!(name, "bash" | "bg_start")
             && let Some(reason) = guard::bash(input["command"].as_str().unwrap_or_default())
         {
             return (reason, true);
