@@ -341,6 +341,7 @@ const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
     ("context", MidTurn::Waits, "Show what fills the context window and how well it caches"),
     ("context-window", MidTurn::Runs, "<100k to 1M | auto>: Set this model's context window"),
     ("copy", MidTurn::Runs, "Copy last agent message to clipboard"),
+    ("copy-session-path", MidTurn::Runs, "Copy this session's file path to clipboard for another session to read"),
     ("session", MidTurn::Runs, "Show the session id, file and context use"),
     ("hotkeys", MidTurn::Runs, "Show all keyboard shortcuts"),
     ("compact", MidTurn::Waits, "Manually compact the session context"),
@@ -1771,6 +1772,15 @@ impl App {
                 Ok(()) => self.system("copy", "Copied last agent message to clipboard"),
                 Err(error) => self.push(Item::Error(error)),
             },
+            "copy-session-path" => {
+                let Some(path) = self.session_path.clone() else {
+                    return self.push(Item::Error("This session is not saved, so there is no file to share.".into()));
+                };
+                match copy_to_clipboard(&path) {
+                    Ok(()) => self.system("copy", format!("Copied {path}")),
+                    Err(error) => self.push(Item::Error(error)),
+                }
+            }
             "session" => {
                 let file = self.session_path.clone().unwrap_or_else(|| "not saved".into());
                 let window = self.context_window();
