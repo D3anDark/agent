@@ -4,7 +4,7 @@ use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::time::Duration;
 
-const MAX_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 10;
 const ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8";
 const USER_AGENT: &str = "Mozilla/5.0 (compatible; agent)";
@@ -21,12 +21,12 @@ impl Web {
         if urls.is_empty() {
             return Err("Error: No URL provided. Use the 'url' parameter, or 'urls' for parallel fetches.".into());
         }
-        // One thread per URL, each buffering up to 5 MiB.
+        // One thread per URL, each buffering up to `MAX_RESPONSE_BYTES`.
         if urls.len() > super::MAX_FETCHED_PAGES {
             return Err(format!("Error: at most {} URLs per call.", super::MAX_FETCHED_PAGES));
         }
         let raw = input["mode"].as_str() == Some("raw");
-        let pages = fetch_all(&urls, raw, input["forceClone"].as_bool().unwrap_or(false), input["proxy"].as_str());
+        let pages = fetch_all(&urls, raw, input["forceClone"].as_bool().unwrap_or(false));
         if let [page] = pages.as_slice()
             && let Some(error) = &page.error
         {
@@ -58,7 +58,7 @@ fn first_page(content: &str, id: &str) -> String {
         return content.to_string();
     }
     let mut end = MAX_INLINE_CHARS;
-    let head = super::char_slice(content, 0, end + 1);
+    let head = super::char_slice(content, 0, end);
     if let Some(newline) = head.rfind('\n') {
         let line_end = head[..newline].chars().count();
         if line_end >= MAX_INLINE_CHARS * 4 / 5 {
@@ -76,9 +76,9 @@ fn first_page(content: &str, id: &str) -> String {
 }
 
 /// Fetches every URL on its own thread; each page carries its error instead of failing the batch.
-pub fn fetch_all(urls: &[String], raw: bool, force_clone: bool, proxy: Option<&str>) -> Vec<Page> {
+pub fn fetch_all(urls: &[String], raw: bool, force_clone: bool) -> Vec<Page> {
     std::thread::scope(|scope| {
-        let handles: Vec<_> = urls.iter().map(|url| scope.spawn(move || fetch_one(url, raw, force_clone, proxy))).collect();
+        let handles: Vec<_> = urls.iter().map(|url| scope.spawn(move || fetch_one(url, raw, force_clone))).collect();
         let pages = handles.into_iter().zip(urls).map(|(handle, url)| {
             handle.join().unwrap_or_else(|_| Err("fetch thread panicked".into())).map_or_else(
                 |error| Page { url: url.clone(), title: String::new(), content: String::new(), error: Some(error) },
@@ -90,32 +90,31 @@ pub fn fetch_all(urls: &[String], raw: bool, force_clone: bool, proxy: Option<&s
 }
 
 /// (title, content) of one URL; GitHub code URLs are cloned, the rest go over HTTP.
-fn fetch_one(url: &str, raw: bool, force_clone: bool, proxy: Option<&str>) -> Result<(String, String), String> {
+fn fetch_one(url: &str, raw: bool, force_clone: bool) -> Result<(String, String), String> {
     let url = url.trim();
     let scheme = url.split_once("://").map(|(scheme, _)| scheme.to_ascii_lowercase());
     if !matches!(scheme.as_deref(), Some("http" | "https")) {
         return Err(format!("Unsupported URL: {url}. Use an http or https URL."));
     }
-    let proxied = match proxy.map(str::trim) {
-        Some("") => false,
-        Some(proxy) => {
-            refuse_local(proxy, false)?;
-            true
-        }
-        None => ureq::Proxy::try_from_env().is_some(),
-    };
+    let proxied = ureq::Proxy::try_from_env().is_some();
     refuse_local(url, proxied)?;
+    let mut clone_error = None;
     if !raw && let Some(repo) = github::parse(url) {
         // shortcut: a failed clone falls back to the plain page fetch, pi tries the GitHub API first.
-        if let Ok(content) = github::fetch(&repo, force_clone) {
-            return Ok((format!("{}/{}", repo.owner, repo.repo), content));
+        match github::fetch(&repo, force_clone) {
+            Ok(content) => return Ok((format!("{}/{}", repo.owner, repo.repo), content)),
+            Err(error) => clone_error = Some(error),
         }
     }
-    let agent = http_agent(proxy, Duration::from_secs(30))?;
-    fetch_http(&agent, url, raw, |hop| refuse_local(hop, proxied))
+    let (title, content) = fetch_http(&http_agent(Duration::from_secs(30)), url, raw, |hop| refuse_local(hop, proxied))?;
+    match clone_error {
+        Some(error) => Ok((title, format!("{content}\n\n(The git clone failed, so this is the page: {error})"))),
+        None => Ok((title, content)),
+    }
 }
 
-/// Web tools run with no approval, so model-chosen URLs and proxies must not reach cloud metadata, routers or local dev servers.
+/// fetch_content may run unasked in auto mode, and web_search and source_check fetch result URLs without asking, so no
+/// fetched URL may reach cloud metadata, routers or local dev servers.
 /// shortcut: DNS rebinding between this check and the request is not covered, and behind a proxy a name this machine
 /// cannot resolve passes (the proxy may resolve internal names); pin the resolved address if that matters.
 fn refuse_local(url: &str, proxied: bool) -> Result<(), String> {
@@ -142,21 +141,29 @@ fn is_local(ip: &IpAddr) -> bool {
         IpAddr::V4(v4) => {
             let [first, second, ..] = v4.octets();
             let shared = first == 100 && second & 0xc0 == 64;
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || shared
+            let benchmarking = first == 198 && second & 0xfe == 18;
+            // Linux routes 0.0.0.0/8 to this host.
+            let this_network = first == 0;
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_broadcast() || v4.is_multicast() || shared || benchmarking || this_network
         }
         IpAddr::V6(v6) => match embedded_v4(v6) {
             Some(v4) => is_local(&IpAddr::V4(v4)),
-            None => v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local() || v6.is_unicast_link_local(),
+            None => {
+                let site_local = v6.segments()[0] & 0xffc0 == 0xfec0;
+                // RFC 8215 local-use NAT64; the IPv4 part can sit at any of several offsets, so refuse the whole /48.
+                let local_nat64 = v6.segments()[..3] == [0x64, 0xff9b, 1];
+                v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local() || v6.is_unicast_link_local() || v6.is_multicast() || site_local || local_nat64
+            }
         },
     }
 }
 
-/// The IPv4 address an IPv4-mapped, NAT64 (`64:ff9b::/96`) or 6to4 (`2002::/16`) address reaches.
+/// The IPv4 address an IPv4-mapped, IPv4-compatible, NAT64 (`64:ff9b::/96`) or 6to4 (`2002::/16`) address reaches.
 fn embedded_v4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
     let v4 = |high: u16, low: u16| Ipv4Addr::from((u32::from(high) << 16) | u32::from(low));
     match v6.segments() {
         [0x64, 0xff9b, 0, 0, 0, 0, high, low] | [0x2002, high, low, ..] => Some(v4(high, low)),
-        _ => v6.to_ipv4_mapped(),
+        _ => v6.to_ipv4(),
     }
 }
 
@@ -188,9 +195,9 @@ fn fetch_http(agent: &ureq::Agent, url: &str, raw: bool, allow: impl Fn(&str) ->
         return Err(format!("Unsupported content type: {mime}"));
     }
     let mut bytes = Vec::new();
-    response.body_mut().as_reader().take(MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > MAX_BYTES {
-        return Err(format!("Response too large (over {}MB)", MAX_BYTES / 1024 / 1024));
+    response.body_mut().as_reader().take(MAX_RESPONSE_BYTES + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(format!("Response too large (over {}MB)", MAX_RESPONSE_BYTES / 1024 / 1024));
     }
     // shortcut: non-UTF-8 pages decode lossily, the charset parameter is ignored; decode it if such pages show up.
     let body = String::from_utf8_lossy(&bytes).into_owned();
@@ -252,10 +259,13 @@ mod tests {
     #[test]
     fn local_and_private_addresses_are_refused() {
         for url in ["http://127.0.0.1:5173/", "HTTP://169.254.169.254/latest/meta-data/", "http://[::ffff:10.0.0.1]/", "http://LOCALHOST/", "http://a.localhost/"] {
-            assert!(fetch_one(url, false, false, Some("")).unwrap_err().starts_with("Refusing to fetch a local or private address"), "{url}");
+            assert!(fetch_one(url, false, false).unwrap_err().starts_with("Refusing to fetch a local or private address"), "{url}");
         }
         assert!(refuse_local("https://93.184.215.14/", false).is_ok());
         for ip in ["100.64.0.1", "64:ff9b::a9fe:a9fe", "2002:7f00:1::"] {
+            assert!(is_local(&ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["0.1.2.3", "255.255.255.255", "224.0.0.1", "198.18.0.1", "::7f00:1", "fec0::1", "ff02::1", "64:ff9b:1::a00:1"] {
             assert!(is_local(&ip.parse().unwrap()), "{ip}");
         }
         assert!(!is_local(&"2002:5db8:d70e::".parse().unwrap()));
@@ -265,8 +275,6 @@ mod tests {
     fn an_unresolvable_host_is_refused_unless_a_proxy_resolves_it() {
         assert!(refuse_local("http://nothing.invalid/", false).unwrap_err().starts_with("Cannot resolve the host of"));
         assert!(refuse_local("http://nothing.invalid/", true).is_ok());
-        let local_proxy = fetch_one("https://example.com/", false, false, Some("socks5://127.0.0.1:1080")).unwrap_err();
-        assert!(local_proxy.starts_with("Refusing to fetch a local or private address: socks5://"), "{local_proxy}");
     }
 
     /// Answers each request with the response `route` gives for its path.
@@ -299,7 +307,7 @@ mod tests {
             "/secret" => response("200 OK", "content-type: text/plain\r\n", "token"),
             _ => response("404 Not Found", "content-type: text/plain\r\n", "Not Found"),
         });
-        let agent = http_agent(Some(""), Duration::from_secs(5)).unwrap();
+        let agent = http_agent(Duration::from_secs(5));
         let fetch = |path: &str, raw: bool| fetch_http(&agent, &format!("{base}{path}"), raw, |hop| if hop.ends_with("/secret") { Err(format!("refused {hop}")) } else { Ok(()) });
         let (_, content) = fetch("/docs", false).unwrap();
         assert_eq!(content, format!("[Guide]({base}/v2/guide.html)"));

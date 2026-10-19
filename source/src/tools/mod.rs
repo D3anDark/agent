@@ -68,7 +68,7 @@ enum Killed {
 }
 
 fn bash(input: &Value, cwd: &Path, rtk: &Rtk, abort: &AtomicBool) -> Result<String, String> {
-    let command = rtk.rewrite(str_arg(input, &["command"])?);
+    let command = rtk.rewrite(str_arg(input, "command")?);
     let timeout = input["timeout"].as_f64().filter(|s| *s > 0.0);
     // A timeout too large for an Instant is no timeout.
     let deadline = timeout.and_then(|secs| Instant::now().checked_add(Duration::try_from_secs_f64(secs).ok()?));
@@ -201,8 +201,8 @@ fn append_status(output: &str, status: &str) -> String {
 }
 
 fn write(input: &Value, cwd: &Path, anchors: &mut Anchors) -> Result<String, String> {
-    let path = resolve(cwd, str_arg(input, &["path"])?);
-    let content = str_arg(input, &["content"])?;
+    let path = resolve(cwd, str_arg(input, "path")?);
+    let content = str_arg(input, "content")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
     }
@@ -238,7 +238,7 @@ fn rg_args(input: &Value) -> Result<Vec<String>, String> {
         args.push("--hidden".into());
     }
     if !input["context"].is_null() {
-        args.extend(["--context".into(), clamped(&input["context"], 0, 0, 20)]);
+        args.extend(["--context".into(), clamped(&input["context"], 0, 0, MAX_CONTEXT_LINES)]);
     }
     if let Some(glob) = input["glob"].as_str().filter(|g| !g.is_empty()) {
         args.extend(["--glob".into(), glob.into()]);
@@ -246,8 +246,8 @@ fn rg_args(input: &Value) -> Result<Vec<String>, String> {
     if let Some(file_type) = input["file_type"].as_str().filter(|t| !t.is_empty()) {
         args.extend(["--type".into(), file_type.into()]);
     }
-    args.extend(["--max-count".into(), clamped(&input["limit"], 100, 1, 1000)]);
-    args.extend(["--".into(), str_arg(input, &["pattern"])?.into()]);
+    args.extend(["--max-count".into(), clamped(&input["limit"], DEFAULT_MATCHES, 1, MAX_MATCHES)]);
+    args.extend(["--".into(), str_arg(input, "pattern")?.into()]);
     args.extend(search_path(input));
     Ok(args)
 }
@@ -319,6 +319,9 @@ fn cut_columns(text: &str) -> String {
 
 /// rg exits 1 for "no matches", and 2 when a path failed even after printing matches for the others.
 const RG_OK: &[i32] = &[0, 1, 2];
+const MAX_CONTEXT_LINES: u64 = 20;
+const DEFAULT_MATCHES: u64 = 100;
+const MAX_MATCHES: u64 = 1000;
 
 fn search(program: &str, args: &[String], cwd: &Path, abort: &AtomicBool, ok_codes: &[i32]) -> Result<String, String> {
     let mut child = process::command(program).args(args).current_dir(cwd).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("Cannot run {program}: {e}"))?;
@@ -329,9 +332,13 @@ fn search(program: &str, args: &[String], cwd: &Path, abort: &AtomicBool, ok_cod
         String::from_utf8_lossy(&text).trim().to_string()
     });
     let mut stdout = Vec::new();
-    let (status, killed) = wait_streaming(child, abort, None, |chunk| stdout.extend_from_slice(chunk))?;
-    if killed.is_some() {
-        return Err(format!("{program} aborted"));
+    // Headless and print mode have no Esc, so a walk of `/` or a hung network mount needs its own limit.
+    let deadline = Instant::now().checked_add(Duration::from_secs(120));
+    let (status, killed) = wait_streaming(child, abort, deadline, |chunk| stdout.extend_from_slice(chunk))?;
+    match killed {
+        Some(Killed::Timeout) => return Err(format!("{program} timed out after 120s")),
+        Some(Killed::Aborted) => return Err(format!("{program} aborted")),
+        None => {}
     }
     let code = exit_code(status);
     let stdout = String::from_utf8_lossy(&stdout).trim_end_matches('\n').to_string();

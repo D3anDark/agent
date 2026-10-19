@@ -614,7 +614,7 @@
       "type": "object",
       "properties": {
         "query": { "type": "string" },
-        "queries": { "type": "array", "items": { "type": "string" }, "description": "Searched concurrently; vary the angles." },
+        "queries": { "type": "array", "items": { "type": "string" }, "maxItems": 8, "description": "Up to 8, searched concurrently; vary the angles." },
         "numResults": { "type": "integer", "minimum": 1, "maximum": 20, "description": "Per query, default 5." },
         "includeContent": { "type": "boolean", "description": "Also fetch the result pages." },
         "recencyFilter": { "type": "string", "enum": ["day", "week", "month", "year"] },
@@ -626,8 +626,7 @@
             { "type": "array", "items": { "type": "string", "enum": ["xai", "exa", "brave", "tavily", "perplexity", "jina"] }, "minItems": 1 }
           ],
           "description": "Omit for the configured one; all or a list searches several."
-        },
-        "proxy": { "type": "string", "description": "http(s)/socks proxy URL; \"\" forces direct." }
+        }
       },
       "additionalProperties": false
     }
@@ -641,8 +640,7 @@
         "url": { "type": "string" },
         "urls": { "type": "array", "items": { "type": "string" }, "description": "Fetched in parallel." },
         "mode": { "type": "string", "enum": ["readable", "raw"], "description": "readable (default) extracts markdown; raw returns the body via direct HTTP." },
-        "forceClone": { "type": "boolean", "description": "Re-clone a cached GitHub repository." },
-        "proxy": { "type": "string", "description": "http(s)/socks proxy URL; \"\" forces direct." }
+        "forceClone": { "type": "boolean", "description": "Re-clone a cached GitHub repository." }
       },
       "additionalProperties": false
     }
@@ -659,7 +657,7 @@
         "url": { "type": "string", "description": "Select by URL." },
         "urlIndex": { "type": "integer", "minimum": 0 },
         "offset": { "type": "integer", "minimum": 0, "description": "Characters; ignored with findText." },
-        "limit": { "type": "integer", "minimum": 1, "description": "Characters; ignored with findText." },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 30000, "description": "Characters, default 30000; ignored with findText." },
         "findText": {
           "anyOf": [
             { "type": "string", "minLength": 1, "maxLength": 500 },
@@ -679,7 +677,7 @@
       "type": "object",
       "properties": {
         "claim": { "type": "string" },
-        "queries": { "type": "array", "items": { "type": "string" }, "description": "Default: the claim." },
+        "queries": { "type": "array", "items": { "type": "string" }, "maxItems": 8, "description": "Up to 8; default: the claim." },
         "numResults": { "type": "integer", "minimum": 1, "maximum": 20, "description": "Per query, default 5." },
         "fetchContent": { "type": "boolean", "description": "Fetch up to 5 pages for exact passages." },
         "recencyFilter": { "type": "string", "enum": ["day", "week", "month", "year"] },
@@ -690,8 +688,7 @@
             { "type": "array", "items": { "type": "string", "enum": ["xai", "exa", "brave", "tavily", "perplexity", "jina"] }, "minItems": 1 }
           ],
           "description": "Omit for the configured one; all or a list searches several."
-        },
-        "proxy": { "type": "string", "description": "http(s)/socks proxy URL; \"\" forces direct." }
+        }
       },
       "required": ["claim"],
       "additionalProperties": false

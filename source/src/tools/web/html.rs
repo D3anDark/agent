@@ -18,7 +18,7 @@ pub fn to_markdown(html: &str, base: &str) -> (String, String) {
         text(&rest[..lt], skip.is_some(), in_title, &mut title, &mut out);
         rest = &rest[lt..];
         if let Some(comment) = rest.strip_prefix("<!--") {
-            rest = comment.find("-->").map_or("", |end| &comment[end + 3..]);
+            rest = comment.find("-->").map_or("", |end| &comment[end + "-->".len()..]);
             continue;
         }
         let Some(gt) = tag_end(rest) else {
@@ -327,7 +327,7 @@ pub fn resolve(base: &str, href: &str) -> String {
     if let Some(rest) = href.strip_prefix("//") {
         return format!("{}{rest}", &base[..scheme_end]);
     }
-    let origin_end = base[scheme_end..].find('/').map_or(base.len(), |i| scheme_end + i);
+    let origin_end = base[scheme_end..].find(['/', '?', '#']).map_or(base.len(), |i| scheme_end + i);
     if href.starts_with('/') {
         return format!("{}{href}", &base[..origin_end]);
     }
@@ -456,6 +456,7 @@ mod tests {
         let base = "https://a.dev/docs/page?x=1";
         assert_eq!(resolve(base, "/out?to=https://x.dev"), "https://a.dev/out?to=https://x.dev");
         assert_eq!(resolve(base, "tel:123"), "tel:123");
+        assert_eq!(resolve("https://a.dev?x=1", "/p"), "https://a.dev/p");
         assert_eq!(resolve(base, "?page=2"), "https://a.dev/docs/page?page=2");
         assert_eq!(resolve(base, "guide.html"), "https://a.dev/docs/guide.html");
         assert_eq!(resolve(base, "//b.dev/x"), "https://b.dev/x");

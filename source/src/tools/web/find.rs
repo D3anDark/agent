@@ -138,7 +138,8 @@ fn literal_matches(text: &str, query: &str, case_insensitive: bool) -> Vec<(usiz
         }
     }
     origin.push(text.len());
-    let needle = query.to_lowercase();
+    // Per char like the text: `str::to_lowercase` maps a word-final Σ to ς, `char::to_lowercase` to σ.
+    let needle: String = query.chars().flat_map(char::to_lowercase).collect();
     lowered.match_indices(&needle).map(|(start, _)| (origin[start], origin[start + needle.len()])).collect()
 }
 
@@ -148,7 +149,8 @@ fn fuzzy_matches(text: &str, query: &str) -> Vec<(usize, usize)> {
     if query_words.is_empty() {
         return Vec::new();
     }
-    let required = if query_words.len() == 1 { 1 } else { (query_words.len() * 3).div_ceil(5) };
+    // 60% of the query words, rounded up.
+    let required = (query_words.len() * 3).div_ceil(5);
     let mut matches = Vec::new();
     for (offset, paragraph) in paragraphs(text) {
         let tokens: Vec<(usize, &str, Vec<char>)> = words(paragraph).into_iter().map(|(at, word)| (at, word, normalize(word).chars().collect())).collect();
@@ -224,7 +226,7 @@ fn paragraphs(text: &str) -> Vec<(usize, &str)> {
     let mut start: Option<usize> = None;
     let mut at = 0;
     for line in text.split('\n') {
-        match (line.is_empty(), start) {
+        match (line.trim().is_empty(), start) {
             (false, None) => start = Some(at),
             (true, Some(s)) => {
                 found.push((s, &text[s..at - 1]));
@@ -255,6 +257,7 @@ mod tests {
         let out = find(text, &queries(&["TOKIO", "absent"]), Mode::CaseInsensitive);
         assert_eq!(out, "Text matches (case-insensitive)\n\n1. \"TOKIO\" ×2\nIntro. The Tokio runtime schedules tasks. tokio is async. End.\n\nNo matches: \"absent\"");
         assert!(find(text, &queries(&["TOKIO"]), Mode::Exact).starts_with("Text matches (exact): no matches"));
+        assert_eq!(literal_matches("ΟΔΟΣ", "ΟΔΟΣ", true).len(), 1);
     }
 
     #[test]
@@ -270,6 +273,6 @@ mod tests {
         let text = "żółw ".repeat(10_000);
         let out = find(&text, &queries(&["ŻÓŁW"]), Mode::CaseInsensitive);
         assert!(out.chars().count() <= MAX_OUTPUT_CHARS);
-        assert!(out.ends_with("Showing 10000 of 10000 matches.") || out.contains("Showing "), "{}", &out[out.len() - 80..]);
+        assert!(out.ends_with("Showing 2371 of 10000 matches."), "{}", &out[out.len() - 80..]);
     }
 }

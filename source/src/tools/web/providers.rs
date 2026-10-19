@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 const CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(30);
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(60);
+const MS_PER_DAY: u64 = 86_400_000;
 
 /// pi's auto chain order (exa, brave, tavily, jina, perplexity); xai joins last since pi only reaches it when configured.
 pub const PROVIDERS: [&str; 6] = ["exa", "brave", "tavily", "jina", "perplexity", "xai"];
@@ -17,7 +19,6 @@ pub struct Query<'a> {
     pub domains: &'a [String],
     pub include_content: bool,
     pub category: Option<&'a str>,
-    pub proxy: Option<&'a str>,
 }
 
 #[derive(Debug, Default)]
@@ -170,7 +171,7 @@ fn search_one(config: &Config, provider: &str, query: &Query) -> Result<Response
         "xai" => xai(&config.settings, &key, query),
         other => unreachable!("{other} is not in PROVIDERS"),
     };
-    result.map_err(|e| e.replace(&key, "[redacted]"))
+    result.map_err(|e| e.replace(&key, "[redacted]").chars().take(400).collect())
 }
 
 pub fn label(provider: &str) -> &'static str {
@@ -268,7 +269,7 @@ fn send(response: Result<ureq::http::Response<ureq::Body>, ureq::Error>, name: &
     let status = response.status().as_u16();
     let text = response.body_mut().with_config().limit(10 * 1024 * 1024).lossy_utf8(true).read_to_string().map_err(|e| format!("{name} response unreadable: {e}"))?;
     if !(200..300).contains(&status) {
-        let text: String = text.chars().take(300).collect();
+        // Untruncated: `search_one` redacts the key first, then shortens it, so no partial key survives the cut.
         return Err(format!("{name} API error {status}: {text}"));
     }
     serde_json::from_str(&text).map_err(|e| format!("{name} API returned invalid JSON: {e}"))
@@ -340,7 +341,7 @@ fn exa(config: &Value, key: &str, query: &Query) -> Result<Response, String> {
     if let Some(recency) = query.recency {
         body["startPublishedDate"] = json!(iso_days_ago(recency.days()));
     }
-    let agent = http_agent(query.proxy, Duration::from_secs(60))?;
+    let agent = http_agent(SEARCH_TIMEOUT);
     let data = send(agent.post(format!("{base}/search")).header("x-api-key", key).header("content-type", "application/json").send(body.to_string()), "Exa")?;
     let (mut results, mut parts, mut inline) = (Vec::new(), Vec::new(), Vec::new());
     for (i, item) in data["results"].as_array().into_iter().flatten().enumerate() {
@@ -375,7 +376,7 @@ fn brave(config: &Value, key: &str, query: &Query) -> Result<Response, String> {
     }
     q.extend(blocked.iter().map(|d| format!("NOT site:{d}")));
     let count = if query.domains.is_empty() { query.num_results } else { 20 };
-    let mut request = http_agent(query.proxy, Duration::from_secs(30))?
+    let mut request = http_agent(Duration::from_secs(30))
         .get(format!("{base}/web/search"))
         .query("q", q.join(" "))
         .query("count", count.to_string())
@@ -421,7 +422,7 @@ fn tavily(config: &Value, key: &str, query: &Query) -> Result<Response, String> 
     if !blocked.is_empty() {
         body["exclude_domains"] = json!(blocked);
     }
-    let agent = http_agent(query.proxy, Duration::from_secs(60))?;
+    let agent = http_agent(SEARCH_TIMEOUT);
     let data = send(agent.post(format!("{base}/search")).header("authorization", format!("Bearer {key}")).header("content-type", "application/json").send(body.to_string()), "Tavily")?;
     let (mut results, mut inline) = (Vec::new(), Vec::new());
     for item in data["results"].as_array().into_iter().flatten() {
@@ -454,7 +455,7 @@ fn jina(key: &str, query: &Query) -> Result<Response, String> {
     if let Some(recency) = query.recency {
         text.push_str(&format!(" published in the past {}", recency.as_str()));
     }
-    let mut request = http_agent(query.proxy, Duration::from_secs(60))?
+    let mut request = http_agent(SEARCH_TIMEOUT)
         .get(format!("https://s.jina.ai/{}", crate::api::oauth::percent_encode(&text)))
         .query("count", query.num_results.to_string())
         .header("accept", "application/json")
@@ -517,7 +518,7 @@ fn perplexity(key: &str, query: &Query) -> Result<Response, String> {
     if !domains.is_empty() {
         body["search_domain_filter"] = json!(domains);
     }
-    let agent = http_agent(query.proxy, Duration::from_secs(60))?;
+    let agent = http_agent(SEARCH_TIMEOUT);
     let data = send(agent.post("https://api.perplexity.ai/search").header("authorization", format!("Bearer {key}")).header("content-type", "application/json").send(body.to_string()), "Perplexity")?;
     let mut results = Vec::new();
     for item in data["results"].as_array().into_iter().flatten() {
@@ -540,7 +541,7 @@ fn xai(config: &Value, key: &str, query: &Query) -> Result<Response, String> {
     if let Some(recency) = query.recency {
         lines.push(format!("Prefer sources from the {}.", recency.phrase()));
     }
-    lines.push(format!("Prefer around {} distinct sources.", query.num_results.min(20)));
+    lines.push(format!("Prefer around {} distinct sources.", query.num_results));
     let (allowed, blocked) = split_domains(query.domains);
     if !allowed.is_empty() {
         lines.push(format!("Only use sources from: {}.", allowed.iter().take(100).cloned().collect::<Vec<_>>().join(", ")));
@@ -553,7 +554,7 @@ fn xai(config: &Value, key: &str, query: &Query) -> Result<Response, String> {
         "input": format!("{}\n\n{}", lines.join(" "), query.text),
         "tools": [{"type": "web_search"}],
     });
-    let agent = http_agent(query.proxy, Duration::from_secs(60))?;
+    let agent = http_agent(SEARCH_TIMEOUT);
     let data = send(agent.post("https://api.x.ai/v1/responses").header("authorization", format!("Bearer {key}")).header("content-type", "application/json").send(body.to_string()), "xAI")?;
     let response = xai_response(&data, query.num_results);
     if response.answer.is_empty() && response.results.is_empty() {
@@ -596,7 +597,7 @@ fn xai_response(data: &Value, num_results: usize) -> Response {
             add(&mut results, url, title, String::new());
         }
     }
-    results.truncate(num_results.min(20));
+    results.truncate(num_results);
     Response { answer: answer.join("\n").trim().to_string(), results, ..Default::default() }
 }
 
@@ -605,7 +606,7 @@ fn snippet_around(text: &str, start: Option<u64>, end: Option<u64>) -> String {
     let (Some(start), Some(end)) = (start, end) else { return String::new() };
     let chars: Vec<char> = text.chars().collect();
     let from = (start as usize).saturating_sub(100).min(chars.len());
-    let to = (end as usize + 100).min(chars.len()).max(from);
+    let to = (end as usize).saturating_add(100).min(chars.len()).max(from);
     let snippet = flatten_links(&chars[from..to].iter().collect::<String>()).trim().to_string();
     if snippet.chars().count() > 300 { format!("{}...", snippet.chars().take(297).collect::<String>()) } else { snippet }
 }
@@ -692,11 +693,11 @@ impl Recency {
 
 /// `YYYY-MM-DDTHH:MM:SS.mmmZ` for now minus `days`, like JS `toISOString`.
 fn iso_days_ago(days: u64) -> String {
-    iso_from_ms(crate::process::now_ms() - days * 86_400_000)
+    iso_from_ms(crate::process::now_ms() - days * MS_PER_DAY)
 }
 
 fn iso_from_ms(ms: u64) -> String {
-    let (day_count, ms_of_day) = (ms / 86_400_000, ms % 86_400_000);
+    let (day_count, ms_of_day) = (ms / MS_PER_DAY, ms % MS_PER_DAY);
     // Hinnant's civil_from_days.
     let z = day_count as i64 + 719_468;
     let era = z.div_euclid(146_097);
@@ -764,7 +765,7 @@ mod tests {
 
     #[test]
     fn auto_without_keys_names_the_missing_credentials() {
-        let query = Query { text: "q", num_results: 5, recency: None, domains: &[], include_content: false, category: None, proxy: None };
+        let query = Query { text: "q", num_results: 5, recency: None, domains: &[], include_content: false, category: None };
         for provider in PROVIDERS {
             if std::env::var(env_name(provider)).is_ok() {
                 return;
@@ -803,7 +804,7 @@ mod tests {
             _ = std::io::Write::write_all(&mut stream, reply.as_bytes());
         });
         leak.set_nonblocking(true).unwrap();
-        let query = Query { text: "q", num_results: 5, recency: None, domains: &[], include_content: false, category: None, proxy: Some("") };
+        let query = Query { text: "q", num_results: 5, recency: None, domains: &[], include_content: false, category: None };
         let error = exa(&json!({"exaBaseUrl": api_base}), "SECRETKEY", &query).unwrap_err();
         assert!(error.starts_with("Exa API error 302"), "{error}");
         assert!(leak.accept().is_err(), "the redirect target got the request");

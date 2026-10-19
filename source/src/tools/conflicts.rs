@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 /// Added after a git command while the repo in `cwd` has unmerged paths, so a merge, rebase, cherry-pick, pull
 /// or stash pop that stopped on a conflict sends the agent to the resolving skill.
@@ -16,7 +17,8 @@ pub fn hint(command: &str, cwd: &Path) -> Option<String> {
 
 /// Why a `git commit` must not run: changes since HEAD still add conflict markers.
 pub fn commit_blocked(command: &str, cwd: &Path) -> Option<String> {
-    if !runs_git(command) || !command.split_whitespace().any(|word| word == "commit") {
+    let words: Vec<&str> = words(command).filter(|word| !word.is_empty()).collect();
+    if !words.windows(2).any(|pair| pair == ["git", "commit"]) {
         return None;
     }
     let check = git(cwd, &["diff", "--check", "HEAD"]);
@@ -28,14 +30,19 @@ pub fn commit_blocked(command: &str, cwd: &Path) -> Option<String> {
 }
 
 fn runs_git(command: &str) -> bool {
-    command.split_whitespace().any(|word| word == "git")
+    words(command).any(|word| word == "git")
 }
 
-/// Stdout of git in `dir`; empty when git fails, as it does outside a repo.
+/// Shell separators count as spaces, so `cd sub&&git commit` and `(git commit)` are still seen.
+fn words(command: &str) -> impl Iterator<Item = &str> {
+    command.split(|c: char| c.is_whitespace() || ";&|()".contains(c))
+}
+
+/// Stdout of git in `dir`; empty when git fails, as it does outside a repo, or hangs on a lock or a slow filesystem.
 fn git(dir: &Path, args: &[&str]) -> String {
-    match crate::process::command("git").args(args).current_dir(dir).output() {
-        Ok(output) => String::from_utf8_lossy(&output.stdout).into_owned(),
-        Err(_) => String::new(),
+    match crate::process::output_within(crate::process::command("git").args(args).current_dir(dir), Duration::from_secs(5)) {
+        Ok(Some(output)) => String::from_utf8_lossy(&output.stdout).into_owned(),
+        Ok(None) | Err(_) => String::new(),
     }
 }
 
@@ -82,7 +89,9 @@ mod tests {
     fn commits_with_conflict_markers_are_blocked() {
         let dir = conflicted_repo("commit");
         assert!(commit_blocked("git commit -am merge", &dir).unwrap().contains("f:1: leftover conflict marker"));
+        assert!(commit_blocked("cd .&&git commit -am merge", &dir).is_some() && commit_blocked("(git commit -am merge)", &dir).is_some());
         assert_eq!(commit_blocked("git status", &dir), None);
+        assert_eq!(commit_blocked("git log --grep commit", &dir), None);
         std::fs::write(dir.join("f"), "main and side").unwrap();
         assert_eq!(commit_blocked("git commit -am merge", &dir), None);
     }

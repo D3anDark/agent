@@ -6,15 +6,10 @@ const MIN_BLOCKED_SLEEP_SECS: u64 = 15;
 pub fn bash(command: &str) -> Option<String> {
     let files = file_reads(command);
     if !files.is_empty() {
-        return Some(format!(
-            "Use read({}) instead of bash; several files or ranges go in one call as paths: [{{path, offset, limit}}]. Its anchors are what edits use.",
-            files.join(", ")
-        ));
+        return Some(format!("Use read({}) instead of bash; several files or ranges go in one call as paths: [{{path, offset, limit}}]. Its anchors are what edits use.", files.join(", ")));
     }
     if blind_sleep(command) {
-        return Some(
-            "No blind sleep. Server: curl -sf --retry 30 --retry-all-errors --retry-delay 1 URL. CI: gh run watch --exit-status, gh pr checks --watch. Long job: bg_start.".into(),
-        );
+        return Some("No blind sleep. Server: curl -sf --retry 30 --retry-all-errors --retry-delay 1 URL. CI: gh run watch --exit-status, gh pr checks --watch. Long job: bg_start.".into());
     }
     None
 }

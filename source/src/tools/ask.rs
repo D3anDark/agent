@@ -68,7 +68,13 @@ pub fn parse(input: &Value) -> Result<Vec<Question>, String> {
         if q.options.len() < 2 {
             return Err("Error: Each question requires at least 2 options".into());
         }
+        if q.options.len() > 4 {
+            return Err("Error: Each question allows at most 4 options".into());
+        }
         for (index, option) in q.options.iter().enumerate() {
+            if option.label.trim().is_empty() {
+                return Err("Error: Each option requires a label".into());
+            }
             if option.label.chars().count() > 60 {
                 return Err("Error: Option label must be at most 60 characters".into());
             }
@@ -135,6 +141,7 @@ mod tests {
     #[test]
     fn validation_and_envelope_match_rpiv() {
         assert_eq!(parse(&input(["x", "x"])).unwrap_err(), "Error: Option labels must be unique within a question");
+        assert_eq!(parse(&input([" ", "x"])).unwrap_err(), "Error: Each option requires a label");
         assert_eq!(parse(&input(["Other", "x"])).unwrap_err(), "Error: Option label is reserved (Other, Type something., Next)");
         assert_eq!(parse(&input([&"ł".repeat(61), "x"])).unwrap_err(), "Error: Option label must be at most 60 characters");
         assert!(parse(&input([&"ł".repeat(60), "x"])).is_ok());
