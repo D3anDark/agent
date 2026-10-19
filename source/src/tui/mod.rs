@@ -41,7 +41,7 @@ use crate::api::{AccountView, Client, Delta, Usage};
 use crate::image;
 use crate::settings::THINKING_LEVELS;
 use crate::settings::{self, CONFLICT_PRIORITIES, PROVIDER_SORTS, PRUNE_SESSIONS, Settings, model_key};
-use crate::tools::bg::Terminals;
+use crate::tools::bg::{Status as TerminalStatus, Terminal, Terminals};
 use crate::tools::goal::{Goal, Status as GoalStatus};
 use crate::tools::rtk::strip_ansi;
 use crate::tools::todo::{Status, Todos};
@@ -846,7 +846,12 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
         screen.draw(out, rows, Some(cursor)).map_err(|e| e.to_string())?;
         let wait = if app.edge_drag.is_some() {
             EDGE_SCROLL
-        } else if app.working.is_some() || app.hint.is_some() || app.transcribing.is_some() || (matches!(app.panel, Some(Panel::Subagents { .. })) && app.subagents.lock().unwrap().running() > 0) {
+        } else if app.working.is_some()
+            || app.hint.is_some()
+            || app.transcribing.is_some()
+            || (matches!(app.panel, Some(Panel::Subagents { .. })) && app.subagents.lock().unwrap().running() > 0)
+            || (matches!(app.panel, Some(Panel::Terminals { .. })) && app.terminals.lock().unwrap().running() > 0)
+        {
             ANIMATION_TICK
         } else if app.recording.is_some() {
             Duration::from_secs(1)
@@ -2710,22 +2715,7 @@ impl App {
             Panel::Permission { request, index, .. } => permission_lines(request, *index, width),
             Panel::Ask(ask) => ask.render(width),
             Panel::Subagents { index } => subagents_panel(&self.subagents.lock().unwrap().list, *index, width),
-            Panel::Terminals { index } => {
-                let terminals = self.terminals.lock().unwrap();
-                let rows: Vec<panel::Row> =
-                    terminals.list.iter().map(|t| panel::Row { left: format!("{} {}", t.id, t.title), right: vec![span(format!("{} {}", t.status().as_str(), t.elapsed()), MUTED)] }).collect();
-                let view = panel::Panel {
-                    title: format!("Background terminals {}", rows.len()),
-                    tabs: &[],
-                    tab: 0,
-                    search: None,
-                    rows: &rows,
-                    selected: *index,
-                    empty: "",
-                    hint: "↑↓ navigate     enter view     k kill     esc close",
-                };
-                view.render(width, PANEL_ROWS)
-            }
+            Panel::Terminals { index } => terminals_panel(&self.terminals.lock().unwrap().list, *index, width),
             Panel::Todos { index } => {
                 let todos = self.todos.lock().unwrap();
                 let rows: Vec<panel::Row> = todos.visible().map(|t| panel::Row { left: format!("#{} {}", t.id, t.subject), right: vec![span(t.status.as_str(), todo_style(t.status))] }).collect();
@@ -4339,6 +4329,42 @@ fn subagents_panel(runs: &[Arc<Run>], selected: usize, columns: usize) -> Vec<Li
         let label_style = if index == selected { BRIGHT.bold() } else { label_style };
         let tokens = if state.usage == Usage::default() { String::new() } else { usage::brief(state.usage) };
         vec![icon, span(format!(" {} ", pad(&run.id, id_width)), DIM), span(pad(&run.label, label_width), label_style), span(format!("  {elapsed:<8}"), time_style), span(tokens, DIM)]
+    })
+}
+
+/// /ps: the /subagents layout, with the title as the main text.
+fn terminals_panel(terminals: &[Arc<Terminal>], selected: usize, columns: usize) -> Vec<Line> {
+    let statuses: Vec<TerminalStatus> = terminals.iter().map(|t| t.status()).collect();
+    let count = |status| statuses.iter().filter(|s| **s == status).count();
+    let (running, done, failed, killed) = (count(TerminalStatus::Running), count(TerminalStatus::Done), count(TerminalStatus::Failed), count(TerminalStatus::Killed));
+    let tick = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() / 80;
+    let spinner = star(((tick % 12) as usize).abs_diff(2));
+    let mut title = vec![span(format!("Background terminals {}", terminals.len()), BRIGHT.bold())];
+    if running > 0 {
+        title.extend([span("  ", PLAIN), spinner.clone(), span(format!(" {running} running"), SYSTEM)]);
+    }
+    if done > 0 {
+        title.push(span(format!("  ✓ {done}"), OK));
+    }
+    if failed > 0 {
+        title.push(span(format!("  ✗ {failed}"), ERROR));
+    }
+    if killed > 0 {
+        title.push(span(format!("  ■ {killed}"), MUTED));
+    }
+    let id_width = terminals.iter().map(|t| width(&t.id)).max().unwrap_or(0);
+    let title_width = terminals.iter().map(|t| width(&t.title)).max().unwrap_or(0);
+    let pad = |text: &str, to: usize| format!("{text}{}", " ".repeat(to - width(text)));
+    panel::frame(vec![title], terminals.len(), selected, "↑↓ navigate     enter view     k kill     esc close", columns, PANEL_ROWS, |index| {
+        let terminal = &terminals[index];
+        let (icon, title_style, time_style) = match statuses[index] {
+            TerminalStatus::Running => (spinner.clone(), BRIGHT, SYSTEM),
+            TerminalStatus::Done => (span("✓", OK), MUTED, MUTED),
+            TerminalStatus::Failed => (span("✗", ERROR), MUTED, MUTED),
+            TerminalStatus::Killed => (span("■", MUTED), MUTED, MUTED),
+        };
+        let title_style = if index == selected { BRIGHT.bold() } else { title_style };
+        vec![icon, span(format!(" {} ", pad(&terminal.id, id_width)), DIM), span(pad(&terminal.title, title_width), title_style), span(format!("  {}", terminal.elapsed()), time_style)]
     })
 }
 
