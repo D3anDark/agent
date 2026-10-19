@@ -979,7 +979,7 @@ impl Agent {
             return Err("The compaction summary came back empty.".into());
         }
         self.session.append(&json!({"type": "compaction", "summary": summary, "first_kept": first_kept}))?;
-        self.messages = compacted(&self.messages, &summary, first_kept);
+        self.messages = compacted(&self.messages, &summary, first_kept, self.session.path.as_deref());
         shift_checkpoints(&mut self.checkpoints, first_kept);
         self.last_context_tokens = 0;
         Ok(Some(summary))
@@ -1288,7 +1288,7 @@ impl Session {
                     if first_kept as usize > history.messages.len() {
                         return Err(format!("{}:{}: compaction keeps from message {first_kept} of {}", path.display(), number + 1, history.messages.len()));
                     }
-                    history.messages = compacted(&history.messages, summary, first_kept as usize);
+                    history.messages = compacted(&history.messages, summary, first_kept as usize, Some(path));
                     shift_checkpoints(&mut history.checkpoints, first_kept as usize);
                 }
                 Some("condense") => history.condensed.push(condense::from_entry(&entry).ok_or_else(|| missing("refs or summary"))?),
@@ -1546,8 +1546,13 @@ fn shift_checkpoints(checkpoints: &mut Vec<Checkpoint>, first_kept: usize) {
     }
 }
 
-fn compacted(messages: &[Value], summary: &str, first_kept: usize) -> Vec<Value> {
-    let mut kept = vec![json!({"role": "user", "content": [{"type": "text", "text": format!("{SUMMARY_PREFIX}{summary}{SUMMARY_SUFFIX}")}]})];
+/// `transcript` is the session file, which keeps every message the summary replaces.
+fn compacted(messages: &[Value], summary: &str, first_kept: usize, transcript: Option<&Path>) -> Vec<Value> {
+    let mut text = format!("{SUMMARY_PREFIX}{summary}{SUMMARY_SUFFIX}");
+    if let Some(path) = transcript {
+        text.push_str(&format!("\n\nThe full conversation before this summary is in {}, one JSON entry per line. Search it with rg when the summary lacks a detail you need.", path.display()));
+    }
+    let mut kept = vec![json!({"role": "user", "content": [{"type": "text", "text": text}]})];
     kept.extend_from_slice(&messages[first_kept..]);
     kept
 }
@@ -1665,9 +1670,15 @@ mod tests {
     #[test]
     fn compacted_history_starts_with_the_summary() {
         let messages = [user("a"), assistant("b"), user("c")];
-        let kept = compacted(&messages, "S", 1);
+        let kept = compacted(&messages, "S", 1, None);
         assert_eq!(text_of(&json!({"content": kept[0]["content"]})), format!("{SUMMARY_PREFIX}S{SUMMARY_SUFFIX}"));
         assert_eq!(kept[1..], messages[1..]);
+    }
+
+    #[test]
+    fn compacted_summary_points_at_the_saved_transcript() {
+        let kept = compacted(&[user("a"), user("b")], "S", 1, Some(Path::new("/s/abc.jsonl")));
+        assert!(text_of(&json!({"content": kept[0]["content"]})).ends_with("</summary>\n\nThe full conversation before this summary is in /s/abc.jsonl, one JSON entry per line. Search it with rg when the summary lacks a detail you need."));
     }
 
     #[test]
