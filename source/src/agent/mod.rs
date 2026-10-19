@@ -115,6 +115,7 @@ pub enum Event {
     },
     TurnEnd {
         usage: Usage,
+        context_tokens: u64,
     },
     Compacted {
         summary: String,
@@ -403,8 +404,8 @@ impl Agent {
                 // Cache reads are left out: they re-read context an earlier request already paid for.
                 goal.tokens_used += reply.usage.input + reply.usage.cache_write + reply.usage.output;
             }
-            self.last_context_tokens = reply.usage.context_tokens();
-            emit(Event::TurnEnd { usage: reply.usage });
+            self.last_context_tokens = reply.context_tokens;
+            emit(Event::TurnEnd { usage: reply.usage, context_tokens: reply.context_tokens });
             let aborted = reply.stop_reason == "aborted";
             if aborted {
                 keep_finished_text(&mut reply.message);
@@ -530,6 +531,12 @@ impl Agent {
     fn run_tool(&mut self, name: &str, input: &Value, targets: &[PathBuf], user_request: &str, emit: &mut dyn FnMut(Event)) -> (String, bool) {
         if self.abort.load(Ordering::Relaxed) {
             return (ABORTED.into(), true);
+        }
+        if matches!(name, "bash" | "bg_start")
+            && let Some(read) = guard::file_read(input["command"].as_str().unwrap_or_default())
+        {
+            let (output, is_error) = self.run_tool("read", &read, &[], user_request, emit);
+            return (format!("Ran as read, so these anchors are what edits use.\n{output}"), is_error);
         }
         if matches!(name, "bash" | "bg_start")
             && let Some(reason) = guard::bash(input["command"].as_str().unwrap_or_default())

@@ -47,7 +47,7 @@ pub fn run(name: &str, input: &Value, cwd: &Path, anchors: &mut Anchors, rtk: &R
     let result = match name {
         "read" => anchors.read(cwd, input),
         "bash" => bash(input, cwd, rtk, abort),
-        "write" => write(input, cwd, anchors),
+        "write" => write(input, cwd),
         "replace" => anchors.replace(input),
         "replace_match" => anchors.replace_match(input),
         "insert" => anchors.insert(input),
@@ -198,7 +198,7 @@ fn append_status(output: &str, status: &str) -> String {
     if output.is_empty() { status.to_string() } else { format!("{output}\n\n{status}") }
 }
 
-fn write(input: &Value, cwd: &Path, anchors: &mut Anchors) -> Result<String, String> {
+fn write(input: &Value, cwd: &Path) -> Result<String, String> {
     let path = resolve(cwd, str_arg(input, "path")?);
     let content = str_arg(input, "content")?;
     if let Some(parent) = path.parent() {
@@ -216,9 +216,8 @@ fn write(input: &Value, cwd: &Path, anchors: &mut Anchors) -> Result<String, Str
     }
     hashline::replace_file(&path, content.as_bytes())?;
     let path = path.canonicalize().map_err(|e| e.to_string())?;
-    // The write succeeded, so a file that cannot be served as anchors (binary, too big) still reports success.
-    let rows = anchors.written(&path).unwrap_or_else(|e| e);
-    Ok(format!("Successfully wrote to {}\n\n\n--- Auto-read (hashline anchors) ---\n{rows}", path.display()))
+    // No echo of the content: it is already in the call, and every later turn would pay for it twice.
+    Ok(format!("Wrote {} lines to {}. Read the lines you will edit to get their anchors.", content.lines().count(), path.display()))
 }
 
 /// pi file-search's rg argv as JSON events: the pattern after `--`, counts clamped.
@@ -689,6 +688,16 @@ mod tests {
         assert!(!is_error, "{replaced}");
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "alpha\nBETA\ngamma\n");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_reports_the_line_count_without_echoing_the_content() {
+        let dir = std::env::temp_dir().join(format!("agent-write-echo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut anchors = Anchors::new("");
+        let (text, is_error) = run("write", &json!({"path": "a.txt", "content": "alpha\nbeta\n"}), &dir, &mut anchors, &Rtk::OFF, &Arc::new(AtomicBool::new(false)));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!is_error && text.contains("2 lines") && !text.contains("alpha"), "{text}");
     }
 
     #[test]

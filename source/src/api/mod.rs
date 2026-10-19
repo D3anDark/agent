@@ -60,6 +60,8 @@ pub struct Reply {
     pub message: Value,
     pub stop_reason: String,
     pub usage: Usage,
+    /// Tokens the next request starts from. Differs from `usage`, which sums the iterations of a server tool loop.
+    pub context_tokens: u64,
     /// The API's id for this response: Anthropic's `msg_…`, Codex's `resp_…`.
     pub id: String,
     /// Who served it, set by `Client::send`: an account switch or fallback can move a request off the asked-for account and model.
@@ -704,6 +706,8 @@ fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn
     let mut usage = Usage::default();
     let mut stop_reason = String::new();
     let mut id = String::new();
+    // message_delta sums the input of every server tool iteration (tool_search); message_start holds the first request's.
+    let mut prompt_tokens = 0;
     let mut line = String::new();
     let cut_off = |what: &str| ApiError::retryable(format!("Stream ended {what}."));
     loop {
@@ -728,6 +732,7 @@ fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn
             "message_start" => {
                 id = event["message"]["id"].as_str().unwrap_or_default().to_string();
                 read_usage(&event["message"]["usage"], &mut usage);
+                prompt_tokens = usage.input + usage.cache_read + usage.cache_write;
             }
             "content_block_start" => {
                 blocks.push(event["content_block"].clone());
@@ -778,7 +783,7 @@ fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn
             _ => {}
         }
     }
-    Ok(Reply { message: json!({"role": "assistant", "content": blocks}), stop_reason, usage, id, ..Reply::default() })
+    Ok(Reply { message: json!({"role": "assistant", "content": blocks}), stop_reason, context_tokens: prompt_tokens + usage.output, usage, id, ..Reply::default() })
 }
 
 fn append(field: &mut Value, text: &str) {
@@ -888,6 +893,21 @@ mod tests {
         let content = &reply.message["content"];
         assert_eq!(content[0], json!({"type": "thinking", "thinking": "hm", "signature": "sig"}));
         assert_eq!(content[2]["input"], json!({"command": "ls"}));
+    }
+
+    #[test]
+    fn server_tool_iterations_bill_their_sum_but_the_context_is_one_request() {
+        let events = [
+            r#"{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":4,"cache_creation_input_tokens":2769,"cache_read_input_tokens":0,"output_tokens":2}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_regex","input":{}}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":641,"cache_creation_input_tokens":2769,"cache_read_input_tokens":2769,"output_tokens":211}}"#,
+            r#"{"type":"message_stop"}"#,
+        ];
+        let body: String = events.iter().map(|e| format!("event: x\ndata: {e}\n\n")).collect();
+        let reply = parse_stream(&mut body.as_bytes(), &AtomicBool::new(false), &mut |_| {}).ok().unwrap();
+        assert_eq!((reply.usage.input, reply.usage.cache_read, reply.usage.cache_write), (641, 2769, 2769));
+        assert_eq!(reply.context_tokens, 4 + 2769 + 211);
     }
 
     #[test]
