@@ -1,0 +1,346 @@
+diff --git a/src/semver.ts b/src/semver.ts
+index 286de20..cbe9b2f 100644
+--- a/src/semver.ts
++++ b/src/semver.ts
+@@ -1,8 +1,338 @@
++// Port of node-semver v7 range matching with default options (not loose, no includePrerelease).
++const MAX_LENGTH = 256;
++const MAX_SAFE_BUILD_LENGTH = MAX_LENGTH - 6;
++
++const LETTERDASHNUMBER = "[a-zA-Z0-9-]";
++const NUMERICIDENTIFIER = "0|[1-9]\\d*";
++const NUMERICIDENTIFIERLOOSE = "\\d+";
++const NONNUMERICIDENTIFIER = `\\d*[a-zA-Z-]${LETTERDASHNUMBER}*`;
++const MAINVERSION = `(${NUMERICIDENTIFIER})\\.(${NUMERICIDENTIFIER})\\.(${NUMERICIDENTIFIER})`;
++const MAINVERSIONLOOSE = `(${NUMERICIDENTIFIERLOOSE})\\.(${NUMERICIDENTIFIERLOOSE})\\.(${NUMERICIDENTIFIERLOOSE})`;
++const PRERELEASEIDENTIFIER = `(?:${NUMERICIDENTIFIER}|${NONNUMERICIDENTIFIER})`;
++const PRERELEASEIDENTIFIERLOOSE = `(?:${NUMERICIDENTIFIERLOOSE}|${NONNUMERICIDENTIFIER})`;
++const PRERELEASE = `(?:-(${PRERELEASEIDENTIFIER}(?:\\.${PRERELEASEIDENTIFIER})*))`;
++const PRERELEASELOOSE = `(?:-?(${PRERELEASEIDENTIFIERLOOSE}(?:\\.${PRERELEASEIDENTIFIERLOOSE})*))`;
++const BUILDIDENTIFIER = `${LETTERDASHNUMBER}+`;
++const BUILD = `(?:\\+(${BUILDIDENTIFIER}(?:\\.${BUILDIDENTIFIER})*))`;
++const FULLPLAIN = `v?${MAINVERSION}${PRERELEASE}?${BUILD}?`;
++const LOOSEPLAIN = `[v=\\s]*${MAINVERSIONLOOSE}${PRERELEASELOOSE}?${BUILD}?`;
++const GTLT = "((?:<|>)?=?)";
++const XRANGEIDENTIFIER = `${NUMERICIDENTIFIER}|x|X|\\*`;
++const XRANGEPLAIN =
++  `[v=\\s]*(${XRANGEIDENTIFIER})` +
++  `(?:\\.(${XRANGEIDENTIFIER})` +
++  `(?:\\.(${XRANGEIDENTIFIER})` +
++  `(?:${PRERELEASE})?${BUILD}?)?)?`;
++const LONETILDE = "(?:~>?)";
++const LONECARET = "(?:\\^)";
++
++// node-semver bounds these quantifiers (its "safeRe") to avoid ReDoS; the bounds change which inputs match.
++function safeRegex(source: string, flags?: string): RegExp {
++  const replacements: [string, number][] = [
++    ["\\s", 1],
++    ["\\d", MAX_LENGTH],
++    [LETTERDASHNUMBER, MAX_SAFE_BUILD_LENGTH],
++  ];
++  for (const [token, max] of replacements) {
++    source = source
++      .split(`${token}*`)
++      .join(`${token}{0,${max}}`)
++      .split(`${token}+`)
++      .join(`${token}{1,${max}}`);
++  }
++  return new RegExp(source, flags);
++}
++
++const re = {
++  full: safeRegex(`^${FULLPLAIN}$`),
++  build: safeRegex(BUILD),
++  buildStrip: new RegExp(BUILD, "g"),
++  xrange: safeRegex(`^${GTLT}\\s*${XRANGEPLAIN}$`),
++  tildeTrim: safeRegex(`(\\s*)${LONETILDE}\\s+`, "g"),
++  tilde: safeRegex(`^${LONETILDE}${XRANGEPLAIN}$`),
++  caretTrim: safeRegex(`(\\s*)${LONECARET}\\s+`, "g"),
++  caret: safeRegex(`^${LONECARET}${XRANGEPLAIN}$`),
++  comparator: safeRegex(`^${GTLT}\\s*(${FULLPLAIN})$|^$`),
++  comparatorTrim: safeRegex(`(\\s*)${GTLT}\\s*(${LOOSEPLAIN}|${XRANGEPLAIN})`, "g"),
++  hyphenRange: safeRegex(`^\\s*(${XRANGEPLAIN})\\s+-\\s+(${XRANGEPLAIN})\\s*$`),
++  star: safeRegex("(<|>)?=?\\s*\\*"),
++  gte0: safeRegex("^\\s*>=\\s*0\\.0\\.0\\s*$"),
++};
++
++type Identifier = string | number;
++
++type SemVer = {
++  major: number;
++  minor: number;
++  patch: number;
++  prerelease: Identifier[];
++  version: string;
++};
++
++type Operator = "" | "<" | ">" | "<=" | ">=";
++
++// semver is null for the "any" comparator (empty string).
++type Comparator = { operator: Operator; semver: SemVer | null; value: string };
++
++function parseVersion(input: string): SemVer {
++  if (input.length > MAX_LENGTH) throw new TypeError(`version is longer than ${MAX_LENGTH} characters`);
++  const m = input.trim().match(re.full);
++  if (!m) throw new TypeError(`Invalid Version: ${input}`);
++  const [major, minor, patch] = [m[1], m[2], m[3]].map((part) => {
++    const n = Number(part);
++    if (n > Number.MAX_SAFE_INTEGER) throw new TypeError(`Invalid version part: ${part}`);
++    return n;
++  });
++  const prerelease: Identifier[] = m[4]
++    ? m[4].split(".").map((id) => {
++        if (/^[0-9]+$/.test(id)) {
++          const n = Number(id);
++          if (n >= 0 && n < Number.MAX_SAFE_INTEGER) return n;
++        }
++        return id;
++      })
++    : [];
++  const version = `${major}.${minor}.${patch}` + (prerelease.length ? `-${prerelease.join(".")}` : "");
++  return { major, minor, patch, prerelease, version };
++}
++
++function compareIdentifiers(a: Identifier, b: Identifier): number {
++  const aNumeric = /^[0-9]+$/.test(String(a));
++  const bNumeric = /^[0-9]+$/.test(String(b));
++  if (aNumeric && bNumeric) {
++    a = Number(a);
++    b = Number(b);
++  }
++  if (a === b) return 0;
++  if (aNumeric && !bNumeric) return -1;
++  if (bNumeric && !aNumeric) return 1;
++  return a < b ? -1 : 1;
++}
++
++function compareVersions(a: SemVer, b: SemVer): number {
++  const main =
++    compareIdentifiers(a.major, b.major) ||
++    compareIdentifiers(a.minor, b.minor) ||
++    compareIdentifiers(a.patch, b.patch);
++  if (main !== 0) return main;
++  if (a.prerelease.length && !b.prerelease.length) return -1;
++  if (!a.prerelease.length && b.prerelease.length) return 1;
++  for (let i = 0; ; i++) {
++    const x = a.prerelease[i];
++    const y = b.prerelease[i];
++    if (x === undefined && y === undefined) return 0;
++    if (y === undefined) return 1;
++    if (x === undefined) return -1;
++    if (x !== y) return compareIdentifiers(x, y);
++  }
++}
++
++function isX(id: string | number | undefined): boolean {
++  return id === undefined || id === "" || id === "*" || String(id).toLowerCase() === "x";
++}
++
++function parseComparator(input: string): Comparator {
++  const comp = input.trim().split(/\s+/).join(" ");
++  const m = comp.match(re.comparator);
++  if (!m) throw new TypeError(`Invalid comparator: ${comp}`);
++  const raw = m[1] ?? "";
++  const operator = (raw === "=" ? "" : raw) as Operator;
++  if (!m[2]) return { operator, semver: null, value: "" };
++  const semver = parseVersion(m[2]);
++  return { operator, semver, value: operator + semver.version };
++}
++
++function testComparator(comparator: Comparator, version: SemVer): boolean {
++  if (!comparator.semver) return true;
++  const order = compareVersions(version, comparator.semver);
++  switch (comparator.operator) {
++    case "":
++      return order === 0;
++    case "<":
++      return order < 0;
++    case ">":
++      return order > 0;
++    case "<=":
++      return order <= 0;
++    case ">=":
++      return order >= 0;
++  }
++}
++
++function hyphenReplace(...args: string[]): string {
++  let [, from, fM, fm, fp, fpr, , to, tM, tm, tp, tpr] = args;
++  if (isX(fM)) from = "";
++  else if (isX(fm)) from = `>=${fM}.0.0`;
++  else if (isX(fp)) from = `>=${fM}.${fm}.0`;
++  else from = `>=${from}`;
++
++  if (isX(tM)) to = "";
++  else if (isX(tm)) to = `<${+tM + 1}.0.0-0`;
++  else if (isX(tp)) to = `<${tM}.${+tm + 1}.0-0`;
++  else if (tpr) to = `<=${tM}.${tm}.${tp}-${tpr}`;
++  else to = `<=${to}`;
++  return `${from} ${to}`.trim();
++}
++
++function replaceCaret(comp: string): string {
++  return comp.replace(re.caret, (_, M: string, m?: string, p?: string, pr?: string) => {
++    if (isX(M)) return "";
++    if (isX(m)) return `>=${M}.0.0 <${+M + 1}.0.0-0`;
++    if (isX(p)) {
++      if (M === "0") return `>=${M}.${m}.0 <${M}.${+m! + 1}.0-0`;
++      return `>=${M}.${m}.0 <${+M + 1}.0.0-0`;
++    }
++    const from = pr ? `>=${M}.${m}.${p}-${pr}` : `>=${M}.${m}.${p}`;
++    if (M === "0") {
++      if (m === "0") return `${from} <${M}.${m}.${+p! + 1}-0`;
++      return `${from} <${M}.${+m! + 1}.0-0`;
++    }
++    return `${from} <${+M + 1}.0.0-0`;
++  });
++}
++
++function replaceTilde(comp: string): string {
++  return comp.replace(re.tilde, (_, M: string, m?: string, p?: string, pr?: string) => {
++    if (isX(M)) return "";
++    if (isX(m)) return `>=${M}.0.0 <${+M + 1}.0.0-0`;
++    if (isX(p)) return `>=${M}.${m}.0 <${M}.${+m! + 1}.0-0`;
++    if (pr) return `>=${M}.${m}.${p}-${pr} <${M}.${+m! + 1}.0-0`;
++    return `>=${M}.${m}.${p} <${M}.${+m! + 1}.0-0`;
++  });
++}
++
++function replaceXRange(comp: string): string {
++  comp = comp.trim();
++  return comp.replace(re.xrange, (whole, gtlt: string, M: string, m?: string, p?: string) => {
++    if ((isX(M) && !isX(m)) || (isX(m) && p && !isX(p))) return comp;
++    const xM = isX(M);
++    const xm = xM || isX(m);
++    const xp = xm || isX(p);
++    if (gtlt === "=" && xp) gtlt = "";
++    let pr = "";
++    if (xM) return gtlt === ">" || gtlt === "<" ? "<0.0.0-0" : "*";
++    if (gtlt && xp) {
++      let major = Number(M);
++      let minor = xm ? 0 : Number(m);
++      let patch = 0;
++      if (gtlt === ">") {
++        gtlt = ">=";
++        if (xm) {
++          major += 1;
++          minor = 0;
++          patch = 0;
++        } else {
++          minor += 1;
++          patch = 0;
++        }
++      } else if (gtlt === "<=") {
++        gtlt = "<";
++        if (xm) major += 1;
++        else minor += 1;
++      }
++      if (gtlt === "<") pr = "-0";
++      return `${gtlt}${major}.${minor}.${patch}${pr}`;
++    }
++    if (xm) return `>=${M}.0.0 <${+M + 1}.0.0-0`;
++    if (xp) return `>=${M}.${m}.0 <${M}.${+m! + 1}.0-0`;
++    return whole;
++  });
++}
++
++function eachPart(comp: string, replace: (part: string) => string): string {
++  return comp.trim().split(/\s+/).map(replace).join(" ");
++}
++
++function desugar(comp: string): string {
++  comp = comp.replace(re.build, "");
++  comp = eachPart(comp, replaceCaret);
++  comp = eachPart(comp, replaceTilde);
++  comp = eachPart(comp, replaceXRange);
++  return comp.trim().replace(re.star, "");
++}
++
++function parseComparatorSet(input: string): Comparator[] {
++  const range = input
++    .replace(re.buildStrip, "")
++    .replace(re.hyphenRange, hyphenReplace)
++    .replace(re.comparatorTrim, "$1$2$3")
++    .replace(re.tildeTrim, "$1~")
++    .replace(re.caretTrim, "$1^");
++
++  const parts = range
++    .split(" ")
++    .map(desugar)
++    .join(" ")
++    .split(/\s+/)
++    .map((comp) => comp.trim().replace(re.gte0, ""));
++
++  const byValue = new Map<string, Comparator>();
++  for (const comp of parts.map(parseComparator)) {
++    if (comp.value === "<0.0.0-0") return [comp];
++    byValue.set(comp.value, comp);
++  }
++  if (byValue.size > 1) byValue.delete("");
++  return [...byValue.values()];
++}
++
++function parseRange(input: string): Comparator[][] {
++  const raw = input.trim().split(/\s+/).join(" ");
++  let sets = raw.split("||").map((part) => parseComparatorSet(part.trim()));
++  if (sets.length > 1) {
++    const first = sets[0]!;
++    sets = sets.filter((set) => set[0]!.value !== "<0.0.0-0");
++    if (sets.length === 0) return [first];
++    const anySet = sets.find((set) => set.length === 1 && set[0]!.value === "");
++    if (anySet) return [anySet];
++  }
++  return sets;
++}
++
++function testSet(set: Comparator[], version: SemVer): boolean {
++  if (!set.every((comparator) => testComparator(comparator, version))) return false;
++  if (!version.prerelease.length) return true;
++  return set.some(
++    ({ semver }) =>
++      semver !== null &&
++      semver.prerelease.length > 0 &&
++      semver.major === version.major &&
++      semver.minor === version.minor &&
++      semver.patch === version.patch,
++  );
++}
++
++function tryParse<T>(parse: () => T): T | null {
++  try {
++    return parse();
++  } catch {
++    return null;
++  }
++}
++
++function testRange(sets: Comparator[][], input: string): boolean {
++  const version = tryParse(() => parseVersion(input));
++  if (!version) return false;
++  return sets.some((set) => testSet(set, version));
++}
++
+ export function satisfies(version: string, range: string): boolean {
+-  return version === range;
++  const sets = tryParse(() => parseRange(range));
++  if (!sets) return false;
++  return testRange(sets, version);
+ }
+ 
+ export function maxSatisfying(versions: string[], range: string): string | null {
+-  const matching = versions.filter((v) => satisfies(v, range));
+-  return matching.sort().at(-1) ?? null;
++  const sets = tryParse(() => parseRange(range));
++  if (!sets) return null;
++  let max: string | null = null;
++  let maxVersion: SemVer | null = null;
++  for (const candidate of versions) {
++    if (!testRange(sets, candidate)) continue;
++    const parsed = parseVersion(candidate);
++    if (!maxVersion || compareVersions(maxVersion, parsed) === -1) {
++      max = candidate;
++      maxVersion = parsed;
++    }
++  }
++  return max;
+ }

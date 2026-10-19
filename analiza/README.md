@@ -12,19 +12,19 @@ Wszystkie 51 przebiegów zadań w seriach `clean` i `real` przeszło 100% ukryty
 | Kategoria | clean | real | Na podstawie |
 |---|---|---|---|
 | Poprawność | remis | remis | 100% we wszystkich przebiegach |
-| Czas, A | **agent** 31.5 s | **agent** 32.2 s* | jcode 41.2 / 38.9 s, pi 54.3 / 46.9 s |
-| Czas, B | agent 162.3 s ≈ jcode 171.1 s | **agent** 180.9 s | zakresy w B się nakładają, patrz Zastrzeżenia |
-| Koszt, A | **agent** $0.09 | **agent** $0.11* | jcode $0.14 / $0.15, pi $0.20 / $0.16 |
-| Koszt, B | **agent** $0.48 | **agent** $0.57 | jcode $0.60 / $0.97, pi $0.81 / $0.85 |
-| Tokeny, A | **agent** 41k | **agent** 81k* | jcode 159k / 123k, pi 119k / 96k |
-| Tokeny, B | **agent** 241k | **agent** 411k | jcode 399k / 734k, pi 565k / 847k |
-| Wywołania narzędzi, A | **agent** 3.0 | **agent** 3.0* | jcode 4.3 / 3.8, pi 7.3 / 3.3 |
-| Wywołania narzędzi, B | **agent** 9.3 | **agent** 12.0 | jcode 9.7 / 18.3, pi 16.0 / 20.0 |
+| Czas, A | **agent** 31.5 s | **agent** 33.9 s‡ | jcode 41.2 / 38.9 s, pi 54.3 / 46.9 s |
+| Czas, B | agent 162.3 s ≈ jcode 171.1 s | **agent** 165.5 s‡ | jcode 241.4 s, pi 274.9 s w `real`; zakresy w B się nakładają, patrz Zastrzeżenia |
+| Koszt, A | **agent** $0.09 | **agent** $0.09‡ | jcode $0.14 / $0.15, pi $0.20 / $0.16 |
+| Koszt, B | **agent** $0.48 | **agent** $0.49‡ | jcode $0.60 / $0.86, pi $0.81 / $0.84 |
+| Tokeny, A | **agent** 41k | **agent** 84k‡ | jcode 159k / 123k, pi 119k / 96k |
+| Tokeny, B | **agent** 241k | **agent** 327k‡ | jcode 399k / 536k, pi 565k / 796k |
+| Wywołania narzędzi, A | **agent** 3.0 | agent 3.2‡ ≈ pi 3.3 | jcode 4.3 / 3.8, pi 7.3 w `clean` |
+| Wywołania narzędzi, B | **agent** 9.3 | **agent** 10.0‡ | jcode 9.7 / 13.0, pi 16.0 / 20.2 |
 | CPU, RAM, start procesu | **agent** | **agent** | 0.06 s CPU, 26 MB RSS bez pracy |
 | Kontekst bazowy | **agent** 7.9k | **agent** 17.7k | jcode 26.5k / 24.2k, pi 13.2k / 19.4k |
 | Rozmiar instalacji | **agent** | **agent** | 3.2 MB vs 25 MB + Node (pi) i 132 MB (jcode) |
 
-Agent wygrywa każdą kategorię poza czasem B w `clean`, gdzie prowadzi o 9 s w granicach szumu. \* A w `real` dla agenta pochodzi z serii po zmianie jednej reguły w `~/.agents/SYSTEM.md`. Przed zmianą agent przegrywał tu wywołaniami narzędzi (5.2) i tokenami (102k): patrz "A w `real`: dwie ścieżki zapisu".
+Komórki `real` to ×6. W `clean` A to ×3, B ×6 poza pi (×3). Agent wygrywa każdą kategorię poza czasem B w `clean` (prowadzi o 9 s, w granicach szumu) i wywołaniami w A `real` (3.2 wobec 3.3 u pi, remis). ‡ Agent w `real` to seria na obecnym kodzie (`/tmp/agent-bench4`: guard odczytów i `write` bez echa treści, ta sama reguła w `~/.agents/SYSTEM.md`), `results/real/{A,B}-write-no-echo`. Wcześniejsze serie agenta: patrz "A w `real`: dwie ścieżki zapisu" i "B w `real`: odczyty przez `bash`". Serii `clean` nie powtarzano na nowym kodzie.
 
 ## Co zmieniono w agencie przed seriami `clean` i `real`
 
@@ -119,13 +119,32 @@ Zadanie wymaga napisania od zera `satisfies` i `maxSatisfying` zgodnych z node-s
 | A, agent po zmianie reguły: wywołania narzędzi | **3.0** (3–3) | | |
 | A, agent po zmianie reguły: tokeny łącznie | **80.7k** | | |
 | A, agent po zmianie reguły: koszt | **$0.11** | | |
-| B: wynik | 2550/2550 ×3 | 2550/2550 ×3 | 2550/2550 ×3 |
-| B: czas | **180.9 s** (127.7–263.5) | 272.8 s (213.2–375.4) | 252.3 s (166.4–326.6) |
-| B: wywołania narzędzi | **12.0** (7–16) | 18.3 (11–29) | 20.0 (10–27) |
-| B: tokeny wyjściowe | **16635** | 27970 | 19728 |
-| B: tokeny łącznie | **411.3k** | 734.4k | 847.2k |
-| B: koszt | **$0.57** | $0.97 | $0.85 |
-| B: dodane linie w `src/` | 287 | 301 | 296 |
+| B: wynik | 2550/2550 ×6 | 2550/2550 ×6 | 2550/2550 ×6 |
+| B: czas | 215.7 s (127.7–263.5) | 241.4 s (141.4–375.4) | 274.9 s (166.4–379.6) |
+| B: wywołania narzędzi | 16.5 (7–29) | 13.0 (4–29) | 20.2 (10–27) |
+| B: tokeny wyjściowe | 19127 | 24611 | 19721 |
+| B: tokeny łącznie | 647.4k | 536.4k | 796.4k |
+| B: koszt | $0.72 | $0.86 | $0.84 |
+| B: dodane linie w `src/` | 291 | 293 | 298 |
+| B, agent po zmianie guarda: wynik | 2550/2550 ×6 | | |
+| B, agent po zmianie guarda: czas | **192.3 s** (115.1–243.8) | | |
+| B, agent po zmianie guarda: wywołania narzędzi | **12.8** (5–20) | | |
+| B, agent po zmianie guarda: tokeny wyjściowe | **17940** | | |
+| B, agent po zmianie guarda: tokeny łącznie | 548.2k | | |
+| B, agent po zmianie guarda: koszt | **$0.64** | | |
+| B, agent po zmianie guarda: dodane linie w `src/` | 309 | | |
+| Agent na obecnym kodzie (guard + `write` bez echa), A: wynik | 39/39 ×6 | | |
+| Agent na obecnym kodzie, A: czas | **33.9 s** (29.3–45.1) | | |
+| Agent na obecnym kodzie, A: wywołania narzędzi | **3.2** (3–4) | | |
+| Agent na obecnym kodzie, A: tokeny łącznie | **84.1k** | | |
+| Agent na obecnym kodzie, A: koszt | **$0.09** | | |
+| Agent na obecnym kodzie, B: wynik | 2550/2550 ×6 | | |
+| Agent na obecnym kodzie, B: czas | **165.5 s** (136.3–221.1) | | |
+| Agent na obecnym kodzie, B: wywołania narzędzi | **10.0** (5–19) | | |
+| Agent na obecnym kodzie, B: tokeny wyjściowe | **16390** | | |
+| Agent na obecnym kodzie, B: tokeny łącznie | **326.6k** | | |
+| Agent na obecnym kodzie, B: koszt | **$0.49** | | |
+| Agent na obecnym kodzie, B: dodane linie w `src/` | 303 | | |
 
 ### A w `real`: dwie ścieżki zapisu
 
@@ -139,7 +158,17 @@ Przebiegi A agenta w `real` idą jedną z dwóch ścieżek. Na 6 przebiegów 4 z
 
 Diagnostyka LSP po `write` dodaje szum: `tsc-rs` bez `@types/bun` zgłasza `Cannot find name 'Bun'` i `'process'` (TS2591, TS2868). Ścieżki sprawdzono w 4 dodatkowych przebiegach z zapisem sesji, które nie są w wynikach. 3 z nich poszły ścieżką `write`, i w żadnym model nie zmienił kodu z powodu tych błędów.
 
-Zmiana reguły: "Change part of a project file with the anchored tools (...). Create or fully rewrite a file with `write`, or several files at once with one `bash` heredoc." Po niej 6/6 przebiegów agenta poszło ścieżką `bash`: 3 wywołania, 32.2 s, 80.7k tokenów (`results/real/A-new-rule`). B w `real` i przebiegi pi oraz jcode nie były powtarzane. Ich prompty tej reguły nie zawierają.
+Zmiana reguły: "Change part of a project file with the anchored tools (...). Create or fully rewrite a file with `write`, or several files at once with one `bash` heredoc." Po niej 6/6 przebiegów agenta poszło ścieżką `bash`: 3 wywołania, 32.2 s, 80.7k tokenów (`results/real/A-new-rule`). Przebiegi pi i jcode nie były powtarzane. Ich prompty tej reguły nie zawierają.
+
+### B w `real`: odczyty przez `bash`
+
+Przebiegi B 1–3 powstały przed zmianą reguły w `SYSTEM.md`, 4–6 po niej, wszystkie na `/tmp/agent-bench2`. Przebiegi 5 i 6 po `write` wpadły w pętle `read` i `replace` (29 i 23 wywołania). `events.jsonl` agenta zapisuje tylko nazwy narzędzi, więc nie wiadomo, ile z tych wywołań `bash` odrzucił guard. Guard w `tools/guard.rs` odrzucał `cat`, `head` i `sed -n` na pliku komunikatem "Use read(...) instead of bash", więc każdy taki odczyt kosztował dwie tury.
+
+Zmiana w agencie: polecenie `bash`, które tylko wypisuje pliki (`cat FILE`, `head [-N] FILE`, `sed -n 'N,Mp' FILE`), wykonuje się jako `read` z tymi samymi zakresami i zwraca kotwice w tej samej turze. Guard blokuje już tylko ślepy `sleep`. Uprawnienia się nie zmieniają: wcześniej guard i tak kierował model do `read`. Seria `results/real/B-guard-read`, binarka `/tmp/agent-bench3`, ta sama reguła w `SYSTEM.md` co przebiegi 4–6: 192.3 s, 12.8 wywołania, 548k tokenów, $0.64. Maksimum spadło z 29 do 20 wywołań. Przy n=6 i rozrzucie 5–20 to poprawa w granicach szumu, nie dowód. jcode i pi nie były powtarzane.
+
+### B w `real`: `write` bez echa treści
+
+`write` zwracał po zapisie cały plik z kotwicami ("Auto-read"). W B to ~300 linii, które model już wysłał w argumencie, a każda kolejna tura czyta je z cache drugi raz. Teraz `write` zwraca tylko liczbę linii i ścieżkę; kotwice daje `read` wybranego zakresu. Seria `results/real/{A,B}-write-no-echo`, binarka `/tmp/agent-bench4` (guard odczytów + ta zmiana): B 165.5 s, 10.0 wywołania, 327k tokenów, $0.49; A 33.9 s, 3.2 wywołania, 84k, $0.09. Pętla `read`/`replace` po `write` wystąpiła w 2 z 6 przebiegów B (19 i 14 wywołań), w pozostałych 4 było 5–11 wywołań.
 
 Max RSS i CPU z `/usr/bin/time -l` obejmują procesy potomne, w tym `bun test`. W przebiegach z pracą mierzą więc głównie testy, nie harness. Czyste koszty harnessu pokazuje tabela "Narzut bez pracy".
 
@@ -188,13 +217,13 @@ W serii 1 kolejność w A była stała (agent → jcode → pi), a agent był pr
 
 ## Zastrzeżenia
 
-1. **Duży rozrzut w B.** Czas jednego harnessu w B waha się nawet 2× (agent `real`: 127.7–263.5 s, jcode `real`: 213.2–375.4 s). Przy 3–6 przebiegach różnice średnich czasu w B poniżej około 50 s są szumem. Różnice tokenów i kosztu są stabilniejsze.
-2. **jcode nie jest stabilny między seriami.** W serii 1 jcode zrobił B w 6.3 wywołania i 237k tokenów, w `real` w 18.3 i 734k. Ta sama wersja i konfiguracja. Przyczyny nie badano.
+1. **Duży rozrzut w B.** Czas jednego harnessu w B waha się nawet 2× (agent `real`: 127.7–263.5 s, jcode `real`: 141.4–375.4 s). Przy 3–6 przebiegach różnice średnich czasu w B poniżej około 50 s są szumem. Różnice tokenów i kosztu są stabilniejsze.
+2. **jcode nie jest stabilny między seriami.** W serii 1 jcode zrobił B w 6.3 wywołania i 237k tokenów, w `real` w 13.0 i 536k (×6, zakres 4–29 wywołań). Ta sama wersja i konfiguracja. Przyczyny nie badano.
 3. **Effort w jcode nie jest potwierdzony.** `config.toml` jcode ma `anthropic_reasoning_effort = "high"`. Zmienna `JCODE_ANTHROPIC_REASONING_EFFORT` istnieje w binarce, ale nie sprawdzono, czy nadpisuje config w wysyłanym żądaniu.
 4. **pi w `clean` ma system prompt Artura** (patrz "Profile").
 5. **Koszt to ekwiwalent API**, nie realny wydatek na subskrypcji. Cennik `claude-opus-5-5` za 1M tokenów: input $4, output $20, cache read $0.20, cache write $5.
 6. **Jakości kodu nie oceniano** poza testami. Diffy leżą w `results/*/*/*/final.patch`.
-7. **Zmiany w agencie nie są scommitowane.** Liczby agenta dotyczą builda z `/tmp/agent-wt` (gałąź `perf/bench`).
+7. **Zmiany guarda i `write` nie są scommitowane.** Poprawki headroom i licznika kontekstu są w gałęzi `perf/bench` (`81144ff`, `7ad0a38`). Guard odczytów i `write` bez echa (`/tmp/agent-bench4`) leżą w worktree `/tmp/agent-wt` bez commita.
 
 ## Struktura katalogu
 
@@ -217,7 +246,7 @@ analiza/
     B/oracle/               generator przypadków z semver@7 (bun install && bun gen.ts)
     B/reference/semver.ts   rozwiązanie referencyjne B
   results/
-    clean/, real/, series1/  (real/A-new-rule: agent A po zmianie reguły w SYSTEM.md)
+    clean/, real/, series1/  (real/A-new-rule: agent A po zmianie reguły w SYSTEM.md; real/B-guard-read: agent B po zmianie guarda; real/{A,B}-write-no-echo: agent na obecnym kodzie)
       A/<harness>-<n>/, B/<harness>-<n>/
         events.jsonl        pełny strumień zdarzeń harnessu (stdout)
         stderr.txt          stderr + raport /usr/bin/time -l (real/user/sys, max RSS)
