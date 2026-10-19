@@ -18,7 +18,7 @@ use crossterm::event::{
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Stdout, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,6 +39,7 @@ use crate::api::accounts::Policy;
 use crate::api::models::{self, Model};
 use crate::api::oauth::Tokens;
 use crate::api::{AccountView, Client, Delta, Usage};
+use crate::settings::THINKING_LEVELS;
 use crate::settings::{self, PROVIDER_SORTS, PRUNE_SESSIONS, Settings, model_key};
 use crate::tools::bg::Terminals;
 use crate::tools::goal::{Goal, Status as GoalStatus};
@@ -56,9 +57,10 @@ const LOADING_MODELS: &str = "loading models";
 const EXIT_HINT: &str = "Press Ctrl+C again to exit";
 const REWIND_HINT: &str = "Press Esc again to rewind";
 const MODELS_STILL_LOADING: &str = "The model lists are still loading.";
-pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const TOOL_OUTPUT_LINES: usize = 20;
 /// One line per tick while a selection drag rests on the transcript edge.
+const ANIMATION_TICK: Duration = Duration::from_millis(80);
+const HINT_LIFETIME: Duration = Duration::from_millis(1500);
 const EDGE_SCROLL: Duration = Duration::from_millis(40);
 const PERMISSION_SETTLE: Duration = Duration::from_millis(400);
 
@@ -121,7 +123,7 @@ enum Msg {
     },
     Changes(Result<Option<Vec<FileChange>>, String>),
     Context {
-        split: [u64; 5],
+        split: agent::context::PerPart,
         session: Usage,
     },
 }
@@ -169,6 +171,8 @@ enum Panel {
     },
     Plugins {
         index: usize,
+        /// `d` was pressed once on the selected plugin; a second `d` removes it.
+        confirm: bool,
     },
     /// Every skill, including the ones `Settings.disabled_skills` leaves out of the prompt.
     Skills {
@@ -320,19 +324,19 @@ const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
     ("rename-title", MidTurn::Runs, "rename the current session"),
     ("rename-title-ai", MidTurn::Waits, "Name the session again from its first prompt"),
     ("clone", MidTurn::Waits, "Duplicate the current session at the current position"),
-    ("import", MidTurn::Waits, "<file.jsonl> — Import and resume a session from a JSONL file"),
-    ("export", MidTurn::Runs, "[path] — Export session: .jsonl (default) or .md for plain text"),
-    ("model", MidTurn::Runs, "[search] — Select model"),
+    ("import", MidTurn::Waits, "<file.jsonl>: Import and resume a session from a JSONL file"),
+    ("export", MidTurn::Runs, "[path]: Export session: .jsonl (default) or .md for plain text"),
+    ("model", MidTurn::Runs, "[search]: Select model"),
     ("settings", MidTurn::Runs, "Open settings menu"),
-    ("permissions", MidTurn::Runs, "<mode> — ask, auto or full access"),
-    ("thinking", MidTurn::Runs, "<level> — Set thinking level"),
-    ("ponytail", MidTurn::Runs, "<off | lite | full | ultra> — Set the ponytail level"),
-    ("caveman", MidTurn::Runs, "<off | full | ultra | wenyan> — Set the caveman level"),
+    ("permissions", MidTurn::Runs, "<mode>: ask, auto or full access"),
+    ("thinking", MidTurn::Runs, "<level>: Set thinking level"),
+    ("ponytail", MidTurn::Runs, "<off | lite | full | ultra>: Set the ponytail level"),
+    ("caveman", MidTurn::Runs, "<off | full | ultra | wenyan>: Set the caveman level"),
     ("voice", MidTurn::Runs, "Dictate in any language with whisper.cpp, Enter to stop"),
     ("context", MidTurn::Waits, "Show what fills the context window and how well it caches"),
-    ("context-window", MidTurn::Runs, "<100k to 1M | auto> — Set this model's context window"),
+    ("context-window", MidTurn::Runs, "<100k to 1M | auto>: Set this model's context window"),
     ("copy", MidTurn::Runs, "Copy last agent message to clipboard"),
-    ("session", MidTurn::Runs, "Show session info and stats"),
+    ("session", MidTurn::Runs, "Show the session id, file and context use"),
     ("hotkeys", MidTurn::Runs, "Show all keyboard shortcuts"),
     ("compact", MidTurn::Waits, "Manually compact the session context"),
     ("todos", MidTurn::Runs, "Show and edit the todo list"),
@@ -346,13 +350,13 @@ const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
     ("rtk", MidTurn::Runs, "Show rtk token savings"),
     ("ps", MidTurn::Runs, "Show background terminals"),
     ("subagents", MidTurn::Runs, "Show subagent runs"),
-    ("goal", MidTurn::Runs, "[objective | pause | resume | stop | done] — Set a goal the agent keeps working toward, or manage it"),
-    ("btw", MidTurn::Runs, "<question> — Ask a side question without touching the session"),
-    ("worktree", MidTurn::Waits, "[name] — Move this session to a git worktree: pick one, or name a branch to open or create"),
+    ("goal", MidTurn::Runs, "[objective | pause | resume | stop | done]: Set a goal the agent keeps working toward, or manage it"),
+    ("btw", MidTurn::Runs, "<question>: Ask a side question without touching the session"),
+    ("worktree", MidTurn::Waits, "[name]: Move this session to a git worktree: pick one, or name a branch to open or create"),
     ("worktree-remove", MidTurn::Waits, "Remove a git worktree, keeping its branch"),
     ("login", MidTurn::Runs, "Add a Claude or ChatGPT account or an API key"),
     ("logout", MidTurn::Runs, "Remove a saved account"),
-    ("account", MidTurn::Runs, "Show accounts and their usage; pick one to use until it hits the limit"),
+    ("account", MidTurn::Runs, "Show accounts and their usage; pick one to use until it reaches the switch threshold"),
     ("quit", MidTurn::Runs, "Quit agent"),
 ];
 const MENU_ROWS: [usize; 5] = [4, 6, 8, 10, 12];
@@ -490,7 +494,7 @@ struct App {
     context_tokens: u64,
     /// The last request's usage, for /context's cache line.
     last_usage: Usage,
-    cwd: std::path::PathBuf,
+    cwd: PathBuf,
     /// The `@` menu's last listing and the cwd-joined query it answers.
     path_matches: std::cell::RefCell<(PathBuf, Vec<(String, String)>)>,
     git: Git,
@@ -498,7 +502,7 @@ struct App {
     mcp: crate::mcp::Mcp,
     steering: Arc<Mutex<Vec<String>>>,
     /// Slash commands, `!bash` and prompts with pasted images typed while the agent works, with those images; they run one by one once it is idle.
-    queued_commands: Vec<(String, Vec<Value>)>,
+    queued_commands: VecDeque<(String, Vec<Value>)>,
     abort: Arc<AtomicBool>,
     permission_mode: Arc<Mutex<Mode>>,
     hint: Option<(String, Instant)>,
@@ -583,6 +587,8 @@ pub fn run(agent: Agent, setup: Setup, model_lists: JoinHandle<Vec<String>>) -> 
     report_cwd(&app.cwd);
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // `panic = "abort"` skips Drop, so ffmpeg and bg terminals in their own sessions would outlive the agent.
+        crate::process::hang_up_children();
         leave(&mut std::io::stdout());
         previous_hook(info);
     }));
@@ -657,7 +663,7 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                     continue;
                 }
                 Command::Clear => agent.new_session().map(|()| {
-                    let path = agent.session.path.as_ref().map(|p| p.display().to_string());
+                    let path = agent.session.display_path();
                     let _ = events.send(Msg::Agent(Event::SessionStarted { id: agent.session.id.clone(), path }));
                     String::new()
                 }),
@@ -677,14 +683,21 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                     }
                     continue;
                 }
-                Command::Resume(id) => match agent.open_session(&id) {
-                    Ok((messages, accounts)) => {
-                        let path = agent.session.path.as_ref().map(|p| p.display().to_string());
-                        let _ = events.send(Msg::Resumed { id: agent.session.id.clone(), path, messages, spent: agent.spent, notice: agent.session.fork_notice(), accounts });
-                        continue;
+                Command::Resume(_) | Command::Import(_) => {
+                    let opened = match command {
+                        Command::Resume(id) => agent.open_session(&id),
+                        Command::Import(file) => agent.import_session(&file),
+                        _ => unreachable!("the outer arm matched Resume or Import"),
+                    };
+                    match opened {
+                        Ok((messages, accounts)) => {
+                            let path = agent.session.display_path();
+                            let _ = events.send(Msg::Resumed { id: agent.session.id.clone(), path, messages, spent: agent.spent, notice: agent.session.fork_notice(), accounts });
+                            continue;
+                        }
+                        Err(error) => Err(error),
                     }
-                    Err(error) => Err(error),
-                },
+                }
                 Command::Context => {
                     let _ = events.send(Msg::Context { split: agent.context_split(), session: agent.usage });
                     continue;
@@ -706,7 +719,7 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                 },
                 Command::Worktree(cwd) => match agent.move_to(cwd.clone()) {
                     Ok(()) => {
-                        let path = agent.session.path.as_ref().map(|p| p.display().to_string());
+                        let path = agent.session.display_path();
                         let _ = events.send(Msg::Moved { id: agent.session.id.clone(), path, cwd });
                         continue;
                     }
@@ -714,16 +727,8 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                 },
                 Command::Clone => match agent.clone_session() {
                     Ok(()) => {
-                        let path = agent.session.path.as_ref().map(|p| p.display().to_string());
+                        let path = agent.session.display_path();
                         let _ = events.send(Msg::Cloned { id: agent.session.id.clone(), path });
-                        continue;
-                    }
-                    Err(error) => Err(error),
-                },
-                Command::Import(file) => match agent.import_session(&file) {
-                    Ok((messages, accounts)) => {
-                        let path = agent.session.path.as_ref().map(|p| p.display().to_string());
-                        let _ = events.send(Msg::Resumed { id: agent.session.id.clone(), path, messages, spent: agent.spent, notice: agent.session.fork_notice(), accounts });
                         continue;
                     }
                     Err(error) => Err(error),
@@ -756,14 +761,12 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                 Command::FollowUps => agent.run_follow_ups(&mut |event| {
                     let _ = events.send(Msg::Agent(event));
                 }),
-                Command::SaveSpent(spent) => {
-                    if let Err(error) = agent.save_spent(spent) {
-                        let _ = events.send(Msg::Agent(Event::Notice(error)));
-                    }
-                    continue;
-                }
-                Command::SaveGoal => {
-                    if let Err(error) = agent.save_goal() {
+                Command::SaveSpent(_) | Command::SaveGoal => {
+                    let saved = match command {
+                        Command::SaveSpent(spent) => agent.save_spent(spent),
+                        _ => agent.save_goal(),
+                    };
+                    if let Err(error) = saved {
                         let _ = events.send(Msg::Agent(Event::Notice(error)));
                     }
                     continue;
@@ -792,17 +795,19 @@ fn spawn_update(channel: String, events: Sender<Msg>) {
     });
 }
 
+/// One thread per command, so a long-running entry such as a dev server does not hold back the rest.
 fn spawn_on_start(commands: Vec<String>, events: Sender<Msg>) {
-    std::thread::spawn(move || {
-        for command in commands {
+    for command in commands {
+        let events = events.clone();
+        std::thread::spawn(move || {
             let failure = match crate::process::command("sh").args(["-c", &command]).output() {
-                Ok(output) if output.status.success() => continue,
+                Ok(output) if output.status.success() => return,
                 Ok(output) => tail(&String::from_utf8_lossy(&output.stderr)),
                 Err(e) => e.to_string(),
             };
             let _ = events.send(Msg::Agent(Event::Notice(format!("on_start \"{command}\" failed: {failure}"))));
-        }
-    });
+        });
+    }
 }
 
 fn tail(text: &str) -> String {
@@ -828,8 +833,8 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
         screen.draw(out, rows, Some(cursor)).map_err(|e| e.to_string())?;
         let wait = if app.edge_drag.is_some() {
             EDGE_SCROLL
-        } else if app.working.is_some() || app.hint.is_some() || app.transcribing.is_some() || matches!(app.panel, Some(Panel::Subagents { .. })) && app.subagents.lock().unwrap().running() > 0 {
-            Duration::from_millis(80)
+        } else if app.working.is_some() || app.hint.is_some() || app.transcribing.is_some() || (matches!(app.panel, Some(Panel::Subagents { .. })) && app.subagents.lock().unwrap().running() > 0) {
+            ANIMATION_TICK
         } else if app.recording.is_some() {
             Duration::from_secs(1)
         } else if app.terminals.lock().unwrap().running() > 0 || app.subagents.lock().unwrap().running() > 0 {
@@ -853,7 +858,7 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
         {
             app.mouse(mouse);
         }
-        if app.hint.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_millis(1500)) {
+        if app.hint.as_ref().is_some_and(|(_, at)| at.elapsed() > HINT_LIFETIME) {
             app.hint = None;
         }
         // Steering typed after the turn's last check, e.g. while edit hooks ran, still needs a turn.
@@ -861,7 +866,7 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
             app.start(Command::FollowUps);
         }
         while app.working.is_none() && !app.queued_commands.is_empty() {
-            let (text, images) = app.queued_commands.remove(0);
+            let (text, images) = app.queued_commands.pop_front().expect("checked non-empty above");
             // Images pasted into the editor meanwhile belong to the next prompt, so they sit out this one.
             let pasted = std::mem::replace(&mut app.images, images);
             app.submit(text);
@@ -904,7 +909,7 @@ impl App {
             cwd: agent.cwd.clone(),
             path_matches: Default::default(),
             steering: agent.steering.clone(),
-            queued_commands: Vec::new(),
+            queued_commands: VecDeque::new(),
             abort: agent.abort.clone(),
             permission_mode: agent.permission_mode.clone(),
             hint: None,
@@ -916,7 +921,7 @@ impl App {
             menu_index: 0,
             header_len: 0,
             session_id: agent.session.id.clone(),
-            session_path: agent.session.path.as_ref().map(|p| p.display().to_string()),
+            session_path: agent.session.display_path(),
             sessions_dir: agent.sessions_dir.clone(),
             panel: None,
             selection: Selection::default(),
@@ -1064,9 +1069,10 @@ impl App {
     }
 
     /// Editor row `line`, counted up from the last row, prompt included like transcript gutters.
+    /// Empty when a paste, slash command or transcript shrank the editor under a selection made earlier.
     fn input_line(&self, line: usize) -> Line {
         let (mut rows, _) = self.editor.render(self.editor_width);
-        let index = rows.len() - 1 - line;
+        let Some(index) = rows.len().checked_sub(line + 1) else { return Line::new() };
         rows.swap_remove(index)
     }
 
@@ -1198,8 +1204,7 @@ impl App {
                     self.push(Item::Error(error));
                 }
             }
-            Msg::UsageFetched => {}
-            Msg::McpChanged => {}
+            Msg::UsageFetched | Msg::McpChanged => {}
             Msg::PluginsChanged => match self.plugins.take_panel() {
                 // A plugin closes only its own panel, and never replaces one the user is in.
                 Some((plugin, data)) if data.is_null() => {
@@ -1366,8 +1371,8 @@ impl App {
                 }
             }
             KeyCode::Down if alt => self.scroll = 0,
-            KeyCode::PageUp => self.scroll += 10,
-            KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
+            KeyCode::PageUp => self.scroll += self.transcript_view.0.max(1),
+            KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(self.transcript_view.0.max(1)),
             KeyCode::Up => self.editor.up(self.editor_width),
             KeyCode::Down if self.editor.is_empty() && self.subagents.lock().unwrap().running() > 0 => {
                 self.open_subagents();
@@ -1393,7 +1398,7 @@ impl App {
         let mut kept = Vec::new();
         for (index, block) in std::mem::take(&mut self.images).into_iter().enumerate() {
             if text.contains(&format!("[Image #{}]", index + 1)) {
-                self.push(Item::Tool { id: String::new(), name: "read_image".into(), input: serde_json::json!({"image": image_note(index + 1, &block)}), result: Some((String::new(), false)) });
+                self.push(Item::Tool { id: String::new(), name: "read_image".into(), input: json!({"image": image_note(index + 1, &block)}), result: Some((String::new(), false)) });
                 kept.push(block);
             }
         }
@@ -1445,14 +1450,13 @@ impl App {
         self.hint = Some((format!("Thinking level: {}", self.settings.thinking), Instant::now()));
     }
 
-    /// Changes, saves and applies settings; the agent thread picks them up before its next turn.
     fn plugin_settings_key(&mut self, key: KeyEvent) {
         let Some(Panel::PluginSettings { plugin, index, edit }) = self.panel.as_mut() else { return };
         let plugin = plugin.clone();
         let declared = self.plugins.list().into_iter().find(|view| view.name == plugin).map(|view| view.settings).unwrap_or_default();
         let Some(entry) = declared.get(*index).cloned() else {
             if key.code == KeyCode::Esc {
-                self.panel = Some(Panel::Plugins { index: 0 });
+                self.panel = Some(Panel::Plugins { index: 0, confirm: false });
             }
             return;
         };
@@ -1472,7 +1476,7 @@ impl App {
                 return;
             }
             (KeyCode::Esc, None) => {
-                self.panel = Some(Panel::Plugins { index: 0 });
+                self.panel = Some(Panel::Plugins { index: 0, confirm: false });
                 return;
             }
             (KeyCode::Up, None) => {
@@ -1503,6 +1507,7 @@ impl App {
         self.plugins.sync(&self.settings.disabled_plugins, &self.settings.plugin_settings);
     }
 
+    /// Changes, saves and applies settings; the agent thread picks them up before its next turn.
     fn update_settings(&mut self, change: impl FnOnce(&mut Settings)) {
         let old = self.settings.clone();
         change(&mut self.settings);
@@ -1585,7 +1590,7 @@ impl App {
             let command = text.starts_with('!') || text.trim().starts_with("/skill:") || self.slash_commands.iter().any(|(name, _)| command_args(&text, &format!("/{name}")).is_some());
             if command || !self.images.is_empty() {
                 // The images travel with their text, so an image pasted for the next prompt starts again at #1.
-                self.queued_commands.push((text, std::mem::take(&mut self.images)));
+                self.queued_commands.push_back((text, std::mem::take(&mut self.images)));
             } else {
                 self.steering.lock().unwrap().push(text);
             }
@@ -1645,6 +1650,7 @@ impl App {
                 self.update_settings(|s| s.thinking = args.to_string());
                 self.system("thinking", format!("Level set to {args}"));
             }
+            "thinking" => self.push(Item::Error(format!("Unknown thinking level {args}. Levels: {}", THINKING_LEVELS.join(", ")))),
             "ponytail" | "caveman" if args.is_empty() => {
                 let (level, levels) = if name == "ponytail" { (&self.settings.ponytail, PONYTAIL_LEVELS) } else { (&self.settings.caveman, CAVEMAN_LEVELS) };
                 self.system(name, format!("{level}. Levels: {}", levels.join(", ")));
@@ -1668,11 +1674,11 @@ impl App {
                     self.update_settings(|s| s.permission_mode = mode);
                     self.system("permissions", format!("mode set to {}", mode.label()));
                 }
-                None => self.push(Item::Error(format!("Unknown mode {args}. Modes: ask, auto, full access"))),
+                None => self.push(Item::Error(format!("Unknown mode {args}. Modes: {}", MODES.map(Mode::label).join(", ")))),
             },
             "settings" => self.panel = Some(Panel::Settings { row: 0, query: Editor::new() }),
             "todos" => self.panel = Some(Panel::Todos { index: 0 }),
-            "plugins" => self.panel = Some(Panel::Plugins { index: 0 }),
+            "plugins" => self.panel = Some(Panel::Plugins { index: 0, confirm: false }),
             "skills" => self.panel = Some(Panel::Skills { index: 0 }),
             "mcp" => self.panel = Some(Panel::Mcp { index: 0, confirm: false }),
             "changes" => _ = self.commands.send(Command::Changes),
@@ -1680,11 +1686,7 @@ impl App {
             "history" => self.open_history(),
             "usage" => {
                 self.panel = Some(Panel::Usage { tab: 0, totals: usage::totals(&self.sessions_dir, &self.session_id, crate::process::now_ms()) });
-                let (client, events) = (self.client.clone(), self.events.clone());
-                std::thread::spawn(move || {
-                    client.refresh_all_usage();
-                    let _ = events.send(Msg::UsageFetched);
-                });
+                self.refresh_usage_in_background();
             }
             "skill-usage" => self.skill_usage(),
             "rtk" => self.rtk_gain(),
@@ -1700,18 +1702,13 @@ impl App {
             "logout" | "account" if self.client.accounts().is_empty() => self.system(name, "No accounts. Add one with /login."),
             "logout" | "account" => {
                 self.panel = Some(Panel::Accounts { logout: name == "logout", query: Editor::new(), index: 0 });
-                let (client, events) = (self.client.clone(), self.events.clone());
-                std::thread::spawn(move || {
-                    client.refresh_all_usage();
-                    let _ = events.send(Msg::UsageFetched);
-                });
+                self.refresh_usage_in_background();
             }
             "worktree" | "worktree-remove" => {
                 if let Err(error) = self.worktree(name == "worktree-remove", args) {
                     self.push(Item::Error(error));
                 }
             }
-            "thinking" => self.push(Item::Error(format!("Unknown thinking level {args}. Levels: {}", THINKING_LEVELS.join(", ")))),
             "context-window" if args.is_empty() => self.system("context-window", format!("{}. Set 100k to 1M or auto for this model, per provider in /settings", tokens(self.context_window()))),
             "context-window" if args == "auto" => {
                 let Some(key) = self.loaded_model_key() else { return };
@@ -1754,7 +1751,7 @@ impl App {
             {
                 match crate::agent::prompt::expand_skill(trimmed, &self.skills) {
                     Ok(expanded) => {
-                        if let Err(error) = skill_usage::record(&self.home.join(".agents"), skill, "user", &self.cwd) {
+                        if let Err(error) = skill_usage::record(&self.home.join(".agents"), skill, skill_usage::By::User, &self.cwd) {
                             self.push(Item::Error(error));
                         }
                         self.push(Item::User(text.clone()));
@@ -1783,6 +1780,13 @@ impl App {
         }
     }
 
+    fn refresh_usage_in_background(&self) {
+        let (client, events) = (self.client.clone(), self.events.clone());
+        std::thread::spawn(move || {
+            client.refresh_all_usage();
+            let _ = events.send(Msg::UsageFetched);
+        });
+    }
     /// Keys while a panel is open: Esc and Ctrl+C close it, the rest belongs to the panel.
     fn panel_key(&mut self, key: KeyEvent) {
         let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
@@ -1808,7 +1812,11 @@ impl App {
                 _ => return,
             };
             let Some(Panel::Permission { request, reply, .. }) = self.panel.take() else { unreachable!() };
-            let decision = [Decision::Allow, Decision::AllowAlways, Decision::Deny].into_iter().nth(choice).unwrap();
+            let decision = match choice {
+                0 => Decision::Allow,
+                1 => Decision::AllowAlways,
+                _ => Decision::Deny,
+            };
             if matches!(decision, Decision::Deny) {
                 self.system("permissions", format!("Denied {}", request.detail));
             }
@@ -1822,43 +1830,28 @@ impl App {
             return;
         }
         if let Some(Panel::Login(login)) = self.panel.as_mut() {
+            if key.code == KeyCode::Enter
+                && let Some(name) = login.taken_name(&self.client.accounts())
+            {
+                self.push(Item::Error(format!("An account named {name} already exists; pick another name.")));
+                return;
+            }
             let action = login.key(key);
             self.login_action(action);
             return;
         }
-        if matches!(self.panel, Some(Panel::Btw)) {
-            self.btw_key(key);
-            return;
+        match self.panel {
+            Some(Panel::Btw) => return self.btw_key(key),
+            Some(Panel::Models { .. }) => return self.models_key(key),
+            Some(Panel::ContextWindows { .. }) => return self.context_windows_key(key),
+            Some(Panel::ProviderOrder { .. }) => return self.provider_order_key(key),
+            Some(Panel::Diff { .. }) => return self.diff_key(code),
+            Some(Panel::Subagent { .. }) => return self.subagent_key(code),
+            Some(Panel::Terminal { .. }) => return self.terminal_key(code),
+            Some(Panel::PluginSettings { .. }) => return self.plugin_settings_key(key),
+            _ => {}
         }
-        if matches!(self.panel, Some(Panel::Models { .. })) {
-            self.models_key(key);
-            return;
-        }
-        if matches!(self.panel, Some(Panel::ContextWindows { .. })) {
-            self.context_windows_key(key);
-            return;
-        }
-        if matches!(self.panel, Some(Panel::ProviderOrder { .. })) {
-            self.provider_order_key(key);
-            return;
-        }
-        if matches!(self.panel, Some(Panel::Diff { .. })) {
-            self.diff_key(code);
-            return;
-        }
-        if matches!(self.panel, Some(Panel::Subagent { .. })) {
-            self.subagent_key(code);
-            return;
-        }
-        if matches!(self.panel, Some(Panel::Terminal { .. })) {
-            self.terminal_key(code);
-            return;
-        }
-        if matches!(self.panel, Some(Panel::PluginSettings { .. })) {
-            self.plugin_settings_key(key);
-            return;
-        }
-        if let (KeyCode::Enter, Some(Panel::Plugins { index })) = (code, &self.panel) {
+        if let (KeyCode::Enter, Some(Panel::Plugins { index, .. })) = (code, &self.panel) {
             if let Some(view) = self.plugins.list().into_iter().nth(*index).filter(|view| view.installed) {
                 self.panel = Some(Panel::PluginSettings { plugin: view.name, index: 0, edit: None });
             }
@@ -1985,10 +1978,11 @@ impl App {
                     _ => {}
                 }
             }
-            Some(Panel::Plugins { index }) => {
+            Some(Panel::Plugins { index, confirm }) => {
                 let views = self.plugins.list();
                 *index = (*index).min(views.len().saturating_sub(1));
                 let Some(view) = views.get(*index) else { return };
+                let confirmed = std::mem::take(confirm);
                 let changed = match code {
                     KeyCode::Up => {
                         *index = index.saturating_sub(1);
@@ -2009,6 +2003,11 @@ impl App {
                             }
                         });
                         Ok(())
+                    }
+                    // Removing deletes the state the plugin keeps next to its code, so it takes a second press.
+                    KeyCode::Char('d') if view.installed && !confirmed => {
+                        *confirm = true;
+                        return;
                     }
                     KeyCode::Char('d') if view.installed => crate::plugins::remove(&self.home, &view.name),
                     _ => return,
@@ -2473,14 +2472,8 @@ impl App {
             self.open_context_windows();
             return;
         }
-        let thinking: Vec<String> = THINKING_LEVELS.iter().map(|l| l.to_string()).collect();
-        let ponytail: Vec<String> = PONYTAIL_LEVELS.iter().map(|l| l.to_string()).collect();
-        let caveman: Vec<String> = CAVEMAN_LEVELS.iter().map(|l| l.to_string()).collect();
-        let channels: Vec<String> = crate::update::CHANNELS.iter().map(|c| c.to_string()).collect();
-        let prune: Vec<String> = PRUNE_SESSIONS.iter().map(|p| p.to_string()).collect();
-        let sorts: Vec<String> = PROVIDER_SORTS.iter().map(|sort| sort.to_string()).collect();
         self.update_settings(|s| match row {
-            1 => s.thinking = step(&thinking, &s.thinking, forward),
+            1 => s.thinking = step(&THINKING_LEVELS, &s.thinking.as_str(), forward).to_string(),
             2 => s.permission_mode = step(&MODES, &s.permission_mode, forward),
             3 => s.auto_compact = !s.auto_compact,
             4 => s.reserve_tokens = step(&RESERVE_TOKENS, &s.reserve_tokens, forward),
@@ -2490,25 +2483,24 @@ impl App {
             9 => s.condense_min_batch_chars = step(&CONDENSE_MIN_CHARS, &s.condense_min_batch_chars, forward),
             10 => s.switch_at_percent = step(&SWITCH_AT_PERCENT, &s.switch_at_percent, forward),
             11 => s.when_all_over_limit = step(&Policy::ALL, &s.when_all_over_limit, forward),
-            14 => s.ponytail = step(&ponytail, &s.ponytail, forward),
-            15 => s.caveman = step(&caveman, &s.caveman, forward),
+            14 => s.ponytail = step(&PONYTAIL_LEVELS, &s.ponytail.as_str(), forward).to_string(),
+            15 => s.caveman = step(&CAVEMAN_LEVELS, &s.caveman.as_str(), forward).to_string(),
             16 => s.rtk = !s.rtk,
             17 => s.headroom = !s.headroom,
-            18 => s.subagent_effort = step(&thinking, &s.subagent_effort, forward),
+            18 => s.subagent_effort = step(&THINKING_LEVELS, &s.subagent_effort.as_str(), forward).to_string(),
             19 => s.notifications = !s.notifications,
             20 => s.scroll_lines = step(&SCROLL_LINES, &s.scroll_lines, forward),
             21 => s.copy_on_select = !s.copy_on_select,
-            22 => s.update_channel = step(&channels, &s.update_channel, forward),
+            22 => s.update_channel = step(&crate::update::CHANNELS, &s.update_channel.as_str(), forward).to_string(),
             23 => s.menu_rows = step(&MENU_ROWS, &s.menu_rows, forward),
-            24 => s.prune_sessions = step(&prune, &s.prune_sessions, forward),
-            25 => s.provider_sort = step(&sorts, &s.provider_sort, forward),
+            24 => s.prune_sessions = step(&PRUNE_SESSIONS, &s.prune_sessions.as_str(), forward).to_string(),
+            25 => s.provider_sort = step(&PROVIDER_SORTS, &s.provider_sort.as_str(), forward).to_string(),
             _ => unreachable!("rows 0, 8, 12 and 13 open their own panels"),
         });
     }
 
     fn setting_values(&self) -> [Line; 26] {
         let s = &self.settings;
-        let on_off = |value: bool| if value { "on" } else { "off" };
         let condense_model = if s.condense_model.is_empty() { "auto" } else { &s.condense_model };
         let fallback_model = if s.fallback_model.is_empty() { "auto" } else { &s.fallback_model };
         let model = self.model();
@@ -2516,11 +2508,11 @@ impl App {
             vec![span(model.map_or(LOADING_MODELS.into(), |m| format!("{} · {}", m.provider, m.id)), BRIGHT.bold())],
             choices(THINKING_LEVELS.map(String::from), &s.thinking),
             choices(MODES.map(|m| m.label().to_string()), s.permission_mode.label()),
-            choices(["off", "on"].map(String::from), on_off(s.auto_compact)),
+            on_off_choices(s.auto_compact),
             choices(RESERVE_TOKENS.map(tokens), &tokens(s.reserve_tokens)),
             choices(KEEP_RECENT_TOKENS.map(tokens), &tokens(s.keep_recent_tokens)),
-            choices(["off", "on"].map(String::from), on_off(s.expand_tools)),
-            choices(["off", "on"].map(String::from), on_off(s.condense)),
+            on_off_choices(s.expand_tools),
+            on_off_choices(s.condense),
             vec![span(condense_model, BRIGHT.bold())],
             choices(CONDENSE_MIN_CHARS.map(|n| n.to_string()), &s.condense_min_batch_chars.to_string()),
             choices(SWITCH_AT_PERCENT.map(switch_label), &switch_label(s.switch_at_percent)),
@@ -2532,12 +2524,12 @@ impl App {
             },
             choices(PONYTAIL_LEVELS.map(String::from), &s.ponytail),
             choices(CAVEMAN_LEVELS.map(String::from), &s.caveman),
-            optional_tool(on_off(s.rtk), "rtk"),
-            optional_tool(on_off(s.headroom), "headroom"),
+            optional_tool(s.rtk, "rtk"),
+            optional_tool(s.headroom, "headroom"),
             choices(THINKING_LEVELS.map(String::from), &s.subagent_effort),
-            choices(["off", "on"].map(String::from), on_off(s.notifications)),
+            on_off_choices(s.notifications),
             choices(SCROLL_LINES.map(|n| n.to_string()), &s.scroll_lines.to_string()),
-            choices(["off", "on"].map(String::from), on_off(s.copy_on_select)),
+            on_off_choices(s.copy_on_select),
             choices(crate::update::CHANNELS.map(String::from), &s.update_channel),
             choices(MENU_ROWS.map(|n| n.to_string()), &s.menu_rows.to_string()),
             choices(PRUNE_SESSIONS.map(String::from), &s.prune_sessions),
@@ -2778,7 +2770,7 @@ impl App {
                 }
                 lines
             }
-            Panel::Plugins { index } => {
+            Panel::Plugins { index, confirm } => {
                 let rows: Vec<panel::Row> = self
                     .plugins
                     .list()
@@ -2802,7 +2794,11 @@ impl App {
                     rows: &rows,
                     selected: *index,
                     empty: "No plugins. Install one with `agent plugin install <path>`.",
-                    hint: "↑↓ navigate     space install/enable/disable     enter settings     d remove     esc close",
+                    hint: if *confirm {
+                        "d again removes the plugin and the state it saved     any other key cancels"
+                    } else {
+                        "↑↓ navigate     space install/enable/disable     enter settings     d remove     esc close"
+                    },
                 };
                 view.render(width, PANEL_ROWS)
             }
@@ -3205,7 +3201,11 @@ impl App {
             None => bottom.extend(self.menu()),
         }
         bottom.push(Vec::new());
-        self.editor_width = width;
+        if self.editor_width != width {
+            // The selection counts wrapped rows, which a new width renumbers; input_line would index past them.
+            self.input_selection = Selection::default();
+            self.editor_width = width;
+        }
         let (mut editor_rows, (cursor_x, cursor_row)) = self.editor.render(width);
         let editor_top = bottom.len();
         let editor_height = editor_rows.len();
@@ -3609,7 +3609,15 @@ fn command_args<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 
 /// OSC 7 tells Ghostty the cwd, so new splits open in the worktree this session moved to.
 fn report_cwd(cwd: &Path) {
-    let url = cwd.display().to_string().replace('%', "%25").replace(' ', "%20");
+    // Control characters too: an ESC or BEL in a directory name would end the sequence early.
+    let mut url = String::new();
+    for c in cwd.display().to_string().chars() {
+        if c == '%' || c == ' ' || c.is_control() {
+            url.push_str(&format!("%{:02X}", c as u32));
+        } else {
+            url.push(c);
+        }
+    }
     print!("\x1b]7;file://{url}\x1b\\");
     let _ = std::io::stdout().flush();
 }
@@ -4001,7 +4009,7 @@ fn footer_rows(left: Line, right: Line, width: usize) -> Vec<Line> {
     rows
 }
 
-fn context_lines(split: [u64; 5], window: u64, session: Usage, last: Usage) -> Vec<Line> {
+fn context_lines(split: agent::context::PerPart, window: u64, session: Usage, last: Usage) -> Vec<Line> {
     let used: u64 = split.iter().sum();
     let percent = |part: u64, of: u64| format!("{}%", (part * 100).checked_div(of).unwrap_or(0));
     let mut lines = vec![vec![span("Context ", TOOL_NAME), span(format!("{} of {} ({})", tokens(used), tokens(window), percent(used, window)), PLAIN)]];
@@ -4288,15 +4296,21 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("Cannot run {program}: {e}"))?;
-    child.stdin.take().unwrap().write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    // The stdin handle drops before `wait`, so the child sees EOF; it is reaped even when the write failed.
+    let written = child.stdin.take().unwrap().write_all(text.as_bytes());
     child.wait().map_err(|e| e.to_string())?;
-    Ok(())
+    written.map_err(|e| e.to_string())
 }
 
 fn open_in_browser(url: &str) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(format!("Not a web link: {url}"));
+    }
     if !cfg!(target_os = "macos") {
-        // Not waited for: xdg-open runs a browser without a desktop handler in the foreground.
-        crate::process::command("xdg-open").arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map_err(|e| format!("Cannot run xdg-open: {e}"))?;
+        // Reaped on a thread: xdg-open runs a browser without a desktop handler in the foreground.
+        let mut child =
+            crate::process::command("xdg-open").arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map_err(|e| format!("Cannot run xdg-open: {e}"))?;
+        std::thread::spawn(move || child.wait());
         return Ok(());
     }
     // output() and not status(): open's stderr would draw over the alternate screen.
@@ -4386,8 +4400,12 @@ fn choices(options: impl IntoIterator<Item = String>, current: &str) -> Line {
 }
 
 /// An on/off row for a tool the user installs separately; the setting does nothing until `binary` is on PATH.
-fn optional_tool(current: &str, binary: &str) -> Line {
-    let mut line = choices(["off", "on"].map(String::from), current);
+fn on_off_choices(on: bool) -> Line {
+    choices(["off", "on"].map(String::from), if on { "on" } else { "off" })
+}
+
+fn optional_tool(on: bool, binary: &str) -> Line {
+    let mut line = on_off_choices(on);
     if !crate::process::installed(binary) {
         line.push(span(format!("  {binary} is not installed"), MUTED));
     }
@@ -4395,7 +4413,7 @@ fn optional_tool(current: &str, binary: &str) -> Line {
 }
 
 /// fx's session age: 45s, 3m, 5h, 2d.
-fn age(time: std::time::SystemTime) -> String {
+fn age(time: SystemTime) -> String {
     let secs = time.elapsed().map_or(0, |d| d.as_secs());
     match secs {
         s if s < 60 => format!("{s}s"),
@@ -4450,7 +4468,7 @@ mod tests {
 
     #[test]
     fn a_finished_subagent_shows_its_status_counts_and_error() {
-        let run = crate::agent::subagent::tests::scan_run();
+        let run = crate::agent::subagent::scan_run();
         *run.state.lock().unwrap() = crate::agent::subagent::RunState {
             tool_calls: 1,
             elapsed: Some(Duration::from_secs(319)),
@@ -4633,7 +4651,7 @@ mod tests {
 
     #[test]
     fn token_counts_round_like_pi() {
-        assert_eq!([tokens(950), tokens(14_400), tokens(1_250_000)], ["950", "14k", "1.2M"]);
+        assert_eq!([tokens(950), tokens(14_400), tokens(999_600), tokens(1_250_000)], ["950", "14k", "1.0M", "1.2M"]);
     }
 
     #[test]

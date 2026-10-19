@@ -90,6 +90,8 @@ impl AskPanel {
         let mut lines = vec![Vec::new(), self.tabs()];
         lines.extend(wrap(&[span(question.question.clone(), PLAIN.bold())], width, &Vec::new()));
         lines.push(Vec::new());
+        // As wide as the widest `lead`, so wrapped text lines up under the labels.
+        let indent = vec![span(" ".repeat(4 + format!("{}. ", question.options.len() + 1).len()), PLAIN)];
         for (index, option) in question.options.iter().enumerate() {
             let check = match (question.multi, draft.picked.contains(&index)) {
                 (false, _) => "",
@@ -100,7 +102,6 @@ impl AskPanel {
             line.push(span(format!("{check}{}", option.label), style(draft.row, index)));
             lines.push(line);
             if !option.description.is_empty() {
-                let indent = vec![span("       ", PLAIN)];
                 lines.extend(wrap(&[span(option.description.as_str(), MUTED)], width, &indent));
             }
         }
@@ -109,7 +110,6 @@ impl AskPanel {
         line.push(span(TYPE_SOMETHING, style(draft.row, custom)));
         lines.push(line);
         if draft.row == custom || !draft.typed.is_empty() {
-            let indent = vec![span("       ", PLAIN)];
             lines.extend(wrap(&[span(draft.typed.field(None), BRIGHT)], width, &indent));
         }
         if let Some(preview) = question.options.get(draft.row).and_then(|o| o.preview.as_ref()) {

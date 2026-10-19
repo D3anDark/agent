@@ -110,6 +110,10 @@ impl Editor {
     // Edits that change nothing (backspace at the start) push a duplicate, which undo skips.
     fn checkpoint(&mut self) {
         self.undo.push((self.lines.clone(), self.row, self.col));
+        // Each entry is a full copy, so a long paste followed by many edits would grow without end.
+        if self.undo.len() > 200 {
+            self.undo.remove(0);
+        }
         self.typing_at = None;
     }
 
@@ -209,20 +213,20 @@ impl Editor {
 
     fn word_left(&mut self) {
         let chars: Vec<char> = self.lines[self.row].chars().collect();
-        while self.col > 0 && chars[self.col - 1] == ' ' {
+        while self.col > 0 && chars[self.col - 1].is_whitespace() {
             self.col -= 1;
         }
-        while self.col > 0 && chars[self.col - 1] != ' ' {
+        while self.col > 0 && !chars[self.col - 1].is_whitespace() {
             self.col -= 1;
         }
     }
 
     fn word_right(&mut self) {
         let chars: Vec<char> = self.lines[self.row].chars().collect();
-        while self.col < chars.len() && chars[self.col] == ' ' {
+        while self.col < chars.len() && chars[self.col].is_whitespace() {
             self.col += 1;
         }
-        while self.col < chars.len() && chars[self.col] != ' ' {
+        while self.col < chars.len() && !chars[self.col].is_whitespace() {
             self.col += 1;
         }
     }

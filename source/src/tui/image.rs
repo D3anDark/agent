@@ -6,7 +6,8 @@ const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
 /// The image file a paste names: terminals paste a dropped file as its path, shell-escaped or quoted.
 pub fn pasted_path(text: &str) -> Option<PathBuf> {
     let text = text.trim();
-    let path = match text.strip_prefix('\'').and_then(|rest| rest.strip_suffix('\'')) {
+    let quoted = ['\'', '"'].into_iter().find_map(|quote| text.strip_prefix(quote)?.strip_suffix(quote));
+    let path = match quoted {
         Some(quoted) => PathBuf::from(quoted),
         None => PathBuf::from(unescape(text)),
     };
@@ -26,8 +27,15 @@ fn unescape(text: &str) -> String {
     out
 }
 
+/// The Anthropic API refuses images over 5 MB.
+const MAX_IMAGE_BYTES: u64 = 5 << 20;
+
 /// Reads an image file into an API image block.
 pub fn block(path: &Path) -> Result<Value, String> {
+    let size = std::fs::metadata(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?.len();
+    if size > MAX_IMAGE_BYTES {
+        return Err(format!("{} is {}; images over {} are not attached.", path.display(), crate::tools::format_size(size as usize), crate::tools::format_size(MAX_IMAGE_BYTES as usize)));
+    }
     let bytes = std::fs::read(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
     bytes_block(&bytes).ok_or_else(|| format!("Not an image: {}", path.display()))
 }
@@ -48,6 +56,8 @@ fn sniffed_media_type(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+const CLIPBOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Reads the clipboard image into an API image block: `osascript` on macOS, `wl-paste` on Wayland, `xclip` on X11.
 pub fn from_clipboard() -> Result<Value, String> {
     if cfg!(target_os = "macos") {
@@ -55,7 +65,8 @@ pub fn from_clipboard() -> Result<Value, String> {
     }
     let (program, args): (&str, &[&str]) =
         if std::env::var_os("WAYLAND_DISPLAY").is_some() { ("wl-paste", &["--type", "image/png"]) } else { ("xclip", &["-selection", "clipboard", "-target", "image/png", "-out"]) };
-    let output = crate::process::command(program).args(args).output().map_err(|e| format!("Cannot run {program}: {e}"))?;
+    // Runs on the UI thread; a clipboard owner that never answers would freeze the TUI.
+    let output = crate::process::output_within(crate::process::command(program).args(args), CLIPBOARD_TIMEOUT).map_err(|e| format!("Cannot run {program}: {e}"))?.ok_or("Clipboard read timed out.")?;
     let block = if output.status.success() { bytes_block(&output.stdout) } else { None };
     block.ok_or_else(|| "No image in the clipboard".into())
 }
@@ -63,9 +74,20 @@ pub fn from_clipboard() -> Result<Value, String> {
 /// Saves the clipboard image as PNG and reads it into an API image block.
 fn from_macos_clipboard() -> Result<Value, String> {
     let path = std::env::temp_dir().join(format!("agent-clipboard-{}.png", std::process::id()));
-    let script = format!("set f to open for access (POSIX file \"{}\") with write permission\nset eof f to 0\nwrite (the clipboard as «class PNGf») to f\nclose access f", path.display());
-    let output = crate::process::command("osascript").arg("-e").arg(script).output().map_err(|e| format!("Cannot run osascript: {e}"))?;
-    let block = if output.status.success() { block(&path) } else { Err("No image in the clipboard".into()) };
+    // The path goes in as an argument, so a `"` in $TMPDIR cannot end a string literal and run as AppleScript.
+    let script = "on run argv\nset f to open for access (POSIX file (item 1 of argv)) with write permission\nset eof f to 0\nwrite (the clipboard as «class PNGf») to f\nclose access f\nend run";
+    let output = crate::process::output_within(crate::process::command("osascript").args(["-e", script]).arg(&path), CLIPBOARD_TIMEOUT)
+        .map_err(|e| format!("Cannot run osascript: {e}"))?
+        .ok_or("Clipboard read timed out.")?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // -1700 is "can't make into type": the clipboard holds no image. Anything else (a sandbox denial) is shown.
+    let block = if output.status.success() {
+        block(&path)
+    } else if stderr.contains("-1700") {
+        Err("No image in the clipboard".into())
+    } else {
+        Err(format!("osascript: {}", stderr.trim()))
+    };
     let _ = std::fs::remove_file(&path);
     block
 }
@@ -83,7 +105,9 @@ fn media_type(path: &Path) -> Option<&'static str> {
 fn base64(bytes: &[u8]) -> String {
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
-        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
+        let mut padded = [0; 4];
+        padded[1..=chunk.len()].copy_from_slice(chunk);
+        let n = u32::from_be_bytes(padded);
         for i in 0..4 {
             if i <= chunk.len() {
                 out.push(BASE64[(n >> (18 - 6 * i) & 63) as usize] as char);
@@ -115,6 +139,7 @@ mod tests {
         let escaped = file.display().to_string().replace(' ', "\\ ").replace('(', "\\(").replace(')', "\\)").replace('&', "\\&");
         assert_eq!(pasted_path(&escaped), Some(file.clone()));
         assert_eq!(pasted_path(&format!("'{}'", file.display())), Some(file.clone()));
+        assert_eq!(pasted_path(&format!("\"{}\"", file.display())), Some(file.clone()));
         assert_eq!(pasted_path("just some text"), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -126,5 +151,14 @@ mod tests {
         let block = block(&file);
         std::fs::remove_file(&file).unwrap();
         assert_eq!(block.unwrap()["source"]["media_type"], "image/jpeg");
+    }
+
+    #[test]
+    fn an_image_over_the_api_limit_is_refused_before_reading() {
+        let file = std::env::temp_dir().join(format!("agent-big-image-{}.png", std::process::id()));
+        std::fs::File::create(&file).unwrap().set_len(MAX_IMAGE_BYTES + 1).unwrap();
+        let block = block(&file);
+        std::fs::remove_file(&file).unwrap();
+        assert!(block.unwrap_err().contains("images over"));
     }
 }
