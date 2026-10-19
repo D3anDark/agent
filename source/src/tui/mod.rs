@@ -549,6 +549,8 @@ pub struct Setup {
     pub skills: Vec<Skill>,
     pub templates: Vec<Template>,
     pub prompt: Option<String>,
+    /// `--resume` without an id: start with the /resume list open.
+    pub pick_session: bool,
     /// Why the ponytail or caveman rules could not be downloaded at startup.
     pub modes_error: Option<String>,
     /// One line per bundled plugin updated, or failed to update, at startup.
@@ -558,6 +560,7 @@ pub struct Setup {
 /// `model_lists` is the startup load of the account model lists; the worker settles the model on it before its first command.
 pub fn run(agent: Agent, setup: Setup, model_lists: JoinHandle<Vec<String>>) -> Result<(), String> {
     let prompt = setup.prompt.clone();
+    let pick_session = setup.pick_session;
     let (events, inbox) = mpsc::channel();
     let (commands, command_inbox) = mpsc::channel();
     let mut app = App::new(&agent, setup, commands, events.clone());
@@ -585,6 +588,9 @@ pub fn run(agent: Agent, setup: Setup, model_lists: JoinHandle<Vec<String>>) -> 
     }));
     if let Some(prompt) = prompt {
         app.submit(prompt);
+    }
+    if pick_session {
+        app.open_resume();
     }
     let result = event_loop(&mut app, &inbox, &mut out);
     app.terminals.lock().unwrap().kill_all();
@@ -1555,6 +1561,11 @@ impl App {
         }
     }
 
+    fn open_resume(&mut self) {
+        let sessions: Vec<SessionInfo> = Session::list(&self.sessions_dir).into_iter().filter(|s| s.id != self.session_id).collect();
+        self.panel = Some(Panel::Resume { all: false, index: 0, sessions });
+    }
+
     fn submit(&mut self, text: String) {
         self.scroll = 0;
         // A side question and /goal pause work mid-turn, so they skip the steering queue.
@@ -1736,10 +1747,7 @@ impl App {
                 lines.push(format!("/{:<14}\trun a skill ({} loaded)", "skill:<name>", self.enabled_skills().count()));
                 self.system("help", format!("{} commands\n{}", lines.len(), lines.join("\n")));
             }
-            "resume" => {
-                let sessions: Vec<SessionInfo> = Session::list(&self.sessions_dir).into_iter().filter(|s| s.id != self.session_id).collect();
-                self.panel = Some(Panel::Resume { all: false, index: 0, sessions });
-            }
+            "resume" => self.open_resume(),
             skill
                 if let Some(skill) = skill.strip_prefix("skill:")
                     && self.enabled_skills().any(|s| s.name == skill) =>

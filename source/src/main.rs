@@ -45,7 +45,7 @@ Flags:
   --json                      Like --print, then print one JSON summary
   --headless                  Run the message, print JSONL events (tool, session, done, error)
   -c, --continue              Continue the latest session in this directory
-  --resume <id>               Open a session by id or id prefix
+  -r, --resume [id]           Open a session by id or id prefix, or pick one from the list
   --no-session                Do not save the session
   --auto                      Let a reviewer model approve tool calls
   --full-access, --yolo       Run every tool call without asking
@@ -92,6 +92,8 @@ struct Options {
 enum Resume {
     Latest,
     Id(String),
+    /// `--resume` without an id: a new session with the /resume list open.
+    Pick,
 }
 
 fn plugin_command(args: &[String]) -> Result<(), String> {
@@ -146,7 +148,7 @@ fn main() {
 fn parse_args(args: Vec<String>) -> Result<Options, String> {
     let mut options = Options { model: None, thinking: None, permission_mode: None, print: false, json: false, headless: false, parent: None, account: None, save: true, resume: None, prompt: None };
     let mut words = Vec::new();
-    let mut args = args.into_iter();
+    let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         let mut value = |name: &str| args.next().ok_or(format!("{name} needs a value."));
         match arg.as_str() {
@@ -158,8 +160,21 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
                 }
                 options.thinking = Some(level);
             }
-            "--resume" => options.resume = Some(Resume::Id(value("--resume")?)),
-            "-c" | "--continue" => options.resume = Some(Resume::Latest),
+            "-r" | "--resume" => {
+                if options.resume.is_some() {
+                    return Err("Use only one of -c and -r.".into());
+                }
+                options.resume = Some(match args.next_if(|next| !next.starts_with('-')) {
+                    Some(id) => Resume::Id(id),
+                    None => Resume::Pick,
+                });
+            }
+            "-c" | "--continue" => {
+                if options.resume.is_some() {
+                    return Err("Use only one of -c and -r.".into());
+                }
+                options.resume = Some(Resume::Latest);
+            }
             "-p" | "--print" => options.print = true,
             "--json" => options.json = true,
             "--headless" => options.headless = true,
@@ -192,6 +207,13 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
     }
     if !words.is_empty() {
         options.prompt = Some(words.join(" "));
+    }
+    let picks_session = matches!(options.resume, Some(Resume::Pick));
+    if picks_session && (options.print || options.json || options.headless || options.parent.is_some()) {
+        return Err("--resume without an id opens the session list, so it needs the interactive mode.".into());
+    }
+    if picks_session && options.prompt.is_some() {
+        return Err("--resume without an id opens the session list and takes no message.".into());
     }
     Ok(options)
 }
@@ -235,6 +257,10 @@ fn styled_help(usage: &str) -> String {
 }
 
 fn run(options: Options) -> Result<(), String> {
+    // Piped stdin would become a message, and without a terminal on stdout print mode runs instead of the TUI.
+    if matches!(options.resume, Some(Resume::Pick)) && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        return Err("--resume without an id opens the session list, so it needs a terminal.".into());
+    }
     let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set.")?);
     let agent_dir = home.join(".agents");
     // The flags below apply to this run only; /settings saves only the keys it changes.
@@ -248,10 +274,18 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(mode) = options.permission_mode {
         settings.permission_mode = mode;
     }
+    let cwd = std::env::current_dir().map_err(|e| format!("Cannot read the working directory: {e}"))?;
+    let sessions_dir = home.join(".agents/sessions");
+    let (session, history) = match &options.resume {
+        Some(Resume::Id(id)) => Session::resume(&sessions_dir, id)?,
+        Some(Resume::Latest) => Session::resume(&sessions_dir, &Session::latest(&sessions_dir, &cwd)?)?,
+        Some(Resume::Pick) | None => (Session::start(&sessions_dir, options.save, &cwd, &settings.model)?, History::default()),
+    };
+    let client = Client::new(&home)?;
+    settings.default_accounts.extend(client.account_names(&history.accounts));
     if let Some((provider, name)) = options.account {
         settings.default_accounts.insert(provider, name);
     }
-    let client = Client::new(&home)?;
     client.configure(&settings);
     // About 0.5 s of network; the TUI opens meanwhile and settle_model waits for it.
     let model_lists = std::thread::spawn({
@@ -267,13 +301,6 @@ fn run(options: Options) -> Result<(), String> {
             move || modes::fetch(&home, &ponytail, &caveman, true)
         });
     }
-    let cwd = std::env::current_dir().map_err(|e| format!("Cannot read the working directory: {e}"))?;
-    let sessions_dir = home.join(".agents/sessions");
-    let (session, history) = match &options.resume {
-        Some(Resume::Id(id)) => Session::resume(&sessions_dir, id)?,
-        Some(Resume::Latest) => Session::resume(&sessions_dir, &Session::latest(&sessions_dir, &cwd)?)?,
-        None => (Session::start(&sessions_dir, options.save, &cwd, &settings.model)?, History::default()),
-    };
     if let Some(max_age) = settings.prune_sessions_after() {
         Session::prune(&sessions_dir, max_age);
     }
@@ -396,7 +423,7 @@ fn run(options: Options) -> Result<(), String> {
     let templates = prompt::load_templates(&agent_dir, &agent.cwd);
     agent.interactive = true;
     agent.snapshots = snapshots::Snapshots::open(&home, &agent.cwd);
-    tui::run(agent, tui::Setup { home, settings, skills, templates, prompt, modes_error, plugin_updates }, model_lists)
+    tui::run(agent, tui::Setup { home, settings, skills, templates, prompt, pick_session: matches!(options.resume, Some(Resume::Pick)), modes_error, plugin_updates }, model_lists)
 }
 
 /// The panic hook's terminal restore does not run when a signal ends the process, so a `kill` would leave the shell in raw mode.
@@ -483,6 +510,17 @@ mod tests {
     fn thinking_flag_takes_only_known_levels() {
         assert_eq!(super::parse_args(vec!["--thinking".into(), "low".into()]).unwrap().thinking.as_deref(), Some("low"));
         assert!(super::parse_args(vec!["--thinking".into(), "huge".into()]).is_err());
+    }
+
+    #[test]
+    fn resume_flag_without_an_id_picks_a_session_only_in_the_interactive_mode() {
+        let parse = |args: &[&str]| super::parse_args(args.iter().map(|arg| arg.to_string()).collect());
+        assert!(matches!(parse(&["-r", "ab12"]).unwrap().resume, Some(super::Resume::Id(id)) if id == "ab12"));
+        assert!(matches!(parse(&["-r"]).unwrap().resume, Some(super::Resume::Pick)));
+        assert!(matches!(parse(&["--resume", "--auto"]).unwrap().resume, Some(super::Resume::Pick)));
+        for refused in [&["-r", "-p"][..], &["--headless", "-r"], &["-r", "--parent", "ab12"], &["hi", "-r"], &["-r", "--", "hi"], &["-c", "-r"], &["-r", "ab12", "-c"]] {
+            assert!(parse(refused).is_err(), "{refused:?}");
+        }
     }
 
     #[test]
