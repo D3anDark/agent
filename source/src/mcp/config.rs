@@ -57,8 +57,9 @@ pub fn load(home: &Path, cwd: &Path) -> (Vec<Server>, Option<String>) {
                     ("cwd", Value::String(dir)) => Value::String(base.join(dir).to_string_lossy().into_owned()),
                     _ => value.clone(),
                 };
+                // Turning a server on from the repo still needs approval; turning it off does not.
+                *project_set |= from_project && (key != "enabled" || value == true);
                 slot.insert(key.clone(), value);
-                *project_set |= from_project && key != "enabled";
             }
         }
     }
@@ -75,7 +76,7 @@ pub fn load(home: &Path, cwd: &Path) -> (Vec<Server>, Option<String>) {
         let raw = launch_first(&entry);
         let entry = Value::Object(entry);
         // A digest, so header and env secrets from the project file stay out of settings.json.
-        let approval = from_project.then(|| crate::tools::web::research::hash(&format!("{} {name} {raw}", cwd.display())));
+        let approval = from_project.then(|| crate::process::hash(&format!("{} {name} {raw}", cwd.display())));
         match server(&name, &entry, cwd, &|key| std::env::var(key).ok()) {
             Ok(launch) => servers.push(Server { name, launch, enabled, approval, raw }),
             Err(error) => _ = first_error.get_or_insert(error),
@@ -194,16 +195,20 @@ mod tests {
         let (home, cwd) = (root.join("home"), root.join("project"));
         write(
             home.join(".agents/mcp.json"),
-            r#"{"mcpServers": {"global": {"command": "g"}, "web": {"url": "https://a.example/mcp", "headers": {"Authorization": "Bearer ${T}"}}, "off": {"command": "o"}}}"#,
+            r#"{"mcpServers": {"global": {"command": "g"}, "web": {"url": "https://a.example/mcp", "headers": {"Authorization": "Bearer ${T}"}}, "off": {"command": "o"}, "zoff": {"command": "z", "enabled": false}}}"#,
         );
-        write(cwd.join(".mcp.json"), r#"{"mcpServers": {"web": {"url": "https://evil.example/mcp"}, "off": {"enabled": false}, "repo": {"_": "x", "command": "./run", "args": ["a"]}}}"#);
+        write(
+            cwd.join(".mcp.json"),
+            r#"{"mcpServers": {"web": {"url": "https://evil.example/mcp"}, "off": {"enabled": false}, "repo": {"_": "x", "command": "./run", "args": ["a"]}, "zoff": {"enabled": true}}}"#,
+        );
         let (servers, error) = load(&home, &cwd);
         std::fs::remove_dir_all(&root).unwrap();
 
         assert_eq!(error, None);
-        let approvals: Vec<_> = servers.iter().map(|server| server.approval.clone()).collect();
-        let key = |name: &str, entry: &str| Some(crate::tools::web::research::hash(&format!("{} {name} {entry}", cwd.display())));
+        let approvals: Vec<_> = servers[..4].iter().map(|server| server.approval.clone()).collect();
+        let key = |name: &str, entry: &str| Some(crate::process::hash(&format!("{} {name} {entry}", cwd.display())));
         assert_eq!(approvals, [None, None, key("repo", r#"{"command":"./run","args":["a"],"_":"x"}"#), key("web", r#"{"url":"https://evil.example/mcp"}"#)]);
+        assert!(servers[4].approval.is_some(), "turning on a server from the repo needs approval");
         assert_eq!(servers[3].launch, Launch::Http { url: "https://evil.example/mcp".into(), headers: vec![] });
     }
 

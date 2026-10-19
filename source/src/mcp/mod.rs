@@ -189,13 +189,17 @@ impl Mcp {
 
     /// The servers for /mcp, and why `mcp.json` could not be read.
     pub fn list(&self) -> (Vec<View>, Option<String>) {
+        // Read before the lock: connection threads wait on it, and the panel calls this every frame.
+        // A broken store shows as logged out; `bearer` reports it.
+        let tokens = oauth::read(&self.home).unwrap_or_default();
         let state = self.state.lock().unwrap();
         let views = state.servers.iter().map(|entry| {
             let approval = entry.server.approval.clone().filter(|_| !entry.approved);
             let (target, http, logged_in) = match &entry.server.launch {
-                Launch::Stdio { command, args, .. } => (std::iter::once(command).chain(args).cloned().collect::<Vec<_>>().join(" "), false, false),
+                // The command only: args may hold an expanded `${VAR}` secret.
+                Launch::Stdio { command, .. } => (command.clone(), false, false),
                 // The origin only: a `${VAR}` secret expanded into the path or query stays off screen.
-                Launch::Http { url, .. } => (oauth::origin(url).to_string(), true, oauth::logged_in(&self.home, url)),
+                Launch::Http { url, .. } => (oauth::origin(url).to_string(), true, oauth::logged_in(&tokens, url)),
             };
             let status = match &entry.connection {
                 Connection::Off => Status::Off,

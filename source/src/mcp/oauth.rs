@@ -46,11 +46,10 @@ pub fn bearer(home: &Path, url: &str, rejected: Option<&str>) -> Result<Option<S
     })
 }
 
-/// Whether `url` has a login that still works or can be refreshed; an unreadable store counts as
-/// none, `bearer` reports it.
-pub fn logged_in(home: &Path, url: &str) -> bool {
+/// Whether `url` has a login in `store` that still works or can be refreshed.
+pub fn logged_in(store: &Map<String, Value>, url: &str) -> bool {
     let usable = |entry: &Value| entry["refresh"].is_string() || entry["expires"].as_u64().is_none_or(|expires| now_ms() < expires);
-    read(home).is_ok_and(|store| store.get(url).is_some_and(usable))
+    store.get(url).is_some_and(usable)
 }
 
 /// Runs the browser login for the server at `url` and stores its tokens.
@@ -70,7 +69,7 @@ pub fn login(home: &Path, url: &str, abort: &AtomicBool) -> Result<(), String> {
     let (verifier, challenge) = pkce();
     let state = random_hex(16);
     let scope = auth_param(&www_authenticate, "scope").or_else(|| resource.as_ref().map(scopes)).unwrap_or_default();
-    let client_id = client["client_id"].as_str().unwrap_or_default();
+    let client_id = client["client_id"].as_str().expect("register stores client_id");
     open_browser(&authorize_url(
         &endpoints.authorization,
         &[("client_id", client_id), ("redirect_uri", &redirect), ("code_challenge", &challenge), ("state", &state), ("resource", url), ("scope", &scope)],
@@ -235,7 +234,7 @@ fn path(home: &Path) -> PathBuf {
     home.join(".agents/mcp-auth.json")
 }
 
-fn read(home: &Path) -> Result<Map<String, Value>, String> {
+pub fn read(home: &Path) -> Result<Map<String, Value>, String> {
     let path = path(home);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -385,8 +384,8 @@ mod tests {
         let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(path(&home)).unwrap().permissions());
         let token = bearer(&home, "https://x/mcp", None);
         let other = bearer(&home, "https://y/mcp", None);
-        assert!(logged_in(&home, "https://x/mcp"));
-        assert!(!logged_in(&home, "https://z/mcp"));
+        assert!(logged_in(&read(&home).unwrap(), "https://x/mcp"));
+        assert!(!logged_in(&read(&home).unwrap(), "https://z/mcp"));
         std::fs::remove_dir_all(&home).unwrap();
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(token.unwrap().as_deref(), Some("tok"));
