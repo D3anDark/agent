@@ -16,6 +16,8 @@ You already pay for Claude or ChatGPT. Log in. That's the setup. Prefer pay as y
 
 **All your accounts, one agent.** Add several Claude and ChatGPT accounts, Anthropic keys and OpenRouter keys. When one hits its limit, the agent moves to the next. `/usage` shows what is left.
 
+**One folder, nothing else.** Settings, accounts, sessions, skills, plugins, MCP servers and prompts all live in `~/.agents`. A project can add its own `.agents` next to its code. No hidden config anywhere else. Copy the folder and your whole setup moves with it.
+
 **Edits that cannot go stale.** The agent edits by line anchors. If the file changed since it last read it, the edit is refused. No silent overwrites.
 
 **It checks its own work.** After each edit, your language server reports new errors and the checks in `.agents/edit-hooks.json` run. The agent fixes what they find.
