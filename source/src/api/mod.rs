@@ -227,7 +227,17 @@ impl Client {
         loop {
             let model = self.model_of(&request)?;
             let account = match self.choose(model, fell_back, on_delta)? {
-                Choice::Use(account) => self.fresh(account)?,
+                Choice::Use(account) => match self.fresh(account.clone()) {
+                    Ok(account) => account,
+                    // A failed refresh (network, revoked token) moves the request to the next account once, like a quota error.
+                    Err(error) if !rate_limited.contains(&key(&account)) => {
+                        on_delta(Delta::Notice(&format!("{error} Trying another account.")));
+                        self.state.lock().unwrap().limited.insert(key(&account), Instant::now() + LIMITED_FOR);
+                        rate_limited.push(key(&account));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                },
                 Choice::Fallback => {
                     request = self.fallback(request, &model.provider, on_delta)?;
                     fell_back = true;
@@ -332,8 +342,22 @@ impl Client {
     /// Fetches windows older than a minute for OAuth accounts; a failed fetch counts as unknown, which does not block.
     fn refresh_usage(&self, accounts: &[Account]) {
         for account in accounts.iter().filter(|a| a.is_oauth()) {
-            let fresh = self.state.lock().unwrap().usage.get(&key(account)).is_some_and(|(at, _)| at.elapsed() < USAGE_TTL);
-            if fresh {
+            // Stamped before the fetch, under the same lock as the check, so concurrent sends do not fetch it too.
+            let stale = {
+                let mut state = self.state.lock().unwrap();
+                match state.usage.get_mut(&key(account)) {
+                    Some((at, _)) if at.elapsed() < USAGE_TTL => false,
+                    Some((at, _)) => {
+                        *at = Instant::now();
+                        true
+                    }
+                    None => {
+                        state.usage.insert(key(account), (Instant::now(), None));
+                        true
+                    }
+                }
+            };
+            if !stale {
                 continue;
             }
             let base = if account.provider == "anthropic" { &self.anthropic_base } else { &self.chatgpt_base };
@@ -541,7 +565,7 @@ fn key(account: &Account) -> String {
     format!("{}/{}", account.provider, account.name)
 }
 
-fn models_agent() -> ureq::Agent {
+pub(crate) fn models_agent() -> ureq::Agent {
     ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(10))).build().into()
 }
 
@@ -793,10 +817,36 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_token_refresh_moves_the_request_to_the_next_account() {
+        let home = std::env::temp_dir().join(format!("agent-refresh-{}", std::process::id()));
+        let client = Client::new(&home).unwrap();
+        let expired = oauth::Tokens { access: "a".into(), refresh: "r".into(), expires: 0, account_id: None };
+        let account = |name: &str| Account { provider: "anthropic".into(), name: name.into(), secret: Secret::OAuth(expired.clone()) };
+        client.reload(vec![account("home"), account("work")]);
+        assert!(client.catalog.set(vec![Model { provider: "anthropic".into(), id: "claude".into(), ..Model::default() }]).is_ok());
+
+        let mut notices = Vec::new();
+        let error = client.send(&json!({"model": "claude"}), &AtomicBool::new(false), &mut |delta| {
+            if let Delta::Notice(text) = delta {
+                notices.push(text.to_string());
+            }
+        });
+        std::fs::remove_dir_all(&home).ok();
+
+        // Neither account is in the accounts file, so each refresh fails without a network call.
+        assert!(error.is_err());
+        assert!(notices.iter().any(|n| n.starts_with("home ")) && notices.iter().any(|n| n.starts_with("work ")), "{notices:?}");
+    }
+
+    #[test]
     fn account_names_maps_saved_account_ids_to_names() {
         let home = std::env::temp_dir().join(format!("agent-names-{}", std::process::id()));
         let client = Client::new(&home).unwrap();
-        let saved = |name: &str, id: &str| Account { provider: "anthropic".into(), name: name.into(), secret: Secret::OAuth(oauth::Tokens { access: "a".into(), refresh: "r".into(), expires: 5, account_id: Some(id.into()) }) };
+        let saved = |name: &str, id: &str| Account {
+            provider: "anthropic".into(),
+            name: name.into(),
+            secret: Secret::OAuth(oauth::Tokens { access: "a".into(), refresh: "r".into(), expires: 5, account_id: Some(id.into()) }),
+        };
         client.reload(vec![saved("home", "uuid-home"), saved("work", "uuid-work")]);
 
         let ids = |id: &str| HashMap::from([("anthropic".to_string(), id.to_string())]);

@@ -65,7 +65,7 @@ pub fn start_claude() -> Pending {
 
 /// Exchanges the `code#state` Anthropic shows after sign-in.
 pub fn finish_claude(pending: &Pending, pasted: &str) -> Result<Tokens, String> {
-    let (code, state) = pasted.trim().split_once('#').unwrap_or((pasted.trim(), &pending.state));
+    let (code, state) = pasted.trim().split_once('#').ok_or("Paste the whole code#state Anthropic shows.")?;
     if state != pending.state {
         return Err("OAuth state mismatch. Start /login again.".into());
     }
@@ -191,8 +191,10 @@ pub fn open_browser(url: &str) {
         return;
     }
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    // spawn() and not status(): xdg-open runs a browser without a desktop handler in the foreground.
-    let _ = crate::process::command(opener).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    // Reaped on a thread, not waited for: xdg-open runs a browser without a desktop handler in the foreground.
+    if let Ok(mut child) = crate::process::command(opener).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn() {
+        std::thread::spawn(move || child.wait());
+    }
 }
 
 /// POSTs to a token or client registration endpoint. The error carries the status and body, never the request,
@@ -314,6 +316,13 @@ pub(crate) fn hex_byte(pair: &[u8]) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pasted_code_without_its_state_is_refused() {
+        let pending = Pending { url: String::new(), verifier: "v".into(), state: "s".into() };
+        assert_eq!(finish_claude(&pending, "abc").unwrap_err(), "Paste the whole code#state Anthropic shows.");
+        assert_eq!(finish_claude(&pending, "abc#other").unwrap_err(), "OAuth state mismatch. Start /login again.");
+    }
 
     #[test]
     fn pkce_matches_the_rfc_7636_vector() {
