@@ -176,7 +176,7 @@ pub fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut
     if stop_reason == "end_turn" && blocks.iter().any(|b| b["type"] == "tool_use") {
         stop_reason = "tool_use".into();
     }
-    Ok(Reply { message: json!({"role": "assistant", "content": blocks}), stop_reason, usage, id, ..Reply::default() })
+    Ok(Reply { message: json!({"role": "assistant", "content": blocks}), stop_reason, context_tokens: usage.context_tokens(), usage, id, ..Reply::default() })
 }
 
 /// Classified like the Anthropic stream's `error`: a rate limit switches accounts, an overloaded server retries.

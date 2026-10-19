@@ -115,6 +115,7 @@ pub enum Event {
     },
     TurnEnd {
         usage: Usage,
+        context_tokens: u64,
     },
     Compacted {
         summary: String,
@@ -403,8 +404,8 @@ impl Agent {
                 // Cache reads are left out: they re-read context an earlier request already paid for.
                 goal.tokens_used += reply.usage.input + reply.usage.cache_write + reply.usage.output;
             }
-            self.last_context_tokens = reply.usage.context_tokens();
-            emit(Event::TurnEnd { usage: reply.usage });
+            self.last_context_tokens = reply.context_tokens;
+            emit(Event::TurnEnd { usage: reply.usage, context_tokens: reply.context_tokens });
             let aborted = reply.stop_reason == "aborted";
             if aborted {
                 keep_finished_text(&mut reply.message);
