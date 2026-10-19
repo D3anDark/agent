@@ -25,16 +25,30 @@ fn install(args: &[String]) -> Result<(), String> {
 }
 
 /// Arguments for `headroom install apply` when the installed deployment lacks a value from `env`, else `None`.
-/// `install apply` rebuilds the service env from defaults plus `--env`, so every value goes along, not only the changed one.
+/// `install apply` rebuilds the service env from defaults plus `--env`, so the installed values go along too.
 pub fn apply_args(env: &BTreeMap<String, String>, manifest: &Value) -> Result<Option<Vec<String>>, String> {
     if let Some(key) = ["HEADROOM_HOST", "HEADROOM_PORT"].into_iter().find(|key| env.contains_key(*key)) {
         return Err(format!("headroom_env cannot set {key}: the agent sends requests to {}.", crate::api::HEADROOM_URL));
     }
+    // Tool search defers every tool off headroom's own core list, which holds none of rg, replace, insert or replace_match.
+    let mut env = env.clone();
+    env.entry("HEADROOM_TOOL_SEARCH".into()).or_insert("0".into());
     if env.iter().all(|(key, value)| manifest["base_env"][key].as_str() == Some(value)) {
         return Ok(None);
     }
+    let mut merged = BTreeMap::new();
+    for (key, value) in manifest["base_env"].as_object().into_iter().flatten() {
+        // Host and port come from apply's own defaults, the address the agent sends to.
+        if let Some(value) = value.as_str()
+            && key != "HEADROOM_HOST"
+            && key != "HEADROOM_PORT"
+        {
+            merged.insert(key.clone(), value.to_string());
+        }
+    }
+    merged.extend(env);
     let mut args: Vec<String> = ["install", "apply", "--providers", "manual", "--no-rate-limit"].map(String::from).to_vec();
-    for (key, value) in env {
+    for (key, value) in merged {
         args.extend(["--env".to_string(), format!("{key}={value}")]);
     }
     Ok(Some(args))
@@ -48,12 +62,26 @@ mod tests {
     #[test]
     fn only_a_missing_or_different_value_reinstalls() {
         let env = BTreeMap::from([("HEADROOM_DISABLE_KOMPRESS".to_string(), "1".to_string())]);
-        let installed = json!({"base_env": {"HEADROOM_PORT": "8787", "HEADROOM_DISABLE_KOMPRESS": "1"}});
+        let installed = json!({"base_env": {"HEADROOM_PORT": "8787", "HEADROOM_DISABLE_KOMPRESS": "1", "HEADROOM_TOOL_SEARCH": "0"}});
         assert_eq!(apply_args(&env, &installed), Ok(None));
-        assert_eq!(apply_args(&BTreeMap::new(), &Value::Null), Ok(None));
-        let expected = ["install", "apply", "--providers", "manual", "--no-rate-limit", "--env", "HEADROOM_DISABLE_KOMPRESS=1"].map(String::from).to_vec();
-        assert_eq!(apply_args(&env, &json!({"base_env": {"HEADROOM_DISABLE_KOMPRESS": "0"}})), Ok(Some(expected.clone())));
+        let expected = ["install", "apply", "--providers", "manual", "--no-rate-limit", "--env", "HEADROOM_DISABLE_KOMPRESS=1", "--env", "HEADROOM_TOOL_SEARCH=0"].map(String::from).to_vec();
+        assert_eq!(apply_args(&env, &json!({"base_env": {"HEADROOM_DISABLE_KOMPRESS": "0", "HEADROOM_TOOL_SEARCH": "0"}})), Ok(Some(expected.clone())));
         assert_eq!(apply_args(&env, &Value::Null), Ok(Some(expected)));
+    }
+
+    #[test]
+    fn tool_search_is_off_unless_the_user_turns_it_on() {
+        let expected = ["install", "apply", "--providers", "manual", "--no-rate-limit", "--env", "HEADROOM_TOOL_SEARCH=0"].map(String::from).to_vec();
+        assert_eq!(apply_args(&BTreeMap::new(), &json!({"base_env": {"HEADROOM_PORT": "8787"}})), Ok(Some(expected)));
+        let env = BTreeMap::from([("HEADROOM_TOOL_SEARCH".to_string(), "1".to_string())]);
+        assert_eq!(apply_args(&env, &json!({"base_env": {"HEADROOM_TOOL_SEARCH": "1"}})), Ok(None));
+    }
+
+    #[test]
+    fn a_reinstall_keeps_the_values_already_installed() {
+        let installed = json!({"base_env": {"HEADROOM_HOST": "127.0.0.1", "HEADROOM_PORT": "8787", "HEADROOM_PROTECT_TOOL_RESULTS": "bash,rg"}});
+        let expected = ["install", "apply", "--providers", "manual", "--no-rate-limit", "--env", "HEADROOM_PROTECT_TOOL_RESULTS=bash,rg", "--env", "HEADROOM_TOOL_SEARCH=0"].map(String::from).to_vec();
+        assert_eq!(apply_args(&BTreeMap::new(), &installed), Ok(Some(expected)));
     }
 
     #[test]

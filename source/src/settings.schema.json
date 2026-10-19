@@ -36,7 +36,7 @@
       "type": "object",
       "additionalProperties": { "type": "string" },
       "default": {},
-      "description": "Environment of the headroom service, e.g. HEADROOM_DISABLE_KOMPRESS. At start the agent reinstalls the service with `headroom install apply --env` when a value differs. Removing a key does not unset it: set it to the value you want instead. HEADROOM_HOST and HEADROOM_PORT are refused, because the agent always uses 127.0.0.1:8787."
+      "description": "Environment of the headroom service, e.g. HEADROOM_DISABLE_KOMPRESS. At start the agent reinstalls the service with `headroom install apply --env` when a value differs. Removing a key does not unset it: set it to the value you want instead. HEADROOM_TOOL_SEARCH is 0 unless set here, because headroom's tool search hides the agent's edit tools behind a search step. HEADROOM_HOST and HEADROOM_PORT are refused, because the agent always uses 127.0.0.1:8787."
     },
     "notifications": { "type": "boolean", "default": true },
     "scroll_lines": { "type": "integer", "minimum": 1, "default": 3 },
