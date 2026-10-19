@@ -523,6 +523,18 @@ impl Client {
         }?;
         Some((account.name.clone(), account.account_id().map(String::from)))
     }
+
+    /// Provider to saved account name for each provider account id in `ids`; ids of accounts no longer saved drop out.
+    pub fn account_names(&self, ids: &HashMap<String, String>) -> HashMap<String, String> {
+        let state = self.state.lock().unwrap();
+        let mut names = HashMap::new();
+        for account in &state.accounts {
+            if account.account_id().is_some_and(|id| ids.get(&account.provider).is_some_and(|wanted| wanted == id)) {
+                names.insert(account.provider.clone(), account.name.clone());
+            }
+        }
+        names
+    }
 }
 
 fn key(account: &Account) -> String {
@@ -777,6 +789,19 @@ mod tests {
         client.configure(&settings);
 
         assert_eq!(client.account("anthropic"), Some(("work".into(), None)));
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn account_names_maps_saved_account_ids_to_names() {
+        let home = std::env::temp_dir().join(format!("agent-names-{}", std::process::id()));
+        let client = Client::new(&home).unwrap();
+        let saved = |name: &str, id: &str| Account { provider: "anthropic".into(), name: name.into(), secret: Secret::OAuth(oauth::Tokens { access: "a".into(), refresh: "r".into(), expires: 5, account_id: Some(id.into()) }) };
+        client.reload(vec![saved("home", "uuid-home"), saved("work", "uuid-work")]);
+
+        let ids = |id: &str| HashMap::from([("anthropic".to_string(), id.to_string())]);
+        assert_eq!(client.account_names(&ids("uuid-work")), HashMap::from([("anthropic".to_string(), "work".to_string())]));
+        assert_eq!(client.account_names(&ids("uuid-gone")), HashMap::new());
         std::fs::remove_dir_all(&home).ok();
     }
 

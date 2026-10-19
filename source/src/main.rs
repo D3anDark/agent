@@ -175,10 +175,18 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(mode) = options.permission_mode {
         settings.permission_mode = mode;
     }
+    let cwd = std::env::current_dir().map_err(|e| format!("Cannot read the working directory: {e}"))?;
+    let sessions_dir = home.join(".agents/sessions");
+    let (session, history) = match &options.resume {
+        Some(Resume::Id(id)) => Session::resume(&sessions_dir, id)?,
+        Some(Resume::Latest) => Session::resume(&sessions_dir, &Session::latest(&sessions_dir, &cwd)?)?,
+        None => (Session::start(&sessions_dir, options.save, &cwd, &settings.model)?, History::default()),
+    };
+    let client = Client::new(&home)?;
+    settings.default_accounts.extend(client.account_names(&history.accounts));
     if let Some((provider, name)) = options.account {
         settings.default_accounts.insert(provider, name);
     }
-    let client = Client::new(&home)?;
     client.configure(&settings);
     // About 0.5 s of network; the TUI opens meanwhile and settle_model waits for it.
     let model_lists = std::thread::spawn({
@@ -194,13 +202,6 @@ fn run(options: Options) -> Result<(), String> {
             move || modes::fetch(&home, &ponytail, &caveman, true)
         });
     }
-    let cwd = std::env::current_dir().map_err(|e| format!("Cannot read the working directory: {e}"))?;
-    let sessions_dir = home.join(".agents/sessions");
-    let (session, history) = match &options.resume {
-        Some(Resume::Id(id)) => Session::resume(&sessions_dir, id)?,
-        Some(Resume::Latest) => Session::resume(&sessions_dir, &Session::latest(&sessions_dir, &cwd)?)?,
-        None => (Session::start(&sessions_dir, options.save, &cwd, &settings.model)?, History::default()),
-    };
     if let Some(max_age) = settings.prune_sessions_after() {
         Session::prune(&sessions_dir, max_age);
     }

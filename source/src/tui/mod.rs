@@ -85,6 +85,8 @@ enum Msg {
         messages: Vec<Value>,
         spent: Spent,
         notice: Option<String>,
+        /// Provider to the account id that served the session's last reply.
+        accounts: HashMap<String, String>,
     },
     BtwDelta(String),
     BtwDone(Result<(), String>),
@@ -670,9 +672,9 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                     continue;
                 }
                 Command::Resume(id) => match agent.open_session(&id) {
-                    Ok(messages) => {
+                    Ok((messages, accounts)) => {
                         let path = agent.session.path.as_ref().map(|p| p.display().to_string());
-                        let _ = events.send(Msg::Resumed { id: agent.session.id.clone(), path, messages, spent: agent.spent, notice: agent.session.fork_notice() });
+                        let _ = events.send(Msg::Resumed { id: agent.session.id.clone(), path, messages, spent: agent.spent, notice: agent.session.fork_notice(), accounts });
                         continue;
                     }
                     Err(error) => Err(error),
@@ -713,9 +715,9 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                     Err(error) => Err(error),
                 },
                 Command::Import(file) => match agent.import_session(&file) {
-                    Ok(messages) => {
+                    Ok((messages, accounts)) => {
                         let path = agent.session.path.as_ref().map(|p| p.display().to_string());
-                        let _ = events.send(Msg::Resumed { id: agent.session.id.clone(), path, messages, spent: agent.spent, notice: agent.session.fork_notice() });
+                        let _ = events.send(Msg::Resumed { id: agent.session.id.clone(), path, messages, spent: agent.spent, notice: agent.session.fork_notice(), accounts });
                         continue;
                     }
                     Err(error) => Err(error),
@@ -1137,7 +1139,7 @@ impl App {
                     Err(error) => self.push(Item::Error(error)),
                 }
             }
-            Msg::Resumed { id, path, messages, spent, notice } => {
+            Msg::Resumed { id, path, messages, spent, notice, accounts } => {
                 self.working = None;
                 self.spent = spent;
                 self.entries.truncate(self.header_len);
@@ -1149,6 +1151,13 @@ impl App {
                 self.session_id = id;
                 self.session_path = path;
                 self.context_tokens = 0;
+                let names = self.client.account_names(&accounts);
+                if !names.is_empty() {
+                    // For this run only, like --account: /settings saves only the keys it changes.
+                    self.settings.default_accounts.extend(names);
+                    self.client.configure(&self.settings);
+                    let _ = self.commands.send(Command::AccountPicked);
+                }
             }
             Msg::BtwDelta(text) => {
                 if let Some((_, answer)) = self.btw.as_mut().and_then(|btw| btw.turns.last_mut()) {
