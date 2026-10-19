@@ -54,9 +54,11 @@ impl Panel<'_> {
             head.push(vec![span(format!("  {}", self.empty), MUTED)]);
         }
         let left_width = self.rows.iter().map(|r| width(&r.left)).max().unwrap_or(0);
-        frame(head, self.rows.len(), self.selected, self.hint, columns, max_rows, |index| {
+        // A row deleted under the selection leaves it past the end until the next key; mark the last row instead.
+        let selected = self.selected.min(self.rows.len().saturating_sub(1));
+        frame(head, self.rows.len(), selected, self.hint, columns, max_rows, |index| {
             let row = &self.rows[index];
-            let style = if index == self.selected { BRIGHT.bold() } else { MUTED };
+            let style = if index == selected { BRIGHT.bold() } else { MUTED };
             let pad = " ".repeat(left_width - width(&row.left));
             let mut line = vec![span(format!("{}{pad}", row.left), style), span("    ", PLAIN)];
             line.extend(row.right.iter().cloned());
@@ -112,6 +114,15 @@ mod tests {
         assert_eq!(lines[..6], ["", "Settings", "  2    ", "→ 3    ", "", "  4/5"]);
         assert_eq!(panel(3).render(40, 2)[5][0].style, COUNT);
         assert_eq!(panel(3).render(40, 5).len(), 8);
+    }
+
+    #[test]
+    fn a_selection_past_a_shrunk_list_marks_its_last_row() {
+        let rows = [Row { left: "a".into(), right: Vec::new() }, Row { left: "b".into(), right: Vec::new() }];
+        let panel = Panel { title: "Todos 2".into(), tabs: &[], tab: 0, search: None, rows: &rows, selected: 2, empty: "", hint: "" };
+        let lines = panel.render(40, 5);
+        assert_eq!(text(&lines[3]), "→ b    ");
+        assert_eq!(lines[3][1].style, BRIGHT.bold());
     }
 
     #[test]
