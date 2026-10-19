@@ -1,11 +1,10 @@
-//! Web tools ported from pi-web-access: web_search, fetch_content, get_search_content and source_check.
+//! Web tools ported from pi-web-access: web_search, fetch_content and get_search_content.
 
 mod fetch;
 mod find;
 mod github;
 mod html;
 mod providers;
-mod research;
 
 pub use providers::PROVIDERS as SEARCH_PROVIDERS;
 
@@ -19,7 +18,8 @@ use std::time::Duration;
 const MAX_INLINE_CHARS: usize = 30_000;
 const STORED_RESPONSES: usize = 20;
 const MAX_FETCHED_PAGES: usize = 20;
-const STORED_SOURCES: &str = "web_search, source_check, or fetch_content";
+const MAX_QUERIES: usize = 8;
+const STORED_SOURCES: &str = "web_search or fetch_content";
 
 #[derive(Clone, Debug)]
 pub struct Hit {
@@ -89,7 +89,6 @@ impl Web {
         match name {
             "web_search" => self.web_search(input),
             "fetch_content" => self.fetch_content(input),
-            "source_check" => self.source_check(input),
             _ => self.get_search_content(input),
         }
     }
@@ -122,7 +121,7 @@ impl Web {
         if queries.is_empty() {
             return Err("Error: No query provided. Use 'query' or 'queries' parameter.".into());
         }
-        queries.truncate(research::MAX_QUERIES);
+        queries.truncate(MAX_QUERIES);
         let config = providers::load_config(&self.config_path, self.provider_order()?)?;
         let domains = string_list(&input["domainFilter"]);
         let include_content = input["includeContent"].as_bool().unwrap_or(false);
@@ -210,13 +209,6 @@ impl Web {
         let ask = Request { id, offset: &input["offset"], limit: &input["limit"] };
 
         match data["type"].as_str() {
-            Some("research") => {
-                let serialized = serde_json::to_string_pretty(&data).expect("stored JSON serializes");
-                if let Some(found) = find(&serialized) {
-                    return Ok(found);
-                }
-                ask.slice(&serialized, &format!("responseId {}", json!(id)), "", |end, limit| format!("responseId: \"{id}\", offset: {end}, limit: {limit}"))
-            }
             Some("search") => {
                 let queries = data["queries"].as_array().cloned().unwrap_or_default();
                 let index = select_query(&queries, input, id)?;

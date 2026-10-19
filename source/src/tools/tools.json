@@ -67,7 +67,7 @@
   },
   {
     "name": "bash",
-    "description": "Run a bash command in the cwd, stderr merged into stdout, no stdin. Output keeps the last 2000 lines or 12KB (50KB with rtk off); a truncated run names its full log.",
+    "description": "Run a bash command in the cwd, stderr merged into stdout, no stdin. Output keeps the last 2000 lines or 24KB (50KB with rtk off); a truncated run names its full log.",
     "eager_input_streaming": true,
     "strict": true,
     "input_schema": {
@@ -331,45 +331,9 @@
           ],
           "description": "New status (update) or filter (list)"
         },
-        "blockedBy": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "create only"
-        },
-        "addBlockedBy": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "update only"
-        },
-        "removeBlockedBy": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "update only"
-        },
-        "owner": {
-          "type": "string",
-          "description": "Agent/owner assigned to this task"
-        },
-        "metadata": {
-          "type": "object",
-          "patternProperties": {
-            "^.*$": {}
-          },
-          "description": "A null value deletes its key on update"
-        },
         "id": {
           "type": "number",
           "description": "Required for update, get, delete"
-        },
-        "includeDeleted": {
-          "type": "boolean",
-          "description": "list: include deleted tasks"
         }
       },
       "required": [
@@ -378,31 +342,16 @@
     }
   },
   {
-    "name": "create_goal",
-    "description": "Only on explicit user request: set a goal the agent keeps working toward across turns until update_goal marks it complete.",
+    "name": "goal",
+    "description": "A goal the agent keeps working toward across turns. create only on explicit user request; get reads objective, status, tokens used and budget; complete marks it done once its done criteria are met, with the evidence that shows it.",
     "input_schema": {
       "type": "object",
-      "required": ["objective"],
+      "required": ["action"],
       "properties": {
-        "objective": { "type": "string", "description": "Full objective; preserve ordered steps and done criteria." },
-        "token_budget": { "type": "integer", "minimum": 1, "description": "Whole-token budget, only if supplied by the user." }
-      }
-    }
-  },
-  {
-    "name": "get_goal",
-    "description": "Read the goal: objective, status, tokens used and budget.",
-    "input_schema": { "type": "object", "properties": {} }
-  },
-  {
-    "name": "update_goal",
-    "description": "Mark the goal complete once its done criteria are met, with the evidence that shows it.",
-    "input_schema": {
-      "type": "object",
-      "required": ["status", "evidence"],
-      "properties": {
-        "status": { "type": "string", "enum": ["complete"] },
-        "evidence": { "type": "string", "description": "Commands and results that prove the done criteria are met." }
+        "action": { "type": "string", "enum": ["create", "get", "complete"] },
+        "objective": { "type": "string", "description": "create: full objective; preserve ordered steps and done criteria." },
+        "token_budget": { "type": "integer", "minimum": 1, "description": "create: whole-token budget, only if supplied by the user." },
+        "evidence": { "type": "string", "description": "complete: commands and results that prove the done criteria are met." }
       }
     }
   },
@@ -463,17 +412,11 @@
   },
   {
     "name": "bg_status",
-    "description": "A background terminal's status and output tail, without blocking.",
+    "description": "A background terminal's status and output tail, without blocking; without `id`, lists every terminal with pid, elapsed time, exit status and output sizes.",
     "input_schema": {
       "type": "object",
-      "required": ["id"],
       "properties": { "id": { "type": "string", "description": "Terminal id, e.g. \"bt-1\"" } }
     }
-  },
-  {
-    "name": "bg_list",
-    "description": "List background terminals with pid, elapsed time, exit status and output sizes.",
-    "input_schema": { "type": "object", "properties": {} }
   },
   {
     "name": "bg_kill",
@@ -600,6 +543,11 @@
           "description": "Max matches per file, default 100.",
           "minimum": 1,
           "maximum": 1000
+        },
+        "output": {
+          "type": "string",
+          "enum": ["lines", "files", "count"],
+          "description": "lines (default): matching rows; files: only paths; count: `path:matches` per file."
         }
       },
       "required": [
@@ -647,7 +595,7 @@
   },
   {
     "name": "get_search_content",
-    "description": "Page through stored content of a web_search, fetch_content or source_check call, or find passages with findText.",
+    "description": "Page through stored content of a web_search or fetch_content call, or find passages with findText.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -667,30 +615,6 @@
         "findMode": { "type": "string", "enum": ["exact", "case-insensitive", "fuzzy"], "description": "Default case-insensitive." }
       },
       "required": ["responseId"],
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "source_check",
-    "description": "Gather web sources for a claim; returns exact passage citations for manual review.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "claim": { "type": "string" },
-        "queries": { "type": "array", "items": { "type": "string" }, "maxItems": 8, "description": "Up to 8; default: the claim." },
-        "numResults": { "type": "integer", "minimum": 1, "maximum": 20, "description": "Per query, default 5." },
-        "fetchContent": { "type": "boolean", "description": "Fetch up to 5 pages for exact passages." },
-        "recencyFilter": { "type": "string", "enum": ["day", "week", "month", "year"] },
-        "domainFilter": { "type": "array", "items": { "type": "string" }, "description": "Prefix - to exclude." },
-        "provider": {
-          "anyOf": [
-            { "type": "string", "enum": ["auto", "all", "xai", "exa", "brave", "tavily", "perplexity", "jina"] },
-            { "type": "array", "items": { "type": "string", "enum": ["xai", "exa", "brave", "tavily", "perplexity", "jina"] }, "minItems": 1 }
-          ],
-          "description": "Omit for the configured one; all or a list searches several."
-        }
-      },
-      "required": ["claim"],
       "additionalProperties": false
     }
   }

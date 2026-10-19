@@ -205,7 +205,7 @@ pub struct Agent {
     pub subagents: Arc<Mutex<Runs>>,
     pub subagent_concurrency: usize,
     pub subagent_effort: String,
-    /// Stored web_search, fetch_content and source_check responses for get_search_content.
+    /// Stored web_search and fetch_content responses for get_search_content.
     pub web: tools::web::Web,
     pub spent: Spent,
     /// False in print mode: tools that need the user fail instead of waiting.
@@ -538,17 +538,16 @@ impl Agent {
         let result = match name {
             "context_tree_query" => condense::query(&self.messages, &self.condensed, input),
             "todo" => self.todo(input),
-            "create_goal" | "get_goal" | "update_goal" => self.goal_tool(name, input),
+            "goal" => self.goal_tool(input),
             "bg_start" => self.terminals.lock().unwrap().start(input, &self.cwd, &self.follow_ups),
             "bg_status" => self.terminals.lock().unwrap().status_of(input, &self.follow_ups),
-            "bg_list" => Ok(self.terminals.lock().unwrap().describe_all()),
             "bg_kill" => {
                 let targets = self.terminals.lock().unwrap().for_kill(input);
                 targets.map(|targets| bg::kill(&targets, &self.follow_ups, &self.abort))
             }
             "subagent" => self.subagent(input, emit),
             "bg_wait" => self.bg_wait(input),
-            "web_search" | "fetch_content" | "get_search_content" | "source_check" => self.web.run(name, input),
+            "web_search" | "fetch_content" | "get_search_content" => self.web.run(name, input),
             "ask_user_question" => self.ask_user(input, emit),
             _ => return self.plugins.tool(name, input, &self.plugin_context(), &self.abort).or_else(|| self.mcp.tool(name, input, &self.abort)).unwrap_or_else(|| self.run_file_tool(name, input)),
         };
@@ -697,25 +696,22 @@ impl Agent {
         Ok(result_sections(&runs))
     }
 
-    fn goal_tool(&mut self, name: &str, input: &Value) -> Result<String, String> {
+    fn goal_tool(&mut self, input: &Value) -> Result<String, String> {
         let mut goal = self.goal.lock().unwrap();
-        let text = match name {
-            "create_goal" => {
+        let text = match input["action"].as_str().unwrap_or_default() {
+            "create" => {
                 let objective = input["objective"].as_str().filter(|o| !o.trim().is_empty()).ok_or("Objective required.")?;
                 *goal = Some(Goal::new(objective, input["token_budget"].as_u64()));
                 format!("Goal created: {objective}")
             }
-            "update_goal" => {
-                if input["status"] != "complete" {
-                    return Err("Status must be \"complete\".".into());
-                }
+            "complete" => {
                 let goal = goal.as_mut().ok_or("No goal.")?;
                 goal.status = GoalStatus::Complete;
                 goal.evidence = input["evidence"].as_str().map(String::from);
                 "Goal marked complete.".into()
             }
-            "get_goal" => return Ok(goal.as_ref().map_or("No goal.".into(), Goal::summary)),
-            _ => unreachable!("run_tool routes only the goal tools here"),
+            "get" => return Ok(goal.as_ref().map_or("No goal.".into(), Goal::summary)),
+            other => return Err(format!("Unknown action {other:?}; use create, get or complete.")),
         };
         self.session.append(&Goal::entry(goal.as_ref()))?;
         Ok(text)

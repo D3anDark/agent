@@ -128,10 +128,6 @@ pub fn request_for(tool: &str, input: &Value, edited_files: &[PathBuf]) -> Optio
             let detail = format!("web_search and fetch the results of: {}", queries.join(" | "));
             Some(Request { kind: Kind::Web, question: "Would you like to search and fetch the result pages?", grant: format!("web:{detail}"), detail })
         }
-        "source_check" if input["fetchContent"] == true => {
-            let detail = format!("source_check and fetch the results for: {}", input["claim"].as_str().unwrap_or_default());
-            Some(Request { kind: Kind::Web, question: "Would you like to search and fetch the result pages?", grant: format!("web:{detail}"), detail })
-        }
         _ if tool.starts_with("mcp__") => {
             Some(Request { kind: Kind::Mcp, question: "Would you like to call the following MCP tool?", detail: format!("{tool} {input}"), grant: format!("mcp:{tool}") })
         }
@@ -247,8 +243,6 @@ mod tests {
         assert!(request_for("web_search", &json!({"query": "a"}), &[]).is_none());
         let search = request_for("web_search", &json!({"query": "a", "queries": ["b"], "includeContent": true}), &[]).unwrap();
         assert_eq!((search.kind, search.detail.as_str()), (Kind::Web, "web_search and fetch the results of: b | a"));
-        assert!(request_for("source_check", &json!({"claim": "c"}), &[]).is_none());
-        assert_eq!(request_for("source_check", &json!({"claim": "c", "fetchContent": true}), &[]).unwrap().detail, "source_check and fetch the results for: c");
     }
 
     #[test]

@@ -16,9 +16,6 @@ pub struct Task {
     pub description: Option<String>,
     pub active_form: Option<String>,
     pub status: Status,
-    pub blocked_by: Vec<u64>,
-    pub owner: Option<String>,
-    pub metadata: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -69,14 +66,9 @@ impl Todos {
             None => None,
         };
         let text = |key: &str| input[key].as_str().map(String::from);
-        let ids = |key: &str| -> Vec<u64> { input[key].as_array().into_iter().flatten().filter_map(Value::as_u64).collect() };
         match input["action"].as_str().unwrap_or_default() {
             "create" => {
                 let subject = text("subject").filter(|s| !s.trim().is_empty()).ok_or("Error: subject required for create")?;
-                let blocked_by = ids("blockedBy");
-                for dep in &blocked_by {
-                    self.live(*dep, "blockedBy")?;
-                }
                 let id = self.next_id.max(1);
                 self.next_id = id + 1;
                 self.tasks.push(Task {
@@ -85,19 +77,15 @@ impl Todos {
                     description: text("description").filter(|s| !s.is_empty()),
                     active_form: text("activeForm").filter(|s| !s.is_empty()),
                     status: Status::Pending,
-                    blocked_by,
-                    owner: text("owner").filter(|s| !s.is_empty()),
-                    metadata: input.get("metadata").filter(|m| m.is_object()).cloned(),
                 });
                 Ok((format!("Created #{id}: {subject} (pending)"), true))
             }
             "update" => {
                 let id = id.ok_or("Error: id required for update")?;
                 let index = self.index_of(id)?;
-                let (add, remove) = (ids("addBlockedBy"), ids("removeBlockedBy"));
-                let fields = ["subject", "description", "activeForm", "status", "owner", "metadata"];
-                if fields.iter().all(|key| input.get(key).is_none_or(Value::is_null)) && add.is_empty() && remove.is_empty() {
-                    return Err("Error: update requires at least one mutable field: subject, description, activeForm, status, owner, metadata, addBlockedBy, or removeBlockedBy".into());
+                let fields = ["subject", "description", "activeForm", "status"];
+                if fields.iter().all(|key| input.get(key).is_none_or(Value::is_null)) {
+                    return Err("Error: update requires at least one mutable field: subject, description, activeForm, or status".into());
                 }
                 let before = self.tasks[index].clone();
                 let mut task = before.clone();
@@ -107,34 +95,9 @@ impl Todos {
                     }
                     task.status = to;
                 }
-                task.blocked_by.retain(|dep| !remove.contains(dep));
-                for dep in add {
-                    if dep == id {
-                        return Err(format!("Error: cannot block #{id} on itself"));
-                    }
-                    self.live(dep, "addBlockedBy")?;
-                    if !task.blocked_by.contains(&dep) {
-                        task.blocked_by.push(dep);
-                    }
-                }
-                if self.reaches(&task.blocked_by, id) {
-                    return Err("Error: addBlockedBy would create a cycle in the blockedBy graph".into());
-                }
                 task.subject = text("subject").unwrap_or(task.subject);
                 task.description = text("description").or(task.description);
                 task.active_form = text("activeForm").or(task.active_form);
-                task.owner = text("owner").or(task.owner);
-                if let Some(changes) = input["metadata"].as_object() {
-                    let mut merged = task.metadata.take().unwrap_or_else(|| json!({}));
-                    for (key, value) in changes {
-                        if value.is_null() {
-                            merged.as_object_mut().unwrap().remove(key);
-                        } else {
-                            merged[key] = value.clone();
-                        }
-                    }
-                    task.metadata = merged.as_object().is_some_and(|m| !m.is_empty()).then_some(merged);
-                }
                 if task == before {
                     return Ok((format!("No change: #{id} already matches the requested values (status: {})", task.status.as_str()), false));
                 }
@@ -143,13 +106,12 @@ impl Todos {
                 Ok((format!("Updated #{id}{transition}"), true))
             }
             "list" => {
-                let include_deleted = input["includeDeleted"].as_bool() == Some(true);
-                let lines: Vec<String> = self.tasks.iter().filter(|t| include_deleted || t.status != Status::Deleted).filter(|t| status.is_none_or(|s| t.status == s)).map(list_line).collect();
+                let lines: Vec<String> = self.tasks.iter().filter(|t| t.status != Status::Deleted).filter(|t| status.is_none_or(|s| t.status == s)).map(list_line).collect();
                 Ok((if lines.is_empty() { "No tasks".into() } else { lines.join("\n") }, false))
             }
             "get" => {
                 let task = &self.tasks[self.index_of(id.ok_or("Error: id required for get")?)?];
-                Ok((self.details(task), false))
+                Ok((Self::details(task), false))
             }
             "delete" => {
                 let index = self.index_of(id.ok_or("Error: id required for delete")?)?;
@@ -202,8 +164,7 @@ impl Todos {
             .tasks
             .iter()
             .map(|t| {
-                json!({"id": t.id, "subject": t.subject, "description": t.description, "activeForm": t.active_form, "status": t.status.as_str(),
-                       "blockedBy": t.blocked_by, "owner": t.owner, "metadata": t.metadata})
+                json!({"id": t.id, "subject": t.subject, "description": t.description, "activeForm": t.active_form, "status": t.status.as_str()})
             })
             .collect();
         json!({"type": "todo", "tasks": tasks, "next_id": self.next_id})
@@ -221,9 +182,6 @@ impl Todos {
                 description: text(t, "description"),
                 active_form: text(t, "activeForm"),
                 status: t["status"].as_str().and_then(Status::parse).unwrap_or(Status::Pending),
-                blocked_by: t["blockedBy"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect(),
-                owner: text(t, "owner"),
-                metadata: t.get("metadata").filter(|m| m.is_object()).cloned(),
             })
             .collect();
         Todos { tasks, next_id: entry["next_id"].as_u64().unwrap_or(1), user_notes: Vec::new() }
@@ -233,50 +191,13 @@ impl Todos {
         self.tasks.iter().position(|t| t.id == id).ok_or(format!("Error: #{id} not found"))
     }
 
-    fn live(&self, id: u64, field: &str) -> Result<(), String> {
-        match self.tasks.iter().find(|t| t.id == id) {
-            None => Err(format!("Error: {field}: #{id} not found")),
-            Some(t) if t.status == Status::Deleted => Err(format!("Error: {field}: #{id} is deleted")),
-            Some(_) => Ok(()),
-        }
-    }
-
-    /// True when following blockedBy edges from `start` leads back to `target`.
-    fn reaches(&self, start: &[u64], target: u64) -> bool {
-        let mut stack = start.to_vec();
-        let mut seen = Vec::new();
-        while let Some(id) = stack.pop() {
-            if id == target {
-                return true;
-            }
-            if seen.contains(&id) {
-                continue;
-            }
-            seen.push(id);
-            if let Some(task) = self.tasks.iter().find(|t| t.id == id) {
-                stack.extend(&task.blocked_by);
-            }
-        }
-        false
-    }
-
-    fn details(&self, task: &Task) -> String {
+    fn details(task: &Task) -> String {
         let mut lines = vec![format!("#{} [{}] {}", task.id, task.status.as_str(), task.subject)];
         if let Some(description) = &task.description {
             lines.push(format!("  description: {description}"));
         }
         if let Some(form) = &task.active_form {
             lines.push(format!("  activeForm: {form}"));
-        }
-        if !task.blocked_by.is_empty() {
-            lines.push(format!("  blockedBy: {}", refs(&task.blocked_by)));
-        }
-        let blocks: Vec<u64> = self.tasks.iter().filter(|t| t.blocked_by.contains(&task.id)).map(|t| t.id).collect();
-        if !blocks.is_empty() {
-            lines.push(format!("  blocks: {}", refs(&blocks)));
-        }
-        if let Some(owner) = &task.owner {
-            lines.push(format!("  owner: {owner}"));
         }
         lines.join("\n")
     }
@@ -287,12 +208,7 @@ fn list_line(task: &Task) -> String {
         (Some(form), Status::InProgress) => format!(" ({form})"),
         _ => String::new(),
     };
-    let block = if task.blocked_by.is_empty() { String::new() } else { format!(" ⛓ {}", task.blocked_by.iter().map(|id| format!("#{id}")).collect::<Vec<_>>().join(",")) };
-    format!("[{}] #{} {}{form}{block}", task.status.as_str(), task.id, task.subject)
-}
-
-fn refs(ids: &[u64]) -> String {
-    ids.iter().map(|id| format!("#{id}")).collect::<Vec<_>>().join(", ")
+    format!("[{}] #{} {}{form}", task.status.as_str(), task.id, task.subject)
 }
 
 #[cfg(test)]
@@ -309,11 +225,10 @@ mod tests {
     fn transitions_follow_rpiv_todo_rules() {
         let mut todos = Todos::default();
         assert_eq!(run(&mut todos, json!({"action": "create", "subject": "a", "activeForm": "doing a"})), "Created #1: a (pending)");
-        run(&mut todos, json!({"action": "create", "subject": "b", "blockedBy": [1]}));
+        run(&mut todos, json!({"action": "create", "subject": "b"}));
         assert_eq!(run(&mut todos, json!({"action": "update", "id": 1, "status": "in_progress"})), "Updated #1 (pending → in_progress)");
         assert_eq!(run(&mut todos, json!({"action": "update", "id": 1, "status": "in_progress"})), "No change: #1 already matches the requested values (status: in_progress)");
-        assert_eq!(run(&mut todos, json!({"action": "list"})), "[in_progress] #1 a (doing a)\n[pending] #2 b ⛓ #1");
-        assert_eq!(run(&mut todos, json!({"action": "update", "id": 1, "addBlockedBy": [2]})), "Error: addBlockedBy would create a cycle in the blockedBy graph");
+        assert_eq!(run(&mut todos, json!({"action": "list"})), "[in_progress] #1 a (doing a)\n[pending] #2 b");
         run(&mut todos, json!({"action": "update", "id": 1, "status": "completed"}));
         assert_eq!(run(&mut todos, json!({"action": "update", "id": 1, "status": "pending"})), "Error: illegal transition completed → pending");
         assert_eq!(run(&mut todos, json!({"action": "delete", "id": 2})), "Deleted #2: b");

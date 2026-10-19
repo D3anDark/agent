@@ -429,8 +429,8 @@ fn run(options: Options) -> Result<(), String> {
         agent.announce_session();
         // After settle_model, which resets the tools. Only the root spawns, runs terminals and searches the web, and a child has no UI to ask in.
         if options.parent.is_some() {
-            const ROOT_ONLY: [&str; 11] =
-                ["subagent", "bg_wait", "bg_start", "bg_status", "bg_list", "bg_kill", "web_search", "fetch_content", "get_search_content", "source_check", "ask_user_question"];
+            const ROOT_ONLY: [&str; 9] =
+                ["subagent", "bg_wait", "bg_start", "bg_status", "bg_kill", "web_search", "fetch_content", "get_search_content", "ask_user_question"];
             let keep = |name: &str| if options.explore { matches!(name, "read" | "rg") } else { !ROOT_ONLY.contains(&name) };
             if let Some(tools) = agent.tools.as_array_mut() {
                 tools.retain(|tool| keep(tool["name"].as_str().unwrap_or_default()));

@@ -40,7 +40,7 @@ impl Goal {
     }
 
     pub fn prompt(&self) -> String {
-        format!("Continue working toward the goal: {} Call update_goal when done criteria are met.", self.objective)
+        format!("Continue working toward the goal: {} Call goal(action: complete) when done criteria are met.", self.objective)
     }
 
     /// What follows a finished turn; Esc and a spent budget pause the goal.
@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn continues_until_paused_by_esc_or_budget() {
         let mut goal = Goal::new("ship it.", Some(100));
-        assert_eq!(goal.after_turn(false), AfterTurn::Continue("Continue working toward the goal: ship it. Call update_goal when done criteria are met.".into()));
+        assert_eq!(goal.after_turn(false), AfterTurn::Continue("Continue working toward the goal: ship it. Call goal(action: complete) when done criteria are met.".into()));
         assert_eq!(goal.after_turn(true), AfterTurn::Paused("Goal paused. Resume with /goal resume.".into()));
         assert_eq!(goal.after_turn(false), AfterTurn::Idle);
         goal.status = Status::Active;

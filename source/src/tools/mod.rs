@@ -225,7 +225,12 @@ fn write(input: &Value, cwd: &Path, anchors: &mut Anchors) -> Result<String, Str
 
 /// pi file-search's rg argv as JSON events: the pattern after `--`, counts clamped.
 fn rg_args(input: &Value) -> Result<Vec<String>, String> {
-    let mut args = vec!["--json".to_string()];
+    let first = match input["output"].as_str() {
+        Some("files") => "--files-with-matches",
+        Some("count") => "--count",
+        _ => "--json",
+    };
+    let mut args = vec![first.to_string()];
     args.push(match input["case_sensitive"].as_bool() {
         Some(true) => "--case-sensitive".into(),
         Some(false) => "--ignore-case".into(),
@@ -272,7 +277,10 @@ fn search_path(input: &Value) -> Option<String> {
 }
 
 fn rg(input: &Value, cwd: &Path, anchors: &mut Anchors, abort: &AtomicBool) -> Result<String, String> {
-    let rows = rg_rows(&search("rg", &rg_args(input)?, cwd, abort, RG_OK)?, cwd, anchors)?;
+    let args = rg_args(input)?;
+    let output = search("rg", &args, cwd, abort, RG_OK)?;
+    // rg refuses --json next to --files-with-matches or --count, so those modes return its plain rows.
+    let rows = if args[0] == "--json" { rg_rows(&output, cwd, anchors)? } else { output };
     Ok(if rows.is_empty() { "No matches found".into() } else { truncate_search(rows, "rg") })
 }
 
@@ -615,6 +623,19 @@ mod tests {
     }
 
     #[test]
+    fn rg_files_and_count_modes_skip_anchors() {
+        let dir = std::env::temp_dir().join(format!("agent-rg-modes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "needle\nneedle\n").unwrap();
+        let mut anchors = Anchors::new("t");
+        let abort = AtomicBool::new(false);
+        assert_eq!(rg(&json!({"pattern": "needle", "output": "files"}), &dir, &mut anchors, &abort).unwrap(), "a.txt");
+        assert_eq!(rg(&json!({"pattern": "needle", "output": "count"}), &dir, &mut anchors, &abort).unwrap(), "a.txt:2");
+        assert_eq!(anchors.minted(), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn rg_reports_a_missing_path_instead_of_no_matches() {
         let error = rg(&json!({"pattern": "needle", "path": "/nonexistent-agent-path"}), Path::new("/tmp"), &mut Anchors::new("t"), &AtomicBool::new(false)).unwrap_err();
         assert!(error.starts_with("rg failed"), "{error}");
@@ -622,11 +643,11 @@ mod tests {
 
     #[test]
     fn long_bash_output_keeps_its_end_and_saves_the_full_log() {
-        // 19 KB in 2000 lines: under the line and byte caps, over rtk's 12 KB.
-        let (out, _) = run("bash", &json!({"command": "awk 'BEGIN { for (i = 1; i <= 2000; i++) print \"line\", i }'"}), Path::new("/tmp"), &mut Anchors::new("t"), &Rtk::ON, &Arc::default());
-        assert!(out.contains("\nline 2000\n"), "{}", &out[out.len().saturating_sub(300)..]);
+        // 30 KB in 2000 lines: under the line and byte caps, over rtk's 24 KB.
+        let (out, _) = run("bash", &json!({"command": "awk 'BEGIN { for (i = 1; i <= 2000; i++) print \"line\", i, \"xxxx\" }'"}), Path::new("/tmp"), &mut Anchors::new("t"), &Rtk::ON, &Arc::default());
+        assert!(out.contains("\nline 2000 xxxx\n"), "{}", &out[out.len().saturating_sub(300)..]);
         let path = out.rsplit("Full output: ").next().unwrap().trim_end_matches(']');
-        assert_eq!(std::fs::read_to_string(path).unwrap(), (1..=2000).map(|i| format!("line {i}\n")).collect::<String>());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), (1..=2000).map(|i| format!("line {i} xxxx\n")).collect::<String>());
     }
 
     #[test]

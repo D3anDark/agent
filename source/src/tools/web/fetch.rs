@@ -113,7 +113,7 @@ fn fetch_one(url: &str, raw: bool, force_clone: bool) -> Result<(String, String)
     }
 }
 
-/// fetch_content may run unasked in auto mode, and web_search and source_check fetch result URLs without asking, so no
+/// fetch_content may run unasked in auto mode, and web_search fetches result URLs without asking, so no
 /// fetched URL may reach cloud metadata, routers or local dev servers.
 /// shortcut: DNS rebinding between this check and the request is not covered, and behind a proxy a name this machine
 /// cannot resolve passes (the proxy may resolve internal names); pin the resolved address if that matters.

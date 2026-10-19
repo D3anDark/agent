@@ -9,7 +9,7 @@ pub struct Rtk {
 }
 
 impl Rtk {
-    pub const ON: Rtk = Rtk { enabled: true, max_bytes: 12 * 1024 };
+    pub const ON: Rtk = Rtk { enabled: true, max_bytes: 24 * 1024 };
     /// For `!` commands the user typed and for every call when the rtk setting is off: no rewrite, no ANSI strip, the MAX_BYTES tail.
     pub const OFF: Rtk = Rtk { enabled: false, max_bytes: super::MAX_BYTES };
 

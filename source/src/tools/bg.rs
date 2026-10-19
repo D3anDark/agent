@@ -70,7 +70,8 @@ impl Status {
 
 impl Terminals {
     pub fn status_of(&self, input: &Value, follow_ups: &Arc<Mutex<Vec<FollowUp>>>) -> Result<String, String> {
-        let terminal = self.find(input["id"].as_str().unwrap_or_default())?;
+        let Some(id) = input["id"].as_str() else { return Ok(self.describe_all()) };
+        let terminal = self.find(id)?;
         terminal.mark_reported(follow_ups);
         Ok(terminal.status_text())
     }
@@ -130,7 +131,7 @@ impl Terminals {
             }
         });
         Ok(format!(
-            "Started background terminal {id} \"{title}\" (pid {pid}, {cwd}).\nIt runs in the background with no stdin. You'll get a message when it exits, or use bg_status(id: \"{id}\") to peek, bg_kill to stop it, bg_list to see all.",
+            "Started background terminal {id} \"{title}\" (pid {pid}, {cwd}).\nIt runs in the background with no stdin. You'll get a message when it exits, or use bg_status(id: \"{id}\") to peek, bg_kill to stop it, bg_status without id to see all.",
             id = terminal.id,
             title = terminal.title,
             pid = terminal.pid,
