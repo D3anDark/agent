@@ -975,7 +975,7 @@ impl Agent {
         *self.permission_mode.lock().unwrap() = settings.permission_mode;
         self.rtk = if settings.rtk { Rtk::ON } else { Rtk::OFF };
         self.modes = modes::prompt(&self.home, &settings.ponytail, &settings.caveman);
-        self.system = prompt::system_prompt(&self.agent_dir, &self.cwd, &settings.disabled_skills);
+        self.system = prompt::system_prompt(&self.agent_dir, &self.cwd, &settings.disabled_skills, settings.prefer_global());
     }
 
     /// Applies `settings`, swapping a model no account lists for one an account lists, then for OpenRouter's public list.
@@ -1015,13 +1015,13 @@ impl Agent {
     /// /worktree: pi pins a session to its cwd, so the history moves to a new session started in `cwd`.
     pub fn move_to(&mut self, cwd: PathBuf) -> Result<(), String> {
         // Everything that can fail runs before the agent changes, so an error leaves it in the old checkout.
-        let disabled_skills = crate::settings::load(&self.home)?.disabled_skills;
+        let settings = crate::settings::load(&self.home)?;
         let session = self.copy_session(&cwd)?;
         // Earlier snapshots belong to the old checkout's snapshot repo.
         session.append(&json!({"type": "checkpoints_reset"}))?;
         self.grants = Grants::default();
         self.shell_context.push(format!("Session moved from {} to {}. Paths and git state from earlier messages refer to the old checkout.", self.cwd.display(), cwd.display()));
-        self.system = prompt::system_prompt(&self.agent_dir, &cwd, &disabled_skills);
+        self.system = prompt::system_prompt(&self.agent_dir, &cwd, &settings.disabled_skills, settings.prefer_global());
         self.anchors = Anchors::new(&session.id);
         self.nested_instructions.clear();
         self.checkpoints.clear();

@@ -40,7 +40,7 @@ use crate::api::models::{self, Model};
 use crate::api::oauth::Tokens;
 use crate::api::{AccountView, Client, Delta, Usage};
 use crate::settings::THINKING_LEVELS;
-use crate::settings::{self, PROVIDER_SORTS, PRUNE_SESSIONS, Settings, model_key};
+use crate::settings::{self, CONFLICT_PRIORITIES, PROVIDER_SORTS, PRUNE_SESSIONS, Settings, model_key};
 use crate::tools::bg::Terminals;
 use crate::tools::goal::{Goal, Status as GoalStatus};
 use crate::tools::rtk::strip_ansi;
@@ -362,7 +362,7 @@ const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
 const MENU_ROWS: [usize; 5] = [4, 6, 8, 10, 12];
 const PANEL_ROWS: usize = 8;
 const SCROLL_LINES: [usize; 5] = [1, 2, 3, 5, 10];
-const SETTING_NAMES: [&str; 26] = [
+const SETTING_NAMES: [&str; 27] = [
     "Model",
     "Thinking level",
     "Permission mode",
@@ -389,9 +389,10 @@ const SETTING_NAMES: [&str; 26] = [
     "Menu rows",
     "Auto prune sessions",
     "Provider order",
+    "Name conflicts prefer",
 ];
 /// Rows of `SETTING_NAMES` in the order the settings panel lists them.
-const SETTING_ORDER: [usize; 26] = [0, 1, 18, 13, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 25, 14, 15, 16, 17, 19, 20, 23, 21, 22, 24];
+const SETTING_ORDER: [usize; 27] = [0, 1, 18, 13, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 25, 14, 15, 16, 17, 26, 19, 20, 23, 21, 22, 24];
 const MODEL_ROWS: [usize; 3] = [0, 8, 12];
 const CONTEXT_WINDOW_ROW: usize = 13;
 const PROVIDER_ORDER_ROW: usize = 25;
@@ -550,8 +551,6 @@ pub struct Setup {
     pub home: PathBuf,
     /// With the command-line flags applied; /settings writes only the keys it changes to the file.
     pub settings: Settings,
-    pub skills: Vec<Skill>,
-    pub templates: Vec<Template>,
     pub prompt: Option<String>,
     /// `--resume` without an id: start with the /resume list open.
     pub pick_session: bool,
@@ -880,13 +879,10 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
 
 impl App {
     fn new(agent: &Agent, setup: Setup, commands: Sender<Command>, events: Sender<Msg>) -> App {
-        let Setup { home, settings, skills, templates, modes_error, plugin_updates, .. } = setup;
+        let Setup { home, settings, modes_error, plugin_updates, .. } = setup;
         let mut recent_prompts: Vec<String> = history::load(&home.join(".agents")).into_iter().map(|entry| entry.prompt).collect();
         recent_prompts.drain(..recent_prompts.len().saturating_sub(100));
-        let mut slash_commands: Vec<(String, String)> = BUILTIN_COMMANDS.iter().map(|(name, _, description)| (name.to_string(), description.to_string())).collect();
-        for template in &templates {
-            slash_commands.push((template.name.clone(), template.description.clone()));
-        }
+        let slash_commands: Vec<(String, String)> = BUILTIN_COMMANDS.iter().map(|(name, _, description)| (name.to_string(), description.to_string())).collect();
         let mut app = App {
             entries: Vec::new(),
             editor: Editor::with_history(recent_prompts),
@@ -915,8 +911,8 @@ impl App {
             hint: None,
             images: Vec::new(),
             quit: false,
-            skills,
-            templates,
+            skills: Vec::new(),
+            templates: Vec::new(),
             slash_commands,
             menu_index: 0,
             header_len: 0,
@@ -942,7 +938,9 @@ impl App {
             btw: None,
         };
         app.push(Item::Lines(banner()));
+        app.load_skills_and_prompts();
         app.system("skills", format!("{} loaded", app.enabled_skills().count()));
+        app.report_conflicts();
         let levels = [("ponytail", modes::PONYTAIL_BANNER, app.settings.ponytail.clone()), ("caveman", modes::CAVEMAN_BANNER, app.settings.caveman.clone())];
         for (name, banner, level) in levels {
             if agent.modes.contains(banner) {
@@ -1523,6 +1521,10 @@ impl App {
         {
             self.push(Item::Error(error));
         }
+        if self.settings.conflict_priority != old.conflict_priority {
+            self.load_skills_and_prompts();
+            self.report_conflicts();
+        }
         let _ = self.commands.send(Command::Apply(Box::new(self.settings.clone())));
         if let Err(error) = settings::save_change(&self.home, &old, &self.settings) {
             self.push(Item::Error(error));
@@ -1549,6 +1551,25 @@ impl App {
 
     fn enabled_skills(&self) -> impl Iterator<Item = &Skill> {
         self.skills.iter().filter(|skill| !self.settings.disabled_skills.contains(&skill.name))
+    }
+
+    /// Every skill, the disabled ones too: /skills lists them, `enabled_skills` filters by `Settings.disabled_skills`.
+    fn load_skills_and_prompts(&mut self) {
+        let agent_dir = self.home.join(".agents");
+        self.skills = crate::agent::prompt::load_skills(&agent_dir, &self.cwd, &[], self.settings.prefer_global());
+        self.templates = crate::agent::prompt::load_templates(&agent_dir, &self.cwd, self.settings.prefer_global());
+    }
+
+    /// Names each skill and prompt defined both in the project and in `~/.agents`, with the file `conflict_priority` picked.
+    fn report_conflicts(&mut self) {
+        let skills = self.skills.iter().filter_map(|s| Some((format!("skill:{}", s.name), &s.path, s.shadows.as_ref()?)));
+        let prompts = self.templates.iter().filter_map(|t| Some((format!("prompt:{}", t.name), &t.path, t.shadows.as_ref()?)));
+        let lines: Vec<String> = skills.chain(prompts).map(|(name, used, shadowed)| format!("/{name} uses {} over {}", used.display(), shadowed.display())).collect();
+        if lines.is_empty() {
+            return;
+        }
+        let header = format!("{} skills or prompts are in both the project and ~/.agents; the {} one wins (Name conflicts prefer in /settings)", lines.len(), self.settings.conflict_priority);
+        self.system("conflicts", format!("{header}\n{}", lines.join("\n")));
     }
 
     fn skill_usage(&mut self) {
@@ -1587,7 +1608,10 @@ impl App {
         let plugin = self.plugins.commands().iter().any(|(name, _)| command_args(&text, &format!("/{name}")).is_some());
         if self.working.is_some() && !local && !plugin {
             // Steering reaches the model as plain text, so commands and prompts with pasted images wait for the turn to end and run then.
-            let command = text.starts_with('!') || text.trim().starts_with("/skill:") || self.slash_commands.iter().any(|(name, _)| command_args(&text, &format!("/{name}")).is_some());
+            let command = text.starts_with('!')
+                || text.trim().starts_with("/skill:")
+                || text.trim().starts_with("/prompt:")
+                || self.slash_commands.iter().any(|(name, _)| command_args(&text, &format!("/{name}")).is_some());
             if command || !self.images.is_empty() {
                 // The images travel with their text, so an image pasted for the next prompt starts again at #1.
                 self.queued_commands.push_back((text, std::mem::take(&mut self.images)));
@@ -1742,6 +1766,7 @@ impl App {
             "help" => {
                 let mut lines: Vec<String> = self.slash_commands.iter().map(|(name, description)| format!("/{name:<14}\t{description}")).collect();
                 lines.push(format!("/{:<14}\trun a skill ({} loaded)", "skill:<name>", self.enabled_skills().count()));
+                lines.push(format!("/{:<14}\trun a prompt ({} loaded)", "prompt:<name>", self.templates.len()));
                 self.system("help", format!("{} commands\n{}", lines.len(), lines.join("\n")));
             }
             "resume" => self.open_resume(),
@@ -1764,7 +1789,7 @@ impl App {
             name if self.plugins.commands().iter().any(|(command, _)| command == name) => {
                 let _ = self.commands.send(Command::Plugin(name.to_string(), args.to_string()));
             }
-            name if let Some(template) = self.templates.iter().find(|t| t.name == name) => match crate::agent::prompt::expand_template(template, args) {
+            name if let Some(template) = name.strip_prefix("prompt:").and_then(|name| self.templates.iter().find(|t| t.name == name)) => match crate::agent::prompt::expand_template(template, args) {
                 Ok(expanded) => {
                     self.push(Item::User(expanded.clone()));
                     let images = self.take_images(&text);
@@ -2495,11 +2520,12 @@ impl App {
             23 => s.menu_rows = step(&MENU_ROWS, &s.menu_rows, forward),
             24 => s.prune_sessions = step(&PRUNE_SESSIONS, &s.prune_sessions.as_str(), forward).to_string(),
             25 => s.provider_sort = step(&PROVIDER_SORTS, &s.provider_sort.as_str(), forward).to_string(),
+            26 => s.conflict_priority = step(&CONFLICT_PRIORITIES, &s.conflict_priority.as_str(), forward).to_string(),
             _ => unreachable!("rows 0, 8, 12 and 13 open their own panels"),
         });
     }
 
-    fn setting_values(&self) -> [Line; 26] {
+    fn setting_values(&self) -> [Line; 27] {
         let s = &self.settings;
         let condense_model = if s.condense_model.is_empty() { "auto" } else { &s.condense_model };
         let fallback_model = if s.fallback_model.is_empty() { "auto" } else { &s.fallback_model };
@@ -2534,6 +2560,7 @@ impl App {
             choices(MENU_ROWS.map(|n| n.to_string()), &s.menu_rows.to_string()),
             choices(PRUNE_SESSIONS.map(String::from), &s.prune_sessions),
             [choices(PROVIDER_SORTS.map(String::from), &s.provider_sort), vec![span("   enter reorder", MUTED)]].concat(),
+            choices(CONFLICT_PRIORITIES.map(String::from), &s.conflict_priority),
         ]
     }
 
@@ -2956,6 +2983,7 @@ impl App {
                 self.path_matches.take();
                 let mut commands = self.slash_commands.clone();
                 commands.extend(self.enabled_skills().map(|skill| (format!("skill:{}", skill.name), skill.description.split_whitespace().collect::<Vec<_>>().join(" "))));
+                commands.extend(self.templates.iter().map(|template| (format!("prompt:{}", template.name), template.description.clone())));
                 commands.extend(self.plugins.commands());
                 matching_commands(&commands, slash_query(&self.editor.text(), self.editor.before_cursor()))
             }
@@ -2985,7 +3013,7 @@ impl App {
     fn accept_slash(&mut self, run: bool) {
         let matches = self.menu_matches();
         let name = matches[self.menu_index.min(matches.len() - 1)].0.clone();
-        let takes_args = matches!(name.as_str(), "thinking" | "rename-title" | "btw" | "goal" | "import") || name.starts_with("skill:") || self.templates.iter().any(|t| t.name == name);
+        let takes_args = matches!(name.as_str(), "thinking" | "rename-title" | "btw" | "goal" | "import") || name.starts_with("skill:") || name.starts_with("prompt:");
         let text = self.editor.text();
         let rest = text[slash_query(&text, self.editor.before_cursor()).len()..].trim().to_string();
         if takes_args {

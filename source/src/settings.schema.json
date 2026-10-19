@@ -23,6 +23,7 @@
     "provider_order": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Providers listed first when provider_sort is manual; the rest keep their default order after them." },
     "pinned_models": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Models, as provider/id, the model picker lists first." },
     "disabled_skills": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "conflict_priority": { "enum": ["project", "global"], "default": "project", "description": "Which skill or prompt wins when the project's .agents and ~/.agents have one with the same name." },
     "disabled_plugins": { "type": "array", "items": { "type": "string" }, "default": [] },
     "disabled_mcp": { "type": "array", "items": { "type": "string" }, "default": [] },
     "approved_mcp": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Project .mcp.json servers allowed to run, approved with space in /mcp." },

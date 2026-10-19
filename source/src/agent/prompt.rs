@@ -21,8 +21,8 @@ const DEFAULT_PREAMBLE: &str = "You are an expert coding assistant. You help use
 const CONTEXT_FILES: [&str; 3] = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD"];
 
 /// Preamble, addendum, project context, skills, cwd. ponytail and caveman come from `modes`.
-/// The project's `.agents/` wins over the agent dir (`~/.agents`).
-pub fn system_prompt(agent_dir: &Path, cwd: &Path, disabled_skills: &[String]) -> String {
+/// The project's `.agents/` SYSTEM.md wins over the agent dir's (`~/.agents`); skills follow `prefer_global`.
+pub fn system_prompt(agent_dir: &Path, cwd: &Path, disabled_skills: &[String], prefer_global: bool) -> String {
     let mut sections = vec![override_file(agent_dir, cwd, "SYSTEM.md").unwrap_or_else(|| DEFAULT_PREAMBLE.into())];
     if let Some(addendum) = override_file(agent_dir, cwd, "APPEND_SYSTEM.md") {
         sections.push(tag("addendum", &addendum));
@@ -32,7 +32,7 @@ pub fn system_prompt(agent_dir: &Path, cwd: &Path, disabled_skills: &[String]) -
         sections.push(tag("project_context", &context));
     }
     // The host injects ponytail and caveman natively, so their skills would only duplicate the rules.
-    let skills: Vec<Skill> = load_skills(agent_dir, cwd, disabled_skills).into_iter().filter(|s| s.model_invocable && s.name != "ponytail" && s.name != "caveman").collect();
+    let skills: Vec<Skill> = load_skills(agent_dir, cwd, disabled_skills, prefer_global).into_iter().filter(|s| s.model_invocable && s.name != "ponytail" && s.name != "caveman").collect();
     if !skills.is_empty() {
         sections.push(tag("skills", &format_skills(skills)));
     }
@@ -121,28 +121,41 @@ pub struct Skill {
     pub path: PathBuf,
     /// False for `disable-model-invocation: true`: listed for `/skill:name`, left out of the system prompt.
     pub model_invocable: bool,
+    /// The same-named skill on the other side (project or global) this one won over.
+    pub shadows: Option<PathBuf>,
+}
+
+/// `.agents` dirs in the order they win a name conflict, each flagged global: the preferred side first, project ones nearest first.
+fn agents_dirs(agent_dir: &Path, cwd: &Path, prefer_global: bool) -> Vec<(PathBuf, bool)> {
+    let global = std::iter::once((agent_dir.to_path_buf(), true));
+    // Outside a git repo the walk up reaches ~/.agents itself.
+    let project = project_agents_dirs(cwd).into_iter().filter(|dir| dir != agent_dir).map(|dir| (dir, false));
+    if prefer_global { global.chain(project).collect() } else { project.chain(global).collect() }
 }
 
 /// Skills from `~/.agents/skills` and `.agents/skills` in cwd and its parents up to the git root.
-pub fn load_skills(agent_dir: &Path, cwd: &Path, disabled: &[String]) -> Vec<Skill> {
-    let mut dirs = vec![agent_dir.join("skills")];
-    dirs.extend(project_agents_dirs(cwd).iter().map(|dir| dir.join("skills")));
-    let mut files = Vec::new();
-    for dir in &dirs {
-        collect_skill_files(dir, true, &mut files);
-    }
-    let mut skills: Vec<Skill> = Vec::new();
+pub fn load_skills(agent_dir: &Path, cwd: &Path, disabled: &[String], prefer_global: bool) -> Vec<Skill> {
+    let mut found: Vec<(Skill, bool)> = Vec::new();
     let mut seen = HashSet::new();
-    for path in files {
-        if !seen.insert(path.canonicalize().unwrap_or_else(|_| path.clone())) {
-            continue;
-        }
-        let Some(skill) = parse_skill(&path) else { continue };
-        if !disabled.contains(&skill.name) && !skills.iter().any(|s| s.name == skill.name) {
-            skills.push(skill);
+    for (dir, global) in agents_dirs(agent_dir, cwd, prefer_global) {
+        let mut files = Vec::new();
+        collect_skill_files(&dir.join("skills"), true, &mut files);
+        for path in files {
+            if !seen.insert(path.canonicalize().unwrap_or_else(|_| path.clone())) {
+                continue;
+            }
+            let Some(skill) = parse_skill(&path) else { continue };
+            if disabled.contains(&skill.name) {
+                continue;
+            }
+            match found.iter_mut().find(|(winner, _)| winner.name == skill.name) {
+                Some((winner, winner_global)) if *winner_global != global => _ = winner.shadows.get_or_insert(skill.path),
+                Some(_) => {}
+                None => found.push((skill, global)),
+            }
         }
     }
-    skills
+    found.into_iter().map(|(skill, _)| skill).collect()
 }
 
 fn collect_skill_files(dir: &Path, root: bool, out: &mut Vec<PathBuf>) {
@@ -175,7 +188,7 @@ pub fn parse_skill(path: &Path) -> Option<Skill> {
     let description = field("description").filter(|d| !d.trim().is_empty())?;
     let dir_name = path.parent()?.file_name()?.to_string_lossy().into_owned();
     let name = field("name").filter(|n| !n.is_empty()).unwrap_or(dir_name);
-    Some(Skill { name, description, path: path.to_path_buf(), model_invocable })
+    Some(Skill { name, description, path: path.to_path_buf(), model_invocable, shadows: None })
 }
 
 /// pi's `/skill:name args` expansion: the skill body wrapped in a `<skill>` block, then the args.
@@ -190,29 +203,37 @@ pub fn expand_skill(text: &str, skills: &[Skill]) -> Result<String, String> {
     Ok(if args.is_empty() { block } else { format!("{block}\n\n{args}") })
 }
 
-/// A prompt template, run as `/name args` like pi's.
+/// A prompt template, run as `/prompt:name args`.
 pub struct Template {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
+    /// The same-named template on the other side (project or global) this one won over.
+    pub shadows: Option<PathBuf>,
 }
 
-/// `*.md` in `~/.agents/prompts`, then in the project's `.agents/prompts` up to the git root; nearer ones replace by name.
-pub fn load_templates(agent_dir: &Path, cwd: &Path) -> Vec<Template> {
-    let mut templates: Vec<Template> = Vec::new();
-    let project = project_agents_dirs(cwd).into_iter().rev().map(|dir| dir.join("prompts"));
-    for dir in std::iter::once(agent_dir.join("prompts")).chain(project) {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+/// `*.md` in `~/.agents/prompts` and the project's `.agents/prompts` up to the git root, sorted by name.
+pub fn load_templates(agent_dir: &Path, cwd: &Path, prefer_global: bool) -> Vec<Template> {
+    let mut found: Vec<(Template, bool)> = Vec::new();
+    for (dir, global) in agents_dirs(agent_dir, cwd, prefer_global) {
+        let Ok(entries) = std::fs::read_dir(dir.join("prompts")) else { continue };
         let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|ext| ext == "md")).collect();
         paths.sort();
         for path in paths {
             let Some(name) = path.file_stem().and_then(|stem| stem.to_str()).map(str::to_string) else { continue };
-            let fields = read_text(&path).and_then(|text| frontmatter(&text)).unwrap_or_default();
-            let description = field(&fields, "description").unwrap_or_default().to_string();
-            templates.retain(|t| t.name != name);
-            templates.push(Template { name, description, path });
+            match found.iter_mut().find(|(winner, _)| winner.name == name) {
+                Some((winner, winner_global)) if *winner_global != global => _ = winner.shadows.get_or_insert(path),
+                Some(_) => {}
+                None => {
+                    let fields = read_text(&path).and_then(|text| frontmatter(&text)).unwrap_or_default();
+                    let description = field(&fields, "description").unwrap_or_default().to_string();
+                    found.push((Template { name, description, path, shadows: None }, global));
+                }
+            }
         }
     }
+    let mut templates: Vec<Template> = found.into_iter().map(|(template, _)| template).collect();
+    templates.sort_by(|a, b| a.name.cmp(&b.name));
     templates
 }
 
@@ -399,7 +420,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("agent-stable-{}", std::process::id()));
         std::fs::create_dir_all(root.join("a")).unwrap();
         std::fs::create_dir_all(root.join("b")).unwrap();
-        assert_eq!(system_prompt(&root, &root.join("a"), &[]), system_prompt(&root, &root.join("b"), &[]));
+        assert_eq!(system_prompt(&root, &root.join("a"), &[], false), system_prompt(&root, &root.join("b"), &[], false));
         assert_eq!(cwd_section(&root.join("a")), format!("<cwd>\n{}\n</cwd>", root.join("a").display()));
     }
 
@@ -427,7 +448,7 @@ mod tests {
         std::fs::write(root.join("home/prompts/review.md"), "global").unwrap();
         std::fs::write(root.join("home/prompts/commit.md"), "---\ndescription: Commit\n---\nCommit. Context: $ARGUMENTS").unwrap();
         std::fs::write(root.join("repo/.agents/prompts/review.md"), "Review $ARGUMENTS").unwrap();
-        let templates = load_templates(&root.join("home"), &root.join("repo"));
+        let templates = load_templates(&root.join("home"), &root.join("repo"), false);
         let expanded: Vec<(String, String, String)> = templates.iter().map(|t| (t.name.clone(), t.description.clone(), expand_template(t, "HEAD~2").unwrap())).collect();
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(expanded, [("commit".into(), "Commit".into(), "Commit. Context: HEAD~2".into()), ("review".into(), String::new(), "Review HEAD~2".into())]);
@@ -445,11 +466,36 @@ mod tests {
         std::fs::write(root.join("repo/.agents/SYSTEM.md"), "repo system").unwrap();
         std::fs::write(root.join("repo/.agents/prompts/review.md"), "Review").unwrap();
         let cwd = root.join("repo/src");
-        let templates: Vec<String> = load_templates(&root.join("home"), &cwd).into_iter().map(|t| t.name).collect();
-        let system = system_prompt(&root.join("home"), &cwd, &[]);
+        let templates: Vec<String> = load_templates(&root.join("home"), &cwd, false).into_iter().map(|t| t.name).collect();
+        let system = system_prompt(&root.join("home"), &cwd, &[], false);
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(templates, ["review"]);
         assert!(system.starts_with("repo system") && !system.contains("outside the repo"), "{system}");
+    }
+
+    #[test]
+    fn same_named_skills_and_prompts_follow_the_priority_and_name_what_they_shadow() {
+        let root = std::env::temp_dir().join(format!("agent-conflicts-{}", std::process::id()));
+        let (home, repo) = (root.join("home"), root.join("repo"));
+        for dir in [home.join("skills/tdd"), home.join("prompts"), repo.join(".git"), repo.join(".agents/skills/tdd"), repo.join(".agents/prompts")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let (global_skill, project_skill) = (home.join("skills/tdd/SKILL.md"), repo.join(".agents/skills/tdd/SKILL.md"));
+        let (global_prompt, project_prompt) = (home.join("prompts/review.md"), repo.join(".agents/prompts/review.md"));
+        for path in [&global_skill, &project_skill, &global_prompt, &project_prompt] {
+            std::fs::write(path, "---\ndescription: x\n---\n").unwrap();
+        }
+        let resolved = |prefer_global| {
+            let skills = load_skills(&home, &repo, &[], prefer_global);
+            let templates = load_templates(&home, &repo, prefer_global);
+            let skill = skills.into_iter().map(|s| (s.path, s.shadows)).collect::<Vec<_>>();
+            let template = templates.into_iter().map(|t| (t.path, t.shadows)).collect::<Vec<_>>();
+            (skill, template)
+        };
+        let (project_first, global_first) = (resolved(false), resolved(true));
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(project_first, (vec![(project_skill.clone(), Some(global_skill.clone()))], vec![(project_prompt.clone(), Some(global_prompt.clone()))]));
+        assert_eq!(global_first, (vec![(global_skill, Some(project_skill))], vec![(global_prompt, Some(project_prompt))]));
     }
 
     #[test]

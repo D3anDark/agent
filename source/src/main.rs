@@ -329,7 +329,7 @@ fn run(options: Options) -> Result<(), String> {
     let plugin_updates = plugins::update_bundled(&home);
     let mut agent = Agent {
         client,
-        system: prompt::system_prompt(&agent_dir, &cwd, &settings.disabled_skills),
+        system: prompt::system_prompt(&agent_dir, &cwd, &settings.disabled_skills, settings.prefer_global()),
         modes: modes::prompt(&home, &settings.ponytail, &settings.caveman),
         // agent.load below fills it, with the session's swarm prompt.
         tools: Value::Null,
@@ -450,12 +450,9 @@ fn run(options: Options) -> Result<(), String> {
         tools::remove_spills();
         return result;
     }
-    // All skills: /skills lists the disabled ones too, the TUI filters by settings.disabled_skills.
-    let skills = prompt::load_skills(&agent_dir, &agent.cwd, &[]);
-    let templates = prompt::load_templates(&agent_dir, &agent.cwd);
     agent.interactive = true;
     agent.snapshots = snapshots::Snapshots::open(&home, &agent.cwd);
-    tui::run(agent, tui::Setup { home, settings, skills, templates, prompt, pick_session: matches!(options.resume, Some(Resume::Pick)), modes_error, plugin_updates }, model_lists)
+    tui::run(agent, tui::Setup { home, settings, prompt, pick_session: matches!(options.resume, Some(Resume::Pick)), modes_error, plugin_updates }, model_lists)
 }
 
 /// The panic hook's terminal restore does not run when a signal ends the process, so a `kill` would leave the shell in raw mode.

@@ -40,6 +40,8 @@ pub struct Settings {
     pub pinned_models: Vec<String>,
     /// Skill names left out of the prompt and /skill: completion.
     pub disabled_skills: Vec<String>,
+    /// One of `CONFLICT_PRIORITIES`: the side whose skill or prompt wins when the project and `~/.agents` share a name.
+    pub conflict_priority: String,
     /// Installed plugins that are not started.
     pub disabled_plugins: Vec<String>,
     /// MCP servers from `mcp.json` that are not connected.
@@ -84,6 +86,7 @@ pub struct LspServer {
 pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 pub const PRUNE_SESSIONS: [&str; 6] = ["never", "24h", "3d", "7d", "14d", "30d"];
 pub const PROVIDER_SORTS: [&str; 3] = ["default", "alphabetical", "manual"];
+pub const CONFLICT_PRIORITIES: [&str; 2] = ["project", "global"];
 /// Below this a condensed batch costs more in cache rewrites than its summary saves on later cache reads.
 pub const CONDENSE_MIN_BATCH_CHARS: u64 = 10_000;
 
@@ -91,6 +94,10 @@ impl Settings {
     pub fn context_window(&self, model: &Model) -> u64 {
         let overrides = &self.context_windows;
         overrides.get(&model_key(model)).or(overrides.get(&model.provider)).copied().unwrap_or(model.context_window)
+    }
+
+    pub fn prefer_global(&self) -> bool {
+        self.conflict_priority == "global"
     }
 
     /// `providers` in the order `provider_sort` picks.
@@ -209,6 +216,7 @@ fn from_json(own: &Value) -> Settings {
         provider_order: string_list(&own["provider_order"]),
         pinned_models: string_list(&own["pinned_models"]),
         disabled_skills: string_list(&own["disabled_skills"]),
+        conflict_priority: level(&own["conflict_priority"], &CONFLICT_PRIORITIES, "project"),
         disabled_plugins: string_list(&own["disabled_plugins"]),
         disabled_mcp: string_list(&own["disabled_mcp"]),
         approved_mcp: string_list(&own["approved_mcp"]),
@@ -296,6 +304,7 @@ fn to_json(settings: &Settings) -> Value {
         "provider_order": settings.provider_order,
         "pinned_models": settings.pinned_models,
         "disabled_skills": settings.disabled_skills,
+        "conflict_priority": settings.conflict_priority,
         "disabled_plugins": settings.disabled_plugins,
         "disabled_mcp": settings.disabled_mcp,
         "approved_mcp": settings.approved_mcp,
@@ -434,6 +443,7 @@ mod tests {
         assert_eq!(properties["update_channel"]["enum"], json!(crate::update::CHANNELS));
         assert_eq!(properties["prune_sessions"]["enum"], json!(PRUNE_SESSIONS));
         assert_eq!(properties["provider_sort"]["enum"], json!(PROVIDER_SORTS));
+        assert_eq!(properties["conflict_priority"]["enum"], json!(CONFLICT_PRIORITIES));
     }
 
     /// Every object `save` writes has exactly the properties its schema lists, nested objects included.
