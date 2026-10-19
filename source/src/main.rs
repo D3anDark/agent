@@ -244,7 +244,6 @@ fn run(options: Options) -> Result<(), String> {
         grants: Grants::default(),
         todos: Arc::default(),
         goal: Arc::default(),
-        plan: Arc::default(),
         follow_ups: Arc::default(),
         terminals: Arc::default(),
         web: tools::web::Web::new(&home, std::env::temp_dir().join(format!("agent-web-{}", std::process::id()))),

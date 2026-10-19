@@ -42,7 +42,6 @@ use crate::api::{AccountView, Client, Delta, Usage};
 use crate::settings::{self, PROVIDER_SORTS, PRUNE_SESSIONS, Settings, model_key};
 use crate::tools::bg::Terminals;
 use crate::tools::goal::{Goal, Status as GoalStatus};
-use crate::tools::plan::{self, Plan};
 use crate::tools::rtk::strip_ansi;
 use crate::tools::todo::{Status, Todos};
 use crate::worktree::{self, Worktree};
@@ -253,22 +252,13 @@ enum Panel {
         index: usize,
         scroll: usize,
     },
-    /// What to do with the plan from plan_mode_complete, opened when its turn ends or by /plan.
-    Plan {
-        index: usize,
-    },
-    /// "Start fresh and implement": the model and thinking level for the new session, then Start.
-    PlanFresh {
-        index: usize,
-    },
 }
 
-/// The panel the model picker returns to: none for /model, the settings list, or the start-fresh panel.
+/// The panel the model picker returns to: none for /model, or the settings list.
 #[derive(Clone, Copy)]
 enum ModelsBack {
     Close,
     Settings,
-    PlanFresh,
 }
 
 enum Command {
@@ -283,8 +273,6 @@ enum Command {
     /// New settings; the worker settles their model and answers with Msg::ModelSettled.
     Apply(Box<Settings>),
     Clear,
-    /// Starts a fresh conversation with this prompt.
-    Fresh(String),
     Rename(String),
     RenameTitle,
     Resume(String),
@@ -300,8 +288,6 @@ enum Command {
     AccountPicked,
     /// Writes the goal the UI changed to the session.
     SaveGoal,
-    /// Writes the plan mode the UI changed to the session.
-    SavePlan,
     SaveSpent(Spent),
     /// Starts a turn from follow-ups that arrived while idle.
     FollowUps,
@@ -359,8 +345,6 @@ const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
     ("ps", MidTurn::Runs, "Show background terminals"),
     ("subagents", MidTurn::Runs, "Show subagent runs"),
     ("goal", MidTurn::Runs, "[objective | pause | resume | stop | done] — Set a goal the agent keeps working toward, or manage it"),
-    ("plan", MidTurn::Waits, "[prompt | export [file] | implement | exit] — Plan mode: read-only until you pick what to do with the plan; /plan again turns it off"),
-    ("grill", MidTurn::Waits, "<topic> — Plan mode plus the grilling skill: the agent interviews you about the topic in rounds, changing nothing"),
     ("btw", MidTurn::Runs, "<question> — Ask a side question without touching the session"),
     ("worktree", MidTurn::Waits, "[name] — Move this session to a git worktree: pick one, or name a branch to open or create"),
     ("worktree-remove", MidTurn::Waits, "Remove a git worktree, keeping its branch"),
@@ -371,8 +355,6 @@ const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
 ];
 const MENU_ROWS: [usize; 5] = [4, 6, 8, 10, 12];
 const PANEL_ROWS: usize = 8;
-const PLAN_OPTIONS: [&str; 4] = ["Implement here", "Start fresh and implement", "Export to PLAN.md", "Keep planning"];
-const PLAN_FRESH_ROWS: [&str; 3] = ["Model", "Effort", "Start"];
 const SCROLL_LINES: [usize; 5] = [1, 2, 3, 5, 10];
 const SETTING_NAMES: [&str; 26] = [
     "Model",
@@ -548,7 +530,6 @@ struct App {
     input_view: (usize, usize),
     todos: Arc<Mutex<Todos>>,
     goal: Arc<Mutex<Option<Goal>>>,
-    plan: Arc<Mutex<Plan>>,
     follow_ups: Arc<Mutex<Vec<FollowUp>>>,
     terminals: Arc<Mutex<Terminals>>,
     subagents: Arc<Mutex<Runs>>,
@@ -672,13 +653,6 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                     let _ = events.send(Msg::Agent(Event::SessionStarted { id: agent.session.id.clone(), path }));
                     String::new()
                 }),
-                Command::Fresh(text) => agent.new_session().and_then(|()| {
-                    let path = agent.session.path.as_ref().map(|p| p.display().to_string());
-                    let _ = events.send(Msg::Agent(Event::SessionStarted { id: agent.session.id.clone(), path }));
-                    agent.pursue(&text, &mut |event| {
-                        let _ = events.send(Msg::Agent(event));
-                    })
-                }),
                 Command::Rename(name) => {
                     if let Err(error) = agent.session.rename(&name) {
                         let _ = events.send(Msg::Agent(Event::Notice(error)));
@@ -782,12 +756,6 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                 }
                 Command::SaveGoal => {
                     if let Err(error) = agent.save_goal() {
-                        let _ = events.send(Msg::Agent(Event::Notice(error)));
-                    }
-                    continue;
-                }
-                Command::SavePlan => {
-                    if let Err(error) = agent.save_plan() {
                         let _ = events.send(Msg::Agent(Event::Notice(error)));
                     }
                     continue;
@@ -953,7 +921,6 @@ impl App {
             input_view: (0, 0),
             todos: agent.todos.clone(),
             goal: agent.goal.clone(),
-            plan: agent.plan.clone(),
             follow_ups: agent.follow_ups.clone(),
             terminals: agent.terminals.clone(),
             subagents: agent.subagents.clone(),
@@ -1590,22 +1557,6 @@ impl App {
             self.goal_command(args);
             return;
         }
-        if let Some(args) = command_args(&text, "/plan")
-            && self.working.is_none()
-        {
-            self.plan_command(args);
-            return;
-        }
-        if let Some(topic) = command_args(&text, "/grill")
-            && self.working.is_none()
-        {
-            if topic.is_empty() {
-                self.system("grill", "Usage: /grill <topic>");
-                return;
-            }
-            self.plan_command(&format!("Load the grilling skill, then grill me about: {topic}"));
-            return;
-        }
         let local = command_args(&text, "/exit").is_some() || BUILTIN_COMMANDS.iter().any(|(name, mid_turn, _)| *mid_turn == MidTurn::Runs && command_args(&text, &format!("/{name}")).is_some());
         // Plugin commands can carry secrets such as tokens, so they never become steering text.
         let plugin = self.plugins.commands().iter().any(|(name, _)| command_args(&text, &format!("/{name}")).is_some());
@@ -1845,36 +1796,6 @@ impl App {
                 self.system("permissions", format!("Denied {}", request.detail));
             }
             let _ = reply.send(decision);
-            return;
-        }
-        if let Some(Panel::Plan { index }) = self.panel.as_mut() {
-            let choice = match code {
-                KeyCode::Up => {
-                    *index = index.saturating_sub(1);
-                    return;
-                }
-                KeyCode::Down => {
-                    *index = (*index + 1).min(PLAN_OPTIONS.len() - 1);
-                    return;
-                }
-                KeyCode::Char(digit @ '1'..='4') => digit as usize - '1' as usize,
-                KeyCode::Esc => 3,
-                KeyCode::Enter => *index,
-                _ => return,
-            };
-            self.plan_action(choice);
-            return;
-        }
-        if let Some(Panel::PlanFresh { index }) = self.panel.as_mut() {
-            match (code, *index) {
-                (KeyCode::Up, _) => *index = index.saturating_sub(1),
-                (KeyCode::Down, _) => *index = (*index + 1).min(PLAN_FRESH_ROWS.len() - 1),
-                (KeyCode::Esc, _) => self.panel = Some(Panel::Plan { index: 1 }),
-                (KeyCode::Enter, 0) => self.open_models(0, "", ModelsBack::PlanFresh),
-                (KeyCode::Enter | KeyCode::Right | KeyCode::Left, 1) => self.change_setting(1, code != KeyCode::Left),
-                (KeyCode::Enter, _) => self.start_fresh_plan(),
-                _ => {}
-            }
             return;
         }
         if let Some(Panel::Ask(ask)) = self.panel.as_mut() {
@@ -2225,8 +2146,6 @@ impl App {
                 | Panel::Subagent { .. }
                 | Panel::Terminal { .. }
                 | Panel::Diff { .. }
-                | Panel::Plan { .. }
-                | Panel::PlanFresh { .. }
                 | Panel::PluginSettings { .. }
                 | Panel::Plugin { .. }
                 | Panel::Usage { .. },
@@ -2308,92 +2227,6 @@ impl App {
         }
     }
 
-    /// /plan: no argument turns plan mode on, or off when it is on; a ready plan reopens its menu. Text starts planning on it.
-    /// A ready plan also takes `export [file]`, `implement` and `exit`.
-    fn plan_command(&mut self, args: &str) {
-        if matches!(*self.plan.lock().unwrap(), Plan::Ready(_)) {
-            match args.split_once(' ').map_or((args, ""), |(word, rest)| (word, rest.trim())) {
-                ("export", "") => return self.export_plan("PLAN.md"),
-                ("export", file) => return self.export_plan(file),
-                ("implement", "") => return self.plan_action(0),
-                ("exit", "") => {
-                    self.set_plan(Plan::Off);
-                    return self.system("plan", "Plan mode off.");
-                }
-                _ => {}
-            }
-        }
-        if args.is_empty() {
-            let current = self.plan.lock().unwrap().clone();
-            match current {
-                Plan::Off => {
-                    self.set_plan(Plan::Drafting);
-                    self.system("plan", "Plan mode on: read-only until you pick what to do with the plan.");
-                }
-                Plan::Drafting => {
-                    self.set_plan(Plan::Off);
-                    self.system("plan", "Plan mode off.");
-                }
-                Plan::Ready(_) => self.panel = Some(Panel::Plan { index: 0 }),
-            }
-            return;
-        }
-        self.set_plan(Plan::Drafting);
-        self.push(Item::User(args.to_string()));
-        self.start(Command::Prompt(args.to_string(), Vec::new()));
-    }
-
-    fn plan_action(&mut self, choice: usize) {
-        self.panel = None;
-        let Plan::Ready(_) = *self.plan.lock().unwrap() else { return };
-        match choice {
-            0 => {
-                self.set_plan(Plan::Off);
-                self.push(Item::User(plan::IMPLEMENT.into()));
-                self.start(Command::Prompt(plan::IMPLEMENT.into(), Vec::new()));
-            }
-            1 => self.panel = Some(Panel::PlanFresh { index: PLAN_FRESH_ROWS.len() - 1 }),
-            2 => self.export_plan("PLAN.md"),
-            _ => {
-                self.set_plan(Plan::Drafting);
-                self.system("plan", "Still planning. Say what to change.");
-            }
-        }
-    }
-
-    /// Clears the transcript and implements the ready plan in a new session with the current model and thinking level.
-    fn start_fresh_plan(&mut self) {
-        self.panel = None;
-        let Plan::Ready(text) = self.plan.lock().unwrap().clone() else { return };
-        self.set_plan(Plan::Off);
-        self.entries.truncate(self.header_len);
-        self.context_tokens = 0;
-        let prompt = format!("Implement this plan:\n\n{text}");
-        self.push(Item::User(prompt.clone()));
-        self.start(Command::Fresh(prompt));
-    }
-
-    /// Sets plan mode and writes it to the session, so resuming it comes back in the same mode.
-    fn set_plan(&mut self, plan: Plan) {
-        *self.plan.lock().unwrap() = plan;
-        let _ = self.commands.send(Command::SavePlan);
-    }
-
-    /// Writes the ready plan to `file` under the cwd. A failure keeps the plan ready so `/plan export <file>` can retry.
-    fn export_plan(&mut self, file: &str) {
-        let Plan::Ready(text) = self.plan.lock().unwrap().clone() else { return };
-        let path = self.cwd.join(file);
-        // create_new: an existing file is the user's, never overwrite it.
-        let written = std::fs::File::create_new(&path).and_then(|mut file| std::io::Write::write_all(&mut file, format!("{text}\n").as_bytes()));
-        match written {
-            Ok(()) => {
-                self.set_plan(Plan::Off);
-                self.system("plan", format!("Exported to {}", path.display()));
-            }
-            Err(error) => self.push(Item::Error(format!("Cannot export to {}: {error}. /plan export <file> writes it elsewhere.", path.display()))),
-        }
-    }
-
     /// pi's worktree extension: no name picks from the list, a name opens or creates that worktree.
     fn worktree(&mut self, remove: bool, name: &str) -> Result<(), String> {
         let (worktrees, current) = worktree::list(&self.cwd)?;
@@ -2439,7 +2272,6 @@ impl App {
         let back = match back {
             ModelsBack::Close => None,
             ModelsBack::Settings => Some(Panel::Settings { row, query: Editor::new() }),
-            ModelsBack::PlanFresh => Some(Panel::PlanFresh { index: 0 }),
         };
         let matches = matching_models(self.client.catalog(), &self.settings, row, &query.text());
         match key.code {
@@ -2800,23 +2632,6 @@ impl App {
                 view.render(width, PANEL_ROWS)
             }
             Panel::Permission { request, index, .. } => permission_lines(request, *index, width),
-            Panel::Plan { index } => plan_lines(*index),
-            Panel::PlanFresh { index } => {
-                let [model, effort, ..] = self.setting_values();
-                let rights = [model, effort, Vec::new()];
-                let rows: Vec<panel::Row> = PLAN_FRESH_ROWS.iter().zip(rights).map(|(left, right)| panel::Row { left: left.to_string(), right }).collect();
-                let view = panel::Panel {
-                    title: PLAN_OPTIONS[1].into(),
-                    tabs: &[],
-                    tab: 0,
-                    search: None,
-                    rows: &rows,
-                    selected: *index,
-                    empty: "",
-                    hint: "↑↓ navigate     enter pick model / start     ←→ change effort     esc back",
-                };
-                view.render(width, PANEL_ROWS)
-            }
             Panel::Ask(ask) => ask.render(width),
             Panel::Subagents { index } => subagents_panel(&self.subagents.lock().unwrap().list, *index, width),
             Panel::Terminals { index } => {
@@ -3315,9 +3130,6 @@ impl App {
                 self.push(Item::Done { took, usage, total: self.spent.time });
             }
         }
-        if matches!(*self.plan.lock().unwrap(), Plan::Ready(_)) && self.panel.is_none() {
-            self.panel = Some(Panel::Plan { index: 0 });
-        }
         self.git = git_info(&self.cwd);
     }
 
@@ -3376,11 +3188,6 @@ impl App {
             None => bottom.extend(self.menu()),
         }
         bottom.push(Vec::new());
-        match *self.plan.lock().unwrap() {
-            Plan::Off => {}
-            Plan::Drafting => bottom.push(vec![span(" plan mode · read-only · /plan to exit", WARN)]),
-            Plan::Ready(_) => bottom.push(vec![span(" plan ready · /plan opens the menu", WARN)]),
-        }
         self.editor_width = width;
         let (mut editor_rows, (cursor_x, cursor_row)) = self.editor.render(width);
         let editor_top = bottom.len();
@@ -3612,11 +3419,6 @@ impl App {
         }
         if let Some(goal) = self.goal.lock().unwrap().as_ref() {
             left.push(span(format!(" goal {}", goal.status.as_str()), MUTED));
-        }
-        match *self.plan.lock().unwrap() {
-            Plan::Off => {}
-            Plan::Drafting => left.push(span(" plan", WARN)),
-            Plan::Ready(_) => left.push(span(" plan ready", WARN)),
         }
         let percent = (self.context_tokens * 100).checked_div(self.context_window()).unwrap_or(0);
         let mut right = Line::default();
@@ -4071,7 +3873,6 @@ fn matching_args(name: &str, arg: &str) -> Vec<(String, String)> {
         "caveman" => CAVEMAN_LEVELS.iter().map(|level| (*level, "")).collect(),
         "permissions" => MODES.iter().map(|mode| (mode.label(), mode.description())).collect(),
         "goal" => vec![("pause", "Pause the goal"), ("resume", "Resume the goal"), ("stop", "Stop the goal"), ("done", "Mark the goal done")],
-        "plan" => vec![("export", "Write the ready plan to PLAN.md or the file named after it"), ("implement", "Implement the ready plan here"), ("exit", "Drop the ready plan and leave plan mode")],
         "context-window" => vec![("auto", "Drop this model's override")],
         _ => return Vec::new(),
     };
@@ -4509,16 +4310,6 @@ fn permission_lines(request: &Request, selected: usize, width: usize) -> Vec<Lin
     lines
 }
 
-fn plan_lines(selected: usize) -> Vec<Line> {
-    let mut lines = vec![Vec::new(), vec![span("  ", PLAIN), span("Plan ready · Choose one", PLAIN.bold())], Vec::new()];
-    for (index, option) in PLAN_OPTIONS.iter().enumerate() {
-        let label = format!("{}. {option}", index + 1);
-        lines.push(if index == selected { vec![span("  ", PLAIN), span("→ ", OK), span(label, BRIGHT.bold())] } else { vec![span(format!("    {label}"), PLAIN)] });
-    }
-    lines.push(vec![span("↑↓ move     enter choose     1-4 pick     esc keep planning", MUTED)]);
-    lines
-}
-
 /// Picker rows for settings `row` whose provider or id matches `query` (see `panel::search`): pinned models first, each part grouped in provider order.
 /// `None` is "auto", offered for the optional condense and fallback models.
 fn matching_models<'a>(catalog: &'a [Model], settings: &Settings, row: usize, query: &str) -> Vec<Option<&'a Model>> {
@@ -4760,9 +4551,9 @@ mod tests {
 
     #[test]
     fn a_tabbed_log_row_wraps_its_description_under_the_description_column() {
-        let lines = system_lines("⚙", "help", "2 commands\n/plan\taaa bbb ccc\n/btw\t", SYSTEM, 16);
+        let lines = system_lines("⚙", "help", "2 commands\n/goal\taaa bbb ccc\n/btw\t", SYSTEM, 16);
         let rows: Vec<String> = lines.iter().map(text).collect();
-        assert_eq!(rows, ["⚙ help 2 ", "  commands", "  /plan aaa bbb ", "        ccc", "  /btw "]);
+        assert_eq!(rows, ["⚙ help 2 ", "  commands", "  /goal aaa bbb ", "        ccc", "  /btw "]);
     }
 
     #[test]
@@ -4795,7 +4586,6 @@ mod tests {
         let names = |text: &str| matching_commands(&[], text).into_iter().map(|c| c.0).collect::<Vec<_>>();
         assert_eq!(names("/thinking m"), ["thinking minimal", "thinking medium", "thinking max"]);
         assert_eq!(names("/permissions "), ["permissions ask", "permissions auto", "permissions full access"]);
-        assert_eq!(names("/plan e"), ["plan export", "plan exit"]);
         assert!(names("/thinking medium ").is_empty());
     }
 
