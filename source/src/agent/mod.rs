@@ -868,7 +868,8 @@ impl Agent {
     }
 
     fn ask_reviewer(&mut self, prompt: &str) -> (bool, String) {
-        match self.client.send_quiet(&api::plain_request(&self.cheap_model, permissions::REVIEW_SYSTEM, prompt, 200), &self.abort) {
+        // Adaptive thinking counts against max_tokens; at 200 a long think left no verdict text.
+        match self.client.send_quiet(&api::plain_request(&self.cheap_model, permissions::REVIEW_SYSTEM, prompt, 2000), &self.abort) {
             Ok(reply) => {
                 self.usage.add(reply.usage);
                 permissions::parse_review(&text_of(&reply.message))

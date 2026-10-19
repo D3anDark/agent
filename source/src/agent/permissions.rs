@@ -189,7 +189,11 @@ fn capped(text: &str) -> String {
 
 /// Reads the reviewer's answer; anything but a leading ALLOW word denies.
 pub fn parse_review(answer: &str) -> (bool, String) {
-    let mut lines = answer.trim().lines();
+    let answer = answer.trim();
+    if answer.is_empty() {
+        return (false, "the reviewer returned no answer".into());
+    }
+    let mut lines = answer.lines();
     let first = lines.next().unwrap_or_default().trim();
     let verdict = first.split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or_default().to_uppercase();
     let rest_of_first = first.trim_start_matches(|c: char| c.is_ascii_alphabetic()).trim_start_matches([':', '.', '-', ' ']);
@@ -267,6 +271,6 @@ mod tests {
         assert!(parse_review("ALLOW.").0);
         assert!(!parse_review("Allowing this would delete ~/.ssh, DENY.").0);
         assert!(!parse_review("I think ALLOW").0);
-        assert!(!parse_review("").0);
+        assert_eq!(parse_review(""), (false, "the reviewer returned no answer".to_string()));
     }
 }
