@@ -1,7 +1,10 @@
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const KEEP_DAYS: u64 = 30;
 
 /// Trees of one git work tree, kept in a private repo under ~/.agents/snapshots so a rewind can put files back.
 /// Ignored files are not stored, like in the project's own repo.
@@ -16,9 +19,9 @@ pub struct Snapshots {
 impl Snapshots {
     /// None outside a git work tree: snapshotting any directory (say ~) could copy gigabytes.
     pub fn open(home: &Path, cwd: &Path) -> Option<Snapshots> {
-        let top = run(crate::process::command("git").arg("-C").arg(cwd).args(["rev-parse", "--show-toplevel"])).ok()?;
-        let work_tree = PathBuf::from(top);
-        let exclude = PathBuf::from(run(crate::process::command("git").arg("-C").arg(cwd).args(["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"])).ok()?);
+        let paths = run(crate::process::command("git").arg("-C").arg(cwd).args(["rev-parse", "--show-toplevel", "--path-format=absolute", "--git-path", "info/exclude"])).ok()?;
+        let (top, exclude) = paths.split_once('\n')?;
+        let (work_tree, exclude) = (PathBuf::from(top), PathBuf::from(exclude));
         let git_dir = home.join(".agents/snapshots").join(work_tree.to_string_lossy().replace('/', "-"));
         // One index per process, so two agents in the same repo do not fight over index.lock; the private
         // spill dir keeps other local users from locking or planting it, and quitting removes it.
@@ -37,7 +40,11 @@ impl Snapshots {
     /// The tree stays reachable from a ref named after today, so gc packs it and keeps it for KEEP_DAYS.
     pub fn take(&self) -> Result<String, String> {
         if !self.git_dir.exists() {
-            run(crate::process::command("git").args(["init", "-q", "--bare"]).arg(&self.git_dir))?;
+            // Snapshots hold every file of the project, .env included, so only this user may read them.
+            let parent = self.git_dir.parent().expect("git_dir is under ~/.agents/snapshots");
+            std::fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
+            crate::process::private_dir(&self.git_dir)?;
+            run(crate::process::command("git").args(["init", "-q", "--bare", "--shared=0600"]).arg(&self.git_dir))?;
             // Git's default waits for 6700 loose objects; packing sooner stores each edit as a small delta.
             self.git(&["config", "gc.auto", "500"])?;
             // Expired snapshots leave many unreachable objects; with the default two-week grace gc warns
@@ -60,8 +67,9 @@ impl Snapshots {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(format!("Cannot read {}: {e}", self.exclude.display())),
         };
-        let ours = self.git_dir.join("info/exclude");
-        std::fs::create_dir_all(self.git_dir.join("info")).map_err(|e| format!("Cannot create {}: {e}", ours.display()))?;
+        let info = self.git_dir.join("info");
+        std::fs::create_dir_all(&info).map_err(|e| format!("Cannot create {}: {e}", info.display()))?;
+        let ours = info.join("exclude");
         std::fs::write(&ours, rules).map_err(|e| format!("Cannot write {}: {e}", ours.display()))
     }
 
@@ -73,14 +81,14 @@ impl Snapshots {
         for name in refs.lines() {
             let day = name.split('/').nth(2).and_then(|day| day.parse::<u64>().ok());
             if day.is_some_and(|day| day < oldest_kept) {
-                deletes.push_str(&format!("delete {name}\n"));
+                writeln!(deletes, "delete {name}").expect("writing to a String cannot fail");
             }
         }
         if !deletes.is_empty() {
             let mut command = self.command(&["update-ref", "--stdin"]);
             let mut child = command.stdin(Stdio::piped()).stdout(Stdio::null()).spawn().map_err(|e| format!("Cannot run git: {e}"))?;
-            child.stdin.take().expect("stdin is piped").write_all(deletes.as_bytes()).map_err(|e| e.to_string())?;
-            if !child.wait().map_err(|e| e.to_string())?.success() {
+            child.stdin.take().expect("stdin is piped").write_all(deletes.as_bytes()).map_err(|e| format!("Cannot write to git update-ref: {e}"))?;
+            if !child.wait().map_err(|e| format!("Cannot run git: {e}"))?.success() {
                 return Err("git update-ref could not delete expired snapshots".into());
             }
         }
@@ -119,10 +127,10 @@ impl Snapshots {
             return self.git(&["--literal-pathspecs", "checkout", tree, "--", path]).map(|_| ());
         }
         let file = self.work_tree.join(path);
-        if file.exists() {
-            std::fs::remove_file(&file).map_err(|e| format!("Cannot delete {}: {e}", file.display()))?;
+        match std::fs::remove_file(&file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("Cannot delete {}: {e}", file.display())),
+            _ => Ok(()),
         }
-        Ok(())
     }
 
     fn git(&self, args: &[&str]) -> Result<String, String> {
@@ -138,8 +146,6 @@ impl Snapshots {
     }
 }
 
-const KEEP_DAYS: u64 = 30;
-
 /// Days since the Unix epoch, in UTC.
 fn today() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).expect("clock is after 1970").as_secs() / 86_400
@@ -151,4 +157,73 @@ fn run(command: &mut Command) -> Result<String, String> {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim_end_matches('\n').to_string())
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use super::*;
+
+    /// Snapshots keeps one git index per process, so tests that take snapshots run one at a time.
+    pub static SNAPSHOT_INDEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A fresh git work tree at `<tmp>/<name>-<pid>/work`; returns the root and the work tree.
+    pub fn git_work(name: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        assert!(crate::process::command("git").arg("-C").arg(&work).args(["init", "-q"]).status().unwrap().success());
+        (root, work)
+    }
+
+    #[test]
+    fn restoring_a_path_with_glob_characters_touches_only_that_file() {
+        let _index = SNAPSHOT_INDEX.lock().unwrap();
+        let (root, work) = git_work("agent-restore-glob");
+        std::fs::write(work.join("a*.txt"), "v1").unwrap();
+        std::fs::write(work.join("ab.txt"), "v1").unwrap();
+        let snapshots = Snapshots::open(&root, &work).unwrap();
+        let tree = snapshots.take().unwrap();
+        std::fs::write(work.join("a*.txt"), "v2").unwrap();
+        std::fs::write(work.join("ab.txt"), "user").unwrap();
+        snapshots.restore(&tree, "a*.txt").unwrap();
+        let state = [std::fs::read_to_string(work.join("a*.txt")).unwrap(), std::fs::read_to_string(work.join("ab.txt")).unwrap()];
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(state, ["v1", "user"]);
+    }
+
+    #[test]
+    fn snapshots_skip_files_the_project_excludes_locally() {
+        let _index = SNAPSHOT_INDEX.lock().unwrap();
+        let (root, work) = git_work("agent-snapshot-exclude");
+        std::fs::write(work.join(".git/info/exclude"), ".env\n").unwrap();
+        std::fs::write(work.join(".env"), "TOKEN=x").unwrap();
+        std::fs::write(work.join("a.txt"), "a").unwrap();
+        let snapshots = Snapshots::open(&root, &work).unwrap();
+        let tree = snapshots.take().unwrap();
+        let git_dir = std::fs::read_dir(root.join(".agents/snapshots")).unwrap().next().unwrap().unwrap().path();
+        let listing = crate::process::command("git").arg("--git-dir").arg(&git_dir).args(["ls-tree", "--name-only", &tree]).output().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(String::from_utf8(listing.stdout).unwrap(), "a.txt\n");
+    }
+
+    #[test]
+    fn opening_snapshots_drops_trees_older_than_the_kept_days() {
+        let _index = SNAPSHOT_INDEX.lock().unwrap();
+        let (root, work) = git_work("agent-expire");
+        std::fs::write(work.join("a.txt"), "v1").unwrap();
+        let recent = Snapshots::open(&root, &work).unwrap().take().unwrap();
+        let git_dir = std::fs::read_dir(root.join(".agents/snapshots")).unwrap().next().unwrap().unwrap().path();
+        let refs = || {
+            let output = crate::process::command("git").arg("--git-dir").arg(&git_dir).args(["for-each-ref", "--format=%(refname)"]).output().unwrap();
+            String::from_utf8(output.stdout).unwrap().lines().map(String::from).collect::<Vec<_>>()
+        };
+        let recent_ref = refs().pop().unwrap();
+        let old_ref = format!("refs/snapshots/1/{recent}");
+        assert!(crate::process::command("git").arg("--git-dir").arg(&git_dir).args(["update-ref", &old_ref, &recent]).status().unwrap().success());
+
+        Snapshots::open(&root, &work).unwrap();
+        let kept = refs();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(kept, [recent_ref]);
+    }
 }

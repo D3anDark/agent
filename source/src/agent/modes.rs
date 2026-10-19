@@ -101,25 +101,37 @@ fn download(url: &str) -> Result<String, String> {
 }
 
 fn body(skill: &str) -> &str {
-    skill.strip_prefix("---").and_then(|rest| rest.split_once("\n---")).map_or(skill, |(_, body)| body.trim_start())
+    let Some(frontmatter) = skill.strip_prefix("---") else { return skill };
+    let mut offset = 0;
+    for line in frontmatter.split_inclusive('\n') {
+        offset += line.len();
+        if line.trim_end() == "---" {
+            return frontmatter[offset..].trim_start();
+        }
+    }
+    skill
 }
 
 /// ponytail's SKILL.md lists every level; keep only the active level's table row and examples.
 fn only_level(body: &str, level: &str) -> String {
     let mut kept = Vec::new();
-    for line in body.split('\n').map(|line| line.trim_end_matches('\r')) {
-        let label = line
-            .strip_prefix("| **")
-            .and_then(|rest| rest.split_once("**"))
-            .map(|(label, _)| label)
-            .or_else(|| line.strip_prefix('-').and_then(|rest| rest.split_once(':')).filter(|(_, value)| value.trim_start().starts_with('"')).map(|(label, _)| label));
-        let label = label.map(|l| l.trim().to_lowercase());
-        if label.as_deref().is_some_and(|l| PONYTAIL_LEVELS[1..].contains(&l) && l != level) {
+    for line in body.lines() {
+        // [1..] skips "off", which has no row of its own.
+        if level_label(line).is_some_and(|label| PONYTAIL_LEVELS[1..].contains(&label.as_str()) && label != level) {
             continue;
         }
         kept.push(line);
     }
     kept.join("\n")
+}
+
+/// The level a table row (`| **Lite** |`) or an example (`- Lite: "..."`) belongs to, lowercased.
+fn level_label(line: &str) -> Option<String> {
+    if let Some((label, _)) = line.strip_prefix("| **").and_then(|rest| rest.split_once("**")) {
+        return Some(label.trim().to_lowercase());
+    }
+    let (label, value) = line.strip_prefix('-')?.split_once(':')?;
+    value.trim_start().starts_with('"').then(|| label.trim().to_lowercase())
 }
 
 #[cfg(test)]
@@ -135,6 +147,7 @@ mod tests {
     #[test]
     fn frontmatter_ends_at_a_fence_line_only() {
         assert_eq!(body("---\ndescription: lazy --- but complete\n---\nRules"), "Rules");
+        assert_eq!(body("---\n---x: y\n---\r\nRules"), "Rules");
     }
 
     #[test]

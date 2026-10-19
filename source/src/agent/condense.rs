@@ -15,23 +15,24 @@ A result containing \" ...[N chars elided]... \" had its middle removed before y
 
 Begin the first bullet of each tool call with that tool's [[N:toolname]] label, copied verbatim (both the number and the name) from its line in the input, as the plain, first thing on the line - no bold, backticks, or list numbering around it. Do not renumber, rename, or invent labels; if you skip a tool, skip its label too.";
 
-const HEAD_CHARS: usize = 4000;
-const TAIL_CHARS: usize = 4000;
+/// `elide` keeps this many chars at each end of a long output.
+const KEPT_CHARS_EACH_END: usize = 4000;
 const PROTECTED_TOOLS: [&str; 4] = ["context_tree_query", "ask_user_question", "todo", "get_goal"];
-// Below this a cached tool output costs 0.1x input, so a summary saves little and costs a context_tree_query turn when the model needs the original back.
+/// Below this a cached tool output costs 0.1x input, so a summary saves little and costs a context_tree_query turn when the model needs the original back.
 const MIN_CONTEXT_TOKENS: u64 = 60_000;
+pub const SUMMARY_MAX_TOKENS: u64 = 4096;
 
 pub struct Config {
     pub enabled: bool,
     pub model: String,
-    pub min_batch_chars: usize,
+    pub min_batch_chars: u64,
 }
 
 impl Config {
     /// `cheap_model` summarizes unless /settings names a condense model.
     pub fn new(settings: &Settings, cheap_model: &str) -> Config {
         let model = if settings.condense_model.is_empty() { cheap_model } else { &settings.condense_model };
-        Config { enabled: settings.condense, model: model.to_string(), min_batch_chars: settings.condense_min_batch_chars as usize }
+        Config { enabled: settings.condense, model: model.to_string(), min_batch_chars: settings.condense_min_batch_chars }
     }
 }
 
@@ -52,13 +53,16 @@ pub struct Condensed {
 }
 
 /// The calls worth summarizing: unprotected ones, once the context reaches MIN_CONTEXT_TOKENS and their outputs reach `min_chars` together.
-pub fn select(calls: Vec<Call>, min_chars: usize, context_tokens: u64) -> Vec<Call> {
+pub fn select(calls: Vec<Call>, min_chars: u64, context_tokens: u64) -> Vec<Call> {
     if context_tokens < MIN_CONTEXT_TOKENS {
         return Vec::new();
     }
     let selected: Vec<Call> = calls.into_iter().filter(|call| !is_protected(call)).collect();
     let total: usize = selected.iter().map(|call| call.output.chars().count()).sum();
-    if total < min_chars { Vec::new() } else { selected }
+    if (total as u64) < min_chars {
+        return Vec::new();
+    }
+    selected
 }
 
 /// Restored originals and skill files must reach the model verbatim.
@@ -66,8 +70,7 @@ fn is_protected(call: &Call) -> bool {
     if PROTECTED_TOOLS.contains(&call.name.as_str()) {
         return true;
     }
-    let path = call.input["path"].as_str().unwrap_or_default();
-    call.name == "read" && path.contains("/skills/") && path.ends_with(".md")
+    call.name == "read" && call.input["path"].as_str().is_some_and(|path| path.contains("/skills/") && path.ends_with(".md"))
 }
 
 /// The summarizer's system prompt and user prompt for one batch.
@@ -81,7 +84,7 @@ pub fn summarizer_prompt(assistant_text: &str, calls: &[Call]) -> (&'static str,
         .enumerate()
         .map(|(index, call)| {
             let status = if call.is_error { "ERROR" } else { "OK" };
-            let args = serde_json::to_string_pretty(&call.input).unwrap_or_default();
+            let args = serde_json::to_string_pretty(&call.input).expect("a Value always serializes");
             format!("[[{}:{}]] Tool: {}({args})\nResult ({status}): {}", index + 1, call.name, call.name, elide(&call.output))
         })
         .collect();
@@ -91,12 +94,12 @@ pub fn summarizer_prompt(assistant_text: &str, calls: &[Call]) -> (&'static str,
 
 fn elide(text: &str) -> String {
     let total = text.chars().count();
-    if total <= HEAD_CHARS + TAIL_CHARS {
+    if total <= 2 * KEPT_CHARS_EACH_END {
         return text.to_string();
     }
-    let head: String = text.chars().take(HEAD_CHARS).collect();
-    let tail: String = text.chars().skip(total - TAIL_CHARS).collect();
-    format!("{head} ...[{} chars elided]... {tail}", total - HEAD_CHARS - TAIL_CHARS)
+    let head: String = text.chars().take(KEPT_CHARS_EACH_END).collect();
+    let tail: String = text.chars().skip(total - KEPT_CHARS_EACH_END).collect();
+    format!("{head} ...[{} chars elided]... {tail}", total - 2 * KEPT_CHARS_EACH_END)
 }
 
 /// Numbers the batch's calls from `first_ref` and turns the summary's `[[N:name]]` labels into those refs.
@@ -106,14 +109,19 @@ pub fn condensed(summary: &str, calls: &[Call], first_ref: usize) -> Condensed {
     let mut rest = summary.trim();
     while let Some(start) = rest.find("[[") {
         text.push_str(&rest[..start]);
-        let Some(end) = rest[start..].find("]]") else { break };
+        let Some(end) = rest[start..].find("]]") else {
+            rest = &rest[start..];
+            break;
+        };
         let label = &rest[start + 2..start + end];
         let cited = label.split_once(':').and_then(|(number, name)| {
             let index = number.trim().parse::<usize>().ok()?.checked_sub(1)?;
             (calls.get(index)?.name == name.trim()).then(|| refs[index].0.clone())
         });
         if let Some(reference) = cited {
-            text.push_str(&format!("`{reference}`"));
+            text.push('`');
+            text.push_str(&reference);
+            text.push('`');
         }
         rest = &rest[start + end + 2..];
     }
@@ -154,9 +162,14 @@ fn find_ref<'a>(condensed: &'a [Condensed], id: &str) -> Option<(usize, &'a str)
     condensed.iter().enumerate().find_map(|(index, batch)| batch.refs.iter().find(|(_, tool_id)| tool_id == id).map(|(reference, _)| (index, reference.as_str())))
 }
 
+/// Every (short ref, tool_use id) pair across all batches.
+fn all_refs(condensed: &[Condensed]) -> impl Iterator<Item = &(String, String)> {
+    condensed.iter().flat_map(|batch| &batch.refs)
+}
+
 /// The ref after the highest saved one. Not the count: a batch whose summary failed reserved refs that were never saved.
 pub fn next_ref(condensed: &[Condensed]) -> usize {
-    let highest = condensed.iter().flat_map(|batch| &batch.refs).filter_map(|(short, _)| short.strip_prefix('t')?.parse::<usize>().ok()).max();
+    let highest = all_refs(condensed).filter_map(|(short, _)| short.strip_prefix('t')?.parse::<usize>().ok()).max();
     highest.unwrap_or(0) + 1
 }
 
@@ -174,10 +187,10 @@ pub fn query(messages: &[Value], condensed: &[Condensed], input: &Value) -> Resu
     let mut blocks = Vec::new();
     let mut unknown = Vec::new();
     for reference in wanted {
-        let id = condensed.iter().flat_map(|batch| &batch.refs).find(|(short, _)| short == reference).map_or(reference, |(_, id)| id.as_str());
+        let id = all_refs(condensed).find(|(short, _)| short == reference).map_or(reference, |(_, id)| id.as_str());
         match original(messages, id) {
             Some((name, args, output, is_error)) => {
-                let args = serde_json::to_string_pretty(&args).unwrap_or_default();
+                let args = serde_json::to_string_pretty(&args).expect("a Value always serializes");
                 let status = if is_error { "ERROR" } else { "OK" };
                 blocks.push(format!("## toolRef: {reference}\nTool: {name}\nArgs: {args}\nStatus: {status}\n\n{}", crate::tools::truncate_head(output, "context")));
             }
@@ -185,7 +198,7 @@ pub fn query(messages: &[Value], condensed: &[Condensed], input: &Value) -> Resu
         }
     }
     if !unknown.is_empty() {
-        let known: Vec<&str> = condensed.iter().flat_map(|batch| &batch.refs).map(|(short, _)| short.as_str()).collect();
+        let known: Vec<&str> = all_refs(condensed).map(|(short, _)| short.as_str()).collect();
         return Err(format!("Unknown refs: {}. Known refs: {}.", unknown.join(", "), if known.is_empty() { "none".into() } else { known.join(", ") }));
     }
     Ok(blocks.join("\n\n---\n\n"))
@@ -206,9 +219,16 @@ pub fn entry(batch: &Condensed) -> Value {
     json!({"type": "condense", "refs": refs, "summary": batch.summary})
 }
 
-pub fn from_entry(entry: &Value) -> Condensed {
-    let refs = entry["refs"].as_object().into_iter().flatten().map(|(short, id)| (short.clone(), id.as_str().unwrap_or_default().to_string())).collect();
-    Condensed { refs, summary: entry["summary"].as_str().unwrap_or_default().to_string() }
+/// None for a malformed line: an empty id would make `query` report its ref as unknown.
+pub fn from_entry(entry: &Value) -> Option<Condensed> {
+    let mut refs = Vec::new();
+    for (short, id) in entry["refs"].as_object()? {
+        refs.push((short.clone(), id.as_str().filter(|id| !id.is_empty())?.to_string()));
+    }
+    // The JSON object comes back in key order, which puts `t10` before `t9`.
+    refs.sort_by_key(|(short, _)| short.trim_start_matches('t').parse::<usize>().unwrap_or(usize::MAX));
+    let summary = entry["summary"].as_str().filter(|summary| !summary.is_empty())?;
+    Some(Condensed { refs, summary: summary.to_string() })
 }
 
 #[cfg(test)]
@@ -241,6 +261,7 @@ mod tests {
         let batch = condensed("[[1:bash]] ran ls\n[[2:rg]] found x\n[[3:fd]] invented", &calls, 4);
         assert_eq!(batch.summary, "`t4` ran ls\n`t5` found x\n invented");
         assert_eq!(batch.refs, [("t4".to_string(), "a".to_string()), ("t5".to_string(), "b".to_string())]);
+        assert_eq!(condensed("a [[x", &calls, 4).summary, "a [[x");
     }
 
     #[test]
@@ -249,6 +270,13 @@ mod tests {
         // Refs t1-t3 belonged to a batch whose summary failed and was never saved.
         assert_eq!(next_ref(&[condensed("[[1:bash]] ran ls", &calls, 4)]), 5);
         assert_eq!(next_ref(&[]), 1);
+    }
+
+    #[test]
+    fn refs_keep_their_order_through_a_saved_session() {
+        let calls = [call("a", "bash", json!({}), ""), call("b", "rg", json!({}), "")];
+        let batch = condensed("Ran two searches.", &calls, 9);
+        assert_eq!(from_entry(&entry(&batch)).unwrap().refs, batch.refs);
     }
 
     #[test]

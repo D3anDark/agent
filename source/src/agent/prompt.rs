@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 const DEFAULT_PREAMBLE: &str = "You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.
@@ -6,7 +6,8 @@ const DEFAULT_PREAMBLE: &str = "You are an expert coding assistant. You help use
 <tools>
 - read: Read a file as anchored rows
 - replace, replace_match, insert: Edit a file by the anchors read returned
-- write: Create a new file
+- move, undo_last_change: Move lines between places or files, or revert the last edit
+- write: Create a file, or overwrite one whole
 - bash: Run shell commands
 - rg: Search file contents
 </tools>
@@ -58,7 +59,7 @@ fn override_file(agent_dir: &Path, cwd: &Path, name: &str) -> Option<String> {
 }
 
 fn context_file(dir: &Path) -> Option<(PathBuf, String)> {
-    CONTEXT_FILES.iter().map(|name| dir.join(name)).filter(|path| path.is_file()).find_map(|path| read_text(&path).map(|text| (path, text)))
+    CONTEXT_FILES.iter().map(|name| dir.join(name)).find_map(|path| read_text(&path).map(|text| (path, text)))
 }
 
 fn instructions_block(path: &Path, content: &str) -> String {
@@ -126,7 +127,7 @@ pub fn load_skills(agent_dir: &Path, cwd: &Path, disabled: &[String]) -> Vec<Ski
     let mut skills: Vec<Skill> = Vec::new();
     let mut seen = HashSet::new();
     for path in files {
-        if !seen.insert(canonical(&path)) {
+        if !seen.insert(path.canonicalize().unwrap_or_else(|_| path.clone())) {
             continue;
         }
         let Some(skill) = parse_skill(&path) else { continue };
@@ -135,10 +136,6 @@ pub fn load_skills(agent_dir: &Path, cwd: &Path, disabled: &[String]) -> Vec<Ski
         }
     }
     skills
-}
-
-fn canonical(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn collect_skill_files(dir: &Path, root: bool, out: &mut Vec<PathBuf>) {
@@ -166,7 +163,7 @@ fn collect_skill_files(dir: &Path, root: bool, out: &mut Vec<PathBuf>) {
 pub fn parse_skill(path: &Path) -> Option<Skill> {
     let text = read_text(path)?;
     let fields = frontmatter(&text)?;
-    let field = |key: &str| fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+    let field = |key: &str| field(&fields, key).map(String::from);
     let model_invocable = field("disable-model-invocation").as_deref() != Some("true");
     let description = field("description").filter(|d| !d.trim().is_empty())?;
     let dir_name = path.parent()?.file_name()?.to_string_lossy().into_owned();
@@ -203,7 +200,7 @@ pub fn load_templates(agent_dir: &Path, cwd: &Path) -> Vec<Template> {
         for path in paths {
             let Some(name) = path.file_stem().and_then(|stem| stem.to_str()).map(str::to_string) else { continue };
             let fields = read_text(&path).and_then(|text| frontmatter(&text)).unwrap_or_default();
-            let description = fields.into_iter().find(|(key, _)| key == "description").map(|(_, value)| value).unwrap_or_default();
+            let description = field(&fields, "description").unwrap_or_default().to_string();
             templates.retain(|t| t.name != name);
             templates.push(Template { name, description, path });
         }
@@ -265,6 +262,7 @@ fn substitute_args(content: &str, args: &[String]) -> String {
 /// The value of the placeholder at the start of `after` (the text past a `$`) and how many bytes it spans.
 fn placeholder(after: &str, args: &[String], all: &str) -> Option<(String, usize)> {
     let is_number = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    // Callers check `is_number` first, so only an overflowing index lands here, and it is past every argument.
     let number = |text: &str| text.parse::<usize>().unwrap_or(usize::MAX);
     let positional = |n: usize| n.checked_sub(1).and_then(|i| args.get(i)).cloned().unwrap_or_default();
     if let Some(braced) = after.strip_prefix('{') {
@@ -298,6 +296,10 @@ fn placeholder(after: &str, args: &[String], all: &str) -> Option<(String, usize
 
 fn without_frontmatter(content: &str) -> &str {
     content.strip_prefix("---").and_then(|rest| rest.split_once("\n---")).map_or(content, |(_, body)| body).trim()
+}
+
+fn field<'a>(fields: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    fields.iter().find(|(k, _)| k == key).map(|(_, value)| value.as_str())
 }
 
 /// Top-level `key: value` pairs of a YAML frontmatter; enough YAML for skill files.
@@ -335,23 +337,19 @@ fn frontmatter(text: &str) -> Option<Vec<(String, String)>> {
 
 /// pi-cache-optimizer's compressed skill list: one header per skills root, one line per skill.
 fn format_skills(skills: Vec<Skill>) -> String {
-    let mut by_root: Vec<(PathBuf, Vec<(String, String)>)> = Vec::new();
+    let mut by_root: BTreeMap<PathBuf, Vec<(String, String)>> = BTreeMap::new();
     let mut explicit: Vec<(PathBuf, String, String)> = Vec::new();
     for skill in skills {
         let description = skill.description.split_whitespace().collect::<Vec<_>>().join(" ");
-        let dir = skill.path.parent().unwrap();
+        let dir = skill.path.parent().expect("a skill file sits in a directory");
         let conventional = skill.path.file_name().is_some_and(|f| f == "SKILL.md") && dir.file_name().is_some_and(|d| *d == *skill.name);
         if !conventional {
             explicit.push((skill.path, skill.name, description));
             continue;
         }
-        let root = dir.parent().unwrap().to_path_buf();
-        match by_root.iter_mut().find(|(r, _)| *r == root) {
-            Some((_, entries)) => entries.push((skill.name, description)),
-            None => by_root.push((root, vec![(skill.name, description)])),
-        }
+        let root = dir.parent().expect("a skill directory sits in a skills root").to_path_buf();
+        by_root.entry(root).or_default().push((skill.name, description));
     }
-    by_root.sort_by(|a, b| a.0.cmp(&b.0));
     let mut lines = vec![
         "The following skills provide specialized instructions for specific tasks.".to_string(),
         "Use the read tool to load a skill's file when the task matches its description.".to_string(),
