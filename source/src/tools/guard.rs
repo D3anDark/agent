@@ -4,26 +4,46 @@ const MIN_BLOCKED_SLEEP_SECS: u64 = 15;
 
 /// Why bash should not run `command` (a plain file read or a blind sleep), or None when it may run.
 pub fn bash(command: &str) -> Option<String> {
-    if let Some(path) = file_read(command) {
-        return Some(format!("Use read({path}) with offset/limit instead of bash; its anchors are what edits use."));
+    let files = file_reads(command);
+    if !files.is_empty() {
+        return Some(format!(
+            "Use read({}) instead of bash; several files or ranges go in one call as paths: [{{path, offset, limit}}]. Its anchors are what edits use.",
+            files.join(", ")
+        ));
     }
     if blind_sleep(command) {
         return Some(
-            "No blind sleep. Server: curl -sf --retry 30 --retry-all-errors --retry-delay 1 URL. CI: gh run watch --exit-status, gh pr checks --watch. Long job: load_tools terminals.".into(),
+            "No blind sleep. Server: curl -sf --retry 30 --retry-all-errors --retry-delay 1 URL. CI: gh run watch --exit-status, gh pr checks --watch. Long job: bg_start.".into(),
         );
     }
     None
 }
 
-/// The path of a lone `cat FILE`, `head [-N] FILE` or `sed -n 'N,Mp' FILE`, joined onto DIR after `cd DIR &&`.
-fn file_read(command: &str) -> Option<String> {
-    let mut words: Vec<&str> = command.split_whitespace().collect();
+/// The files a command only prints, empty when it does anything else: `cat FILE`, `head [-N] FILE` or `sed -n 'N,Mp' FILE`
+/// chained with `;`, `&&` or newlines, maybe after `cd DIR` and between `echo` separators.
+fn file_reads(command: &str) -> Vec<String> {
+    let command = command.replace("&&", ";").replace('\n', ";");
     let mut dir = None;
-    if let ["cd", cd_dir, "&&", ..] = words.as_slice() {
-        dir = Some(*cd_dir);
-        words.drain(..3);
+    let mut files = Vec::new();
+    for (index, segment) in command.split(';').enumerate() {
+        let words: Vec<&str> = segment.split_whitespace().collect();
+        match words.as_slice() {
+            [] => {}
+            ["cd", cd_dir] if index == 0 => dir = Some(*cd_dir),
+            ["echo", rest @ ..] if !rest.iter().any(|word| word.contains('>')) => {}
+            words => match printed_file(words, dir) {
+                Some(path) if !files.contains(&path) => files.push(path),
+                Some(_) => {}
+                None => return Vec::new(),
+            },
+        }
     }
-    let file = match words.as_slice() {
+    files
+}
+
+/// The path of a lone `cat FILE`, `head [-N] FILE` or `sed -n 'N,Mp' FILE`, joined onto `dir`.
+fn printed_file(words: &[&str], dir: Option<&str>) -> Option<String> {
+    let file = match words {
         ["cat", file] | ["cat", "-n", file] | ["head", file] => file,
         ["head", count, file] if count.strip_prefix("-n").or(count.strip_prefix('-')).is_some_and(is_number) => file,
         ["head", "-n", count, file] if is_number(count) => file,
@@ -101,6 +121,8 @@ mod tests {
             ("cat -n src/a.rs", "read(src/a.rs)"),
             ("cat \"notes.md\"", "read(notes.md)"),
             ("head -n20 a.md", "read(a.md)"),
+            ("sed -n '1,40p' a.rs; echo ---; sed -n 5,9p b.rs", "read(a.rs, b.rs)"),
+            ("cd /r && sed -n 1,5p a.rs && sed -n 9p a.rs\nhead b.rs", "read(/r/a.rs, /r/b.rs)"),
         ];
         for (command, advice) in blocked {
             let reason = bash(command).unwrap_or_else(|| panic!("{command} should be blocked"));
@@ -120,6 +142,9 @@ mod tests {
             "cat --help",
             "cat src/{a,b}.ts",
             "cd $(foo) && cat x",
+            "cat a.txt; rm a.txt",
+            "echo hi > a.txt; cat a.txt",
+            "echo ---",
         ];
         for command in allowed {
             assert_eq!(bash(command), None, "{command}");

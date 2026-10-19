@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 pub mod ask;
 pub mod bg;
 pub mod conflicts;
-pub mod external;
 pub mod goal;
 pub mod guard;
 pub mod hashline;
@@ -31,15 +30,11 @@ const SEARCH_ANCHOR_BUDGET: u32 = 10 * MAX_LINES as u32;
 
 const SCHEMAS: &str = include_str!("tools.json");
 
-/// pi's tool-loader groups: their tools stay out of requests until load_tools asks for the group.
-pub const GROUPS: [(&str, &[&str]); 3] =
-    [("agents", &["subagent", "bg_wait"]), ("terminals", &["bg_start", "bg_status", "bg_list", "bg_kill"]), ("web", &["web_search", "source_check", "fetch_content", "get_search_content"])];
-
-/// The base tools plus those of the `loaded` groups, in tools.json order; `subagent` carries the swarm prompt like jcode's `swarm`.
-pub fn schemas(loaded: &[String], swarm_prompt: &str, context_tree_query: bool) -> Value {
+/// Every tool in tools.json order; `subagent` carries the swarm prompt like jcode's `swarm`.
+/// One fixed list: the tools head the cached prompt prefix, so changing it mid-session rewrites the whole cache.
+pub fn schemas(swarm_prompt: &str, context_tree_query: bool) -> Value {
     let all: Vec<Value> = serde_json::from_str(SCHEMAS).expect("tools.json is valid JSON");
-    let hidden = |name: &str| (name == "context_tree_query" && !context_tree_query) || GROUPS.iter().any(|(group, names)| names.contains(&name) && !loaded.iter().any(|l| l == group));
-    let mut tools: Vec<Value> = all.into_iter().filter(|tool| !hidden(tool["name"].as_str().expect("tools.json names every tool"))).collect();
+    let mut tools: Vec<Value> = all.into_iter().filter(|tool| context_tree_query || tool["name"] != "context_tree_query").collect();
     if let Some(tool) = tools.iter_mut().find(|tool| tool["name"] == "subagent") {
         let base = tool["description"].as_str().expect("tools.json describes subagent");
         tool["description"] = format!("{base}\n\nSwarm prompt (user-tunable via ~/.agents/swarm-prompt.md):\n{swarm_prompt}").into();
@@ -47,7 +42,7 @@ pub fn schemas(loaded: &[String], swarm_prompt: &str, context_tree_query: bool) 
     Value::Array(tools)
 }
 
-/// Runs one tool call. The bool is true when the result is an error. Setting `abort` kills a running bash, rg or fd.
+/// Runs one tool call. The bool is true when the result is an error. Setting `abort` kills a running bash or rg.
 pub fn run(name: &str, input: &Value, cwd: &Path, anchors: &mut Anchors, rtk: &Rtk, abort: &AtomicBool) -> (String, bool) {
     let result = match name {
         "read" => anchors.read(cwd, input),
@@ -56,11 +51,9 @@ pub fn run(name: &str, input: &Value, cwd: &Path, anchors: &mut Anchors, rtk: &R
         "replace" => anchors.replace(input),
         "replace_match" => anchors.replace_match(input),
         "insert" => anchors.insert(input),
-        "copy" => anchors.copy(input),
         "move" => anchors.move_lines(input),
         "undo_last_change" => anchors.undo(cwd, input),
         "rg" => rg(input, cwd, anchors, abort),
-        "fd" => fd(input, cwd, abort),
         _ => Err(format!("Tool {name} not found")),
     };
     match result {
@@ -259,35 +252,6 @@ fn rg_args(input: &Value) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
-fn fd_args(input: &Value) -> Result<Vec<String>, String> {
-    let mut args: Vec<String> = vec!["--color=never".into()];
-    if input["hidden"].as_bool() == Some(true) {
-        args.push("--hidden".into());
-    }
-    if input["glob"].as_bool() == Some(true) {
-        args.push("--glob".into());
-    }
-    if let Some(kind) = input["type"].as_str() {
-        let short = match kind {
-            "file" => "f",
-            "directory" => "d",
-            "symlink" => "l",
-            other => return Err(format!("Unknown type \"{other}\". Use file, directory or symlink.")),
-        };
-        args.extend(["--type".into(), short.into()]);
-    }
-    if let Some(extension) = input["extension"].as_str().filter(|e| !e.is_empty()) {
-        args.extend(["--extension".into(), extension.trim_start_matches('.').into()]);
-    }
-    if !input["max_depth"].is_null() {
-        args.extend(["--max-depth".into(), clamped(&input["max_depth"], 1, 1, 64)]);
-    }
-    args.extend(["--max-results".into(), clamped(&input["limit"], 1000, 1, 10_000)]);
-    args.extend(["--".into(), input["pattern"].as_str().unwrap_or("").into()]);
-    args.extend(search_path(input));
-    Ok(args)
-}
-
 fn clamped(value: &Value, default: u64, min: u64, max: u64) -> String {
     let number = value.as_f64().map_or(default, |n| n.floor().max(0.0) as u64);
     number.clamp(min, max).to_string()
@@ -351,11 +315,6 @@ fn cut_columns(text: &str) -> String {
         Some((end, _)) => format!("{} [... omitted end of long line]", &text[..end]),
         None => text.to_string(),
     }
-}
-
-fn fd(input: &Value, cwd: &Path, abort: &AtomicBool) -> Result<String, String> {
-    let files = search("fd", &fd_args(input)?, cwd, abort, &[0])?;
-    Ok(if files.is_empty() { "No files found".into() } else { truncate_search(files, "fd") })
 }
 
 /// rg exits 1 for "no matches", and 2 when a path failed even after printing matches for the others.
@@ -532,7 +491,7 @@ mod tests {
 
     #[test]
     fn context_tree_query_is_offered_only_when_asked() {
-        let offers = |query: bool| schemas(&[], "", query).as_array().unwrap().iter().any(|tool| tool["name"] == "context_tree_query");
+        let offers = |query: bool| schemas("", query).as_array().unwrap().iter().any(|tool| tool["name"] == "context_tree_query");
         assert!(offers(true));
         assert!(!offers(false));
     }
@@ -727,7 +686,5 @@ mod tests {
     fn search_arguments_match_pi_file_search() {
         let rg = rg_args(&json!({"pattern": "-x", "path": "@src", "context": 50, "limit": 5000, "case_sensitive": false, "glob": "*.rs"})).unwrap();
         assert_eq!(rg.join(" "), "--json --ignore-case --context 20 --glob *.rs --max-count 1000 -- -x src");
-        let fd = fd_args(&json!({"type": "file", "extension": ".rs", "max_depth": 0, "limit": 0})).unwrap();
-        assert_eq!(fd.join(" "), "--color=never --type f --extension rs --max-depth 1 --max-results 1 -- ");
     }
 }

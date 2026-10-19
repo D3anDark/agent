@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 use crate::tools::{MAX_BYTES, MAX_LINES, format_size};
 
+// A single-path read without `limit` pages at this many lines; `paths` and written files still show up to MAX_LINES.
+const READ_DEFAULT_LINES: usize = 400;
+
 // Two-letter pieces (sorted), then a row-major bitset of valid piece pairs, packed from pi's anchor table.
 const TABLE: &[u8] = include_bytes!("anchors.bin");
 const PIECES: usize = 1360;
@@ -141,10 +144,10 @@ impl Anchors {
     pub fn read(&mut self, cwd: &Path, input: &Value) -> Result<String, String> {
         if !input["paths"].is_null() {
             let Some(paths) = input["paths"].as_array().filter(|paths| !paths.is_empty()) else {
-                return Err("[E_BAD_SHAPE] \"paths\" must be a non-empty array of strings.".into());
+                return Err("[E_BAD_SHAPE] \"paths\" must be a non-empty array of paths or {path, offset, limit} ranges.".into());
             };
             if !input["offset"].is_null() || !input["limit"].is_null() {
-                return Err("[E_BAD_SHAPE] \"paths\" reads whole files; use \"path\" with \"offset\" and \"limit\" to page one file.".into());
+                return Err("[E_BAD_SHAPE] With \"paths\", put \"offset\" and \"limit\" inside each entry: {path, offset, limit}.".into());
             }
             return self.read_many(cwd, paths);
         }
@@ -168,7 +171,7 @@ impl Anchors {
             _ => return Err("[E_BAD_SHAPE] offset must be a line number or an anchor.".into()),
         };
         let limit = match &input["limit"] {
-            Value::Null => None,
+            Value::Null => Some(READ_DEFAULT_LINES),
             v => Some(v.as_u64().filter(|&n| n >= 1).ok_or("[E_BAD_SHAPE] Read request field \"limit\" must be a positive integer.")? as usize),
         };
         if start >= total {
@@ -183,9 +186,17 @@ impl Anchors {
     // A failed file reports its error under its header so the other files still arrive.
     fn read_many(&mut self, cwd: &Path, paths: &[Value]) -> Result<String, String> {
         let mut out = Vec::new();
-        for path in paths {
-            let path = path.as_str().ok_or("[E_BAD_SHAPE] Every entry in \"paths\" must be a string.")?;
-            let body = self.read(cwd, &json!({"path": path})).unwrap_or_else(|e| e);
+        for entry in paths {
+            let (path, offset, limit) = match entry {
+                Value::String(path) => (path.as_str(), &Value::Null, &Value::Null),
+                Value::Object(range) => match range.get("path").and_then(Value::as_str) {
+                    Some(path) => (path, &entry["offset"], &entry["limit"]),
+                    None => return Err("[E_BAD_SHAPE] A \"paths\" range needs a string \"path\".".into()),
+                },
+                _ => return Err("[E_BAD_SHAPE] Every entry in \"paths\" must be a path or {path, offset, limit}.".into()),
+            };
+            let limit = if limit.is_null() { &json!(MAX_LINES) } else { limit };
+            let body = self.read(cwd, &json!({"path": path, "offset": offset, "limit": limit})).unwrap_or_else(|e| e);
             out.push(format!("== {path}\n{body}"));
         }
         Ok(crate::tools::truncate_head(out.join("\n\n"), "read"))
@@ -278,18 +289,6 @@ impl Anchors {
         let at_end = at == file.lines.len();
         file.lines.splice(at..at, lines);
         file.final_newline |= at_end && text.ends_with('\n');
-        self.commit(&path, file)
-    }
-
-    /// Duplicates the source range next to `anchor`, in the same or another file; the copies get fresh anchors.
-    /// shortcut: copied lines take the destination's line endings, not their own; track per-line endings if mixed files matter.
-    pub fn copy(&mut self, input: &Value) -> Result<String, String> {
-        let (source, source_file, first, last) = self.resolve_range(str_arg(input, &["source_from"])?, str_arg(input, &["source_to"])?)?;
-        let (path, mut file, at) = self.destination(input)?;
-        if path == source {
-            refuse_inside(at, first, last)?;
-        }
-        file.lines.splice(at..at, source_file.lines[first..=last].iter().cloned());
         self.commit(&path, file)
     }
 
@@ -572,7 +571,7 @@ pub fn resolve(cwd: &Path, path: &str) -> PathBuf {
 fn existing_file(cwd: &Path, path: &str) -> Result<PathBuf, String> {
     let full = resolve(cwd, path).canonicalize().map_err(|e| format!("Cannot read {path}: {e}"))?;
     if full.is_dir() {
-        return Err(format!("{} is a directory. Use fd or bash ls to list it.", full.display()));
+        return Err(format!("{} is a directory. List it with fd or ls in bash.", full.display()));
     }
     if !full.is_file() {
         return Err(format!("{} is not a regular file. Use bash ls -l to inspect it.", full.display()));
@@ -635,6 +634,13 @@ mod tests {
     }
 
     #[test]
+    fn read_without_limit_pages_at_the_default() {
+        let path = temp_file("default", &"x\n".repeat(READ_DEFAULT_LINES + 1));
+        let page = Anchors::new("s").read(Path::new("/"), &json!({"path": path})).unwrap();
+        assert!(page.contains(&format!("[Showing lines 1-{READ_DEFAULT_LINES} of {}.", READ_DEFAULT_LINES + 1)), "{}", &page[page.len() - 80..]);
+    }
+
+    #[test]
     fn read_serves_several_files_in_one_call_with_editable_anchors() {
         let first = temp_file("read_many_a", "one\ntwo\n");
         let second = temp_file("read_many_b", "three\n");
@@ -646,6 +652,18 @@ mod tests {
         assert_eq!(served.len(), 3);
         anchors.replace(&json!({"remove_from": served[2], "remove_to": served[2], "text": "THREE\n"})).unwrap();
         assert_eq!(std::fs::read_to_string(&second).unwrap(), "THREE\n");
+    }
+
+    #[test]
+    fn read_serves_ranges_of_several_files_in_one_call() {
+        let path = temp_file("read_ranges", "one\ntwo\nthree\nfour\n");
+        let mut anchors = Anchors::new("s");
+        let ranges = json!({"paths": [{"path": path, "offset": 2, "limit": 1}, {"path": path, "offset": 4}]});
+        let out = anchors.read(Path::new("/"), &ranges).unwrap();
+        let rows: Vec<&str> = out.lines().filter(|line| line.contains('│')).map(|line| line.split('│').nth(1).unwrap()).collect();
+        assert_eq!(rows, ["two", "four"], "{out}");
+        let bad = anchors.read(Path::new("/"), &json!({"paths": [{"offset": 2}]})).unwrap_err();
+        assert!(bad.starts_with("[E_BAD_SHAPE]"), "{bad}");
     }
 
     #[test]
@@ -709,24 +727,20 @@ mod tests {
     }
 
     #[test]
-    fn copy_gives_fresh_anchors_and_move_relocates_within_and_across_files() {
-        let path = temp_file("copy", "a\nb\nc\n");
+    fn move_relocates_within_and_across_files() {
+        let path = temp_file("move", "a\nb\nc\n");
         let other = path.with_file_name("g.txt");
         std::fs::write(&other, "x\n").unwrap();
         let mut anchors = Anchors::new("s");
         let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
-        let diff = anchors.copy(&json!({"source_from": a[0], "source_to": a[1], "anchor": a[2], "direction": "after"})).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nb\nc\na\nb\n");
-        let copied: Vec<String> = diff.lines().filter(|l| l.starts_with('+')).map(|l| anchors_of(l)[0].clone()).collect();
-        assert!(copied.len() == 2 && !copied.iter().any(|anchor| a.contains(anchor)));
         let inside = anchors.move_lines(&json!({"source_from": a[0], "source_to": a[2], "anchor": a[1], "direction": "after"})).unwrap_err();
         assert!(inside.contains("inside the source range"));
         anchors.move_lines(&json!({"source_from": a[0], "source_to": a[0], "anchor": a[2], "direction": "after"})).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "b\nc\na\na\nb\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "b\nc\na\n");
         let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
         let x = anchors_of(&anchors.read(Path::new("/"), &json!({"path": other})).unwrap());
         anchors.move_lines(&json!({"source_from": a[0], "source_to": a[0], "anchor": x[0], "direction": "before"})).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "c\na\na\nb\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "c\na\n");
         assert_eq!(std::fs::read_to_string(&other).unwrap(), "b\nx\n");
     }
 

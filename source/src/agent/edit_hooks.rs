@@ -6,7 +6,7 @@ use crate::tools::hashline::{self, Anchors};
 
 const CONFIG: &str = ".agents/edit-hooks.json";
 const MAX_FIX_ROUNDS: usize = 3;
-const MAX_OUTPUT_CHARS: usize = 8000;
+const MAX_OUTPUT_CHARS: usize = 4000;
 
 /// A command from `.agents/edit-hooks.json`, run in the directory that holds `.agents`.
 #[derive(Debug)]
@@ -20,7 +20,7 @@ pub fn edited_files(tool: &str, input: &Value, cwd: &Path, anchors: &Anchors) ->
     let anchor_keys: &[&str] = match tool {
         "write" | "undo_last_change" => return input["path"].as_str().map(|path| hashline::resolve(cwd, path)).into_iter().collect(),
         "replace" | "replace_match" => &["remove_from", "replace_from"],
-        "insert" | "copy" => &["anchor"],
+        "insert" => &["anchor"],
         "move" => &["anchor", "source_from"],
         _ => return Vec::new(),
     };

@@ -1,7 +1,7 @@
 [
   {
     "name": "read",
-    "description": "Read a text file, or several whole files at once with `paths`, as `anchor│content` rows: a 4-character anchor (letters only, case-sensitive), `│`, then the line. Target edits by anchor, never by content or line number. `offset` takes a 1-indexed line number or a served anchor; with an anchor, `limit` counts lines after it; no line-number math. Page long files with `offset` and `limit`; when output says truncated, continue from the hinted `offset`. A stale anchor is refused; read the file again for fresh anchors. Images, binary files, directories, devices, UTF-16/UTF-32 text and files over 64MB are rejected; an empty file returns one empty row you can replace to seed content.",
+    "description": "Read a text file, or several files or line ranges with `paths`, as `anchor│content` rows; an anchor is 4 case-sensitive letters. Edit by anchor, never by content or line number. One file pages at 400 lines unless `limit` says otherwise; continue with `offset` (line number or anchor) from the hint. A stale anchor is refused: read again. Binary, image, UTF-16/32 and >64MB files are rejected.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
@@ -13,9 +13,37 @@
         "paths": {
           "type": "array",
           "items": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "offset": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": ["path"]
+              }
+            ]
           },
-          "description": "Several files to read whole in one call, each under a `== path` header. Use instead of `path` and of `cat` in bash; edit them by the anchors served here"
+          "description": "Several files, each under a `== path` header: a path reads the whole file, {path, offset, limit} one range. Use instead of `cat` or a chain of `sed -n`."
         },
         "offset": {
           "anyOf": [
@@ -32,14 +60,14 @@
         "limit": {
           "type": "integer",
           "minimum": 1,
-          "description": "Maximum number of lines to read from offset"
+          "description": "Lines from offset, default 400"
         }
       }
     }
   },
   {
     "name": "bash",
-    "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to the last 2000 lines or 12KB (50KB when rtk is off), whichever is hit first; if truncated, the full output is saved to a temp file. Commands with an rtk equivalent run through rtk, and ANSI codes are removed. The command receives no stdin (immediate EOF); interactive commands will not work. Pass a timeout in seconds, or null for none.",
+    "description": "Run a bash command in the cwd, stderr merged into stdout, no stdin. Output keeps the last 2000 lines or 12KB (50KB with rtk off); a truncated run names its full log.",
     "eager_input_streaming": true,
     "strict": true,
     "input_schema": {
@@ -57,7 +85,7 @@
           "anyOf": [
             {
               "type": "number",
-              "description": "Timeout in seconds (optional, no default timeout)"
+              "description": "Seconds; null for none"
             },
             {
               "type": "null"
@@ -70,7 +98,7 @@
   },
   {
     "name": "write",
-    "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+    "description": "Create or overwrite a file; creates parent directories.",
     "eager_input_streaming": true,
     "strict": true,
     "input_schema": {
@@ -94,22 +122,22 @@
   },
   {
     "name": "replace",
-    "description": "Replace a range of lines (or a single line) in a text file by anchor: `remove_from` and `remove_to` are the 4-character anchors of its first and last line, `text` is the exact replacement text. Deleting every line empties the file, and the result names the empty-line anchor, so a follow-up `replace` can seed content without a `read`.\n\nTo change only part of a line without retyping the rest, use `replace_match` instead; it preserves every character the request does not name.",
+    "description": "Replace the lines from anchor `remove_from` to anchor `remove_to` (the same anchor for one line) with `text`. Emptying a file returns its empty-line anchor for a follow-up replace. To change part of a line, use `replace_match`.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
       "properties": {
         "remove_from": {
           "type": "string",
-          "description": "4-char anchor of the FIRST line to remove."
+          "description": "Anchor of the first line."
         },
         "remove_to": {
           "type": "string",
-          "description": "4-char anchor of the LAST line to remove."
+          "description": "Anchor of the last line."
         },
         "text": {
           "type": "string",
-          "description": "The exact text to write in place of the removed range. \"\" deletes the range. A trailing line break sets the newline of the last line written instead of adding a blank line; a lone newline writes one blank line."
+          "description": "Exact new text; \"\" deletes. A trailing newline ends the last line, it adds no blank line."
         }
       },
       "required": [
@@ -121,26 +149,26 @@
   },
   {
     "name": "replace_match",
-    "description": "Replace part of a line (or a range of lines) without retyping the rest. `replace_from`/`replace_to` are bare anchors from served `anchor│content` rows marking the range's first and last line (the same anchor for one line), and `old_string` is the exact text to find inside that range. Send only the smallest fragment that contains the change; never text that `new_string` leaves unchanged; for a whole-line or whole-range rewrite use `replace` with the same anchors instead.\n\nThe two boundary anchors must still match what was last shown; lines strictly inside the range are matched against the file as it is on disk.",
+    "description": "Replace every `old_string` inside the lines from anchor `replace_from` to anchor `replace_to` (the same anchor for one line); the rest stays byte-for-byte. Send only the smallest changing fragment; for a whole-line rewrite use `replace`.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
       "properties": {
         "replace_from": {
           "type": "string",
-          "description": "4-char anchor of the FIRST line of the range searched."
+          "description": "Anchor of the first line."
         },
         "replace_to": {
           "type": "string",
-          "description": "4-char anchor of the LAST line of the range searched; same as replace_from for a single line."
+          "description": "Anchor of the last line."
         },
         "old_string": {
           "type": "string",
-          "description": "The exact text to find inside the selected line(s), copied from the served row: only the fragment that changes, never text that `new_string` leaves unchanged. Every occurrence inside the range is replaced; the text around each match is left untouched. Matching uses LF line breaks and excludes the last line's terminator. For a whole-line or whole-range rewrite use `replace` with the same anchors."
+          "description": "Exact text to find, copied from the served rows; only the part that changes. Line breaks are LF."
         },
         "new_string": {
           "type": "string",
-          "description": "The exact replacement for every matched occurrence. \"\" deletes the matches. A trailing line break sets the newline of the last line written instead of adding a blank line; a lone newline writes one blank line. The rest of the range is kept byte-for-byte."
+          "description": "Replacement for every match; \"\" deletes."
         }
       },
       "required": [
@@ -153,14 +181,14 @@
   },
   {
     "name": "insert",
-    "description": "Insert text after or before one existing line, addressed by `anchor` (a bare anchor from any served `anchor│content` row). `direction` places `text` after or before the anchor line; `text` is the exact text to insert.",
+    "description": "Insert `text` after or before the line at `anchor`.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
       "properties": {
         "anchor": {
           "type": "string",
-          "description": "4-char anchor of the line to insert next to."
+          "description": "Anchor of the line to insert next to."
         },
         "direction": {
           "anyOf": [
@@ -172,12 +200,11 @@
               "type": "string",
               "const": "before"
             }
-          ],
-          "description": "\"after\" or \"before\""
+          ]
         },
         "text": {
           "type": "string",
-          "description": "The exact text to insert; an empty string inserts one blank line. A trailing line break sets the newline of the last line written instead of adding a blank line; a lone newline writes one blank line. Never include the anchor line."
+          "description": "Exact text, without the anchor line; \"\" inserts one blank line. A trailing newline ends the last line, it adds no blank line."
         }
       },
       "required": [
@@ -188,64 +215,23 @@
     }
   },
   {
-    "name": "copy",
-    "description": "Duplicate a range of lines at another anchor, in this or another file. The source rows and anchors stay live; the copied lines get fresh anchors in the destination's post-edit diff and take the destination's line endings.\n\nA copy reads the source lines when it runs, after any earlier call in the same message.",
-    "eager_input_streaming": true,
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "source_from": {
-          "type": "string",
-          "description": "4-char anchor of the FIRST source line to copy."
-        },
-        "source_to": {
-          "type": "string",
-          "description": "4-char anchor of the LAST source line to copy."
-        },
-        "anchor": {
-          "type": "string",
-          "description": "4-char anchor of the destination line; the block lands before or after it and it may live in another file."
-        },
-        "direction": {
-          "anyOf": [
-            {
-              "type": "string",
-              "const": "after"
-            },
-            {
-              "type": "string",
-              "const": "before"
-            }
-          ],
-          "description": "\"after\" places the block below the anchor line, \"before\" above it"
-        }
-      },
-      "required": [
-        "source_from",
-        "source_to",
-        "anchor",
-        "direction"
-      ]
-    }
-  },
-  {
     "name": "move",
-    "description": "Relocate a range of lines to another anchor, in this or another file. Within one file the destination must sit outside the source range; moving a range onto itself reports `No changes made` and leaves the anchors alone.\n\nA cross-file move commits on its own when its source file also has batched edits in the message.",
+    "description": "Move the lines from `source_from` to `source_to` after or before `anchor`, in this or another file. In one file the destination must sit outside the source range.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
       "properties": {
         "source_from": {
           "type": "string",
-          "description": "4-char anchor of the FIRST source line to copy."
+          "description": "Anchor of the first source line."
         },
         "source_to": {
           "type": "string",
-          "description": "4-char anchor of the LAST source line to copy."
+          "description": "Anchor of the last source line."
         },
         "anchor": {
           "type": "string",
-          "description": "4-char anchor of the destination line; the block lands before or after it and it may live in another file."
+          "description": "Anchor of the destination line."
         },
         "direction": {
           "anyOf": [
@@ -257,8 +243,7 @@
               "type": "string",
               "const": "before"
             }
-          ],
-          "description": "\"after\" places the block below the anchor line, \"before\" above it"
+          ]
         }
       },
       "required": [
@@ -271,7 +256,7 @@
   },
   {
     "name": "undo_last_change",
-    "description": "Undo the last replace, replace_match, insert, copy, or move on a file, restoring the previous content, BOM, and line endings. If the file changed since that edit, the undo is refused and the file is left untouched; a file deleted since the edit is restored.",
+    "description": "Undo the last replace, replace_match, insert or move on a file. Refused if the file changed since.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
@@ -288,7 +273,7 @@
   },
   {
     "name": "context_tree_query",
-    "description": "Retrieve original tool call results that have been pruned from active context. Pass the short refs listed in a pruner-summary message, e.g. context_tree_query({ toolCallIds: [\"t12\", \"t3\"] }), to get back the full original outputs. A raw id that was reused returns every occurrence, each labelled id@timestamp. Results include the original image blocks when the pruned output carried images.",
+    "description": "Get back the original outputs of tool calls a pruner summary replaced, by the short refs it lists (e.g. [\"t12\", \"t3\"]).",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
@@ -298,7 +283,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Required. One or more short refs (e.g. \"t12\") or raw tool call IDs from a pruner-summary message. A reused raw id returns every occurrence, each labelled id@timestamp."
+          "description": "Short refs or raw tool call ids."
         }
       },
       "required": [
@@ -308,7 +293,7 @@
   },
   {
     "name": "todo",
-    "description": "Manage a task list for tracking multi-step progress. Actions: create (new task), update (change status/fields/dependencies), list (all tasks, optionally filtered by status), get (single task details), delete (tombstone), clear (reset all). Status: pending → in_progress → completed, plus deleted tombstone. Use this to plan and track multi-step work like research, design, and implementation.",
+    "description": "Task list for multi-step work. Status: pending, in_progress, completed; delete leaves a tombstone.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
@@ -326,7 +311,7 @@
         },
         "subject": {
           "type": "string",
-          "description": "Task subject line (required for create)"
+          "description": "Required for create"
         },
         "description": {
           "type": "string",
@@ -334,7 +319,7 @@
         },
         "activeForm": {
           "type": "string",
-          "description": "Present-continuous spinner label shown while status is in_progress (e.g. 'writing tests')"
+          "description": "Spinner label while in_progress, e.g. 'writing tests'"
         },
         "status": {
           "type": "string",
@@ -344,28 +329,28 @@
             "completed",
             "deleted"
           ],
-          "description": "Set this task's status (update): one of pending, in_progress, completed, deleted. When action is list, filters returned tasks by this status."
+          "description": "New status (update) or filter (list)"
         },
         "blockedBy": {
           "type": "array",
           "items": {
             "type": "number"
           },
-          "description": "Initial blockedBy ids (create only)"
+          "description": "create only"
         },
         "addBlockedBy": {
           "type": "array",
           "items": {
             "type": "number"
           },
-          "description": "Task ids to add to blockedBy (update only, additive merge)"
+          "description": "update only"
         },
         "removeBlockedBy": {
           "type": "array",
           "items": {
             "type": "number"
           },
-          "description": "Task ids to remove from blockedBy (update only, additive merge)"
+          "description": "update only"
         },
         "owner": {
           "type": "string",
@@ -376,15 +361,15 @@
           "patternProperties": {
             "^.*$": {}
           },
-          "description": "Arbitrary metadata; pass null value for a key to delete that key on update"
+          "description": "A null value deletes its key on update"
         },
         "id": {
           "type": "number",
-          "description": "Task id (required for update, get, delete)"
+          "description": "Required for update, get, delete"
         },
         "includeDeleted": {
           "type": "boolean",
-          "description": "If true, list action returns deleted (tombstoned) tasks as well. Default: false."
+          "description": "list: include deleted tasks"
         }
       },
       "required": [
@@ -394,7 +379,7 @@
   },
   {
     "name": "create_goal",
-    "description": "Create and focus a persistent goal only on explicit user request. The agent keeps working toward it across turns until update_goal marks it complete.",
+    "description": "Only on explicit user request: set a goal the agent keeps working toward across turns until update_goal marks it complete.",
     "input_schema": {
       "type": "object",
       "required": ["objective"],
@@ -422,32 +407,16 @@
     }
   },
   {
-    "name": "load_tools",
-    "description": "Enable optional tools for agents, background terminals, or web research. Call once with the needed groups; loaded tools remain active for the session.",
-    "input_schema": {
-      "type": "object",
-      "required": ["groups"],
-      "properties": {
-        "groups": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "type": "string", "enum": ["agents", "terminals", "web"] },
-          "description": "Optional capabilities to enable: agents, terminals, or web."
-        }
-      }
-    }
-  },
-  {
     "name": "subagent",
-    "description": "Spawn child agents that run as separate processes with their own context and the base tools only: no load_tools, ask_user_question, or the optional agents, terminals and web groups. Pass {label, prompt} for one child or {tasks: [{label, prompt}, ...]} to run several in parallel. The result is each child's final answer. With background: true it returns run ids at once and each answer arrives later as a message.",
+    "description": "Spawn child agents as separate processes with their own context and no subagent, terminal, web or ask_user_question tools; an `explore: true` child only gets read and rg. Pass {label, prompt} for one child or {tasks: [...]} for several in parallel. Returns each child's final answer; with background: true, run ids now and answers later as messages.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "label": { "type": "string", "minLength": 1, "description": "Required for a single child: agent chip label (e.g. 'api reviewer')" },
-        "prompt": { "type": "string", "description": "Self-contained task for a single child; it does not see this conversation" },
-        "model": { "type": "string", "description": "Model for the child, e.g. 'claude-sonnet-5-5'. 'inherit' or omitted uses yours." },
-        "effort": { "type": "string", "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"], "description": "Optional reasoning effort for the child. Omit for yours." },
+        "label": { "type": "string", "minLength": 1, "description": "Chip label, e.g. 'api reviewer'" },
+        "prompt": { "type": "string", "description": "Self-contained task; the child does not see this conversation" },
+        "model": { "type": "string", "description": "Omit or 'inherit' for yours" },
+        "effort": { "type": "string", "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"], "description": "Omit for yours" },
+        "explore": { "type": "boolean", "description": "Context gathering: only read and rg, cheaper" },
         "tasks": {
           "type": "array",
           "description": "Parallel children",
@@ -458,42 +427,43 @@
               "label": { "type": "string", "minLength": 1 },
               "prompt": { "type": "string" },
               "model": { "type": "string" },
-              "effort": { "type": "string", "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }
+              "effort": { "type": "string", "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+              "explore": { "type": "boolean" }
             }
           }
         },
-        "cwd": { "type": "string", "description": "Working directory for the children (default: current working directory)" },
-        "background": { "type": "boolean", "description": "Return at once and deliver answers as messages when they finish (default: false)" }
+        "cwd": { "type": "string", "description": "Default: current directory" },
+        "background": { "type": "boolean" }
       }
     }
   },
   {
     "name": "bg_wait",
-    "description": "Wait for background subagents (default: every running one) and return their final answers. Answers returned here do not arrive again as messages. Esc stops the wait but not the subagents.",
+    "description": "Wait for background subagents (default: all running) and return their answers, which then do not arrive again as messages.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "ids": { "type": "array", "items": { "type": "string" }, "description": "Run ids to wait for, e.g. ['sa-1', 'sa-2']" },
-        "timeout": { "type": "integer", "description": "Seconds to wait at most (default: 600). Runs still going are reported as running." }
+        "ids": { "type": "array", "items": { "type": "string" }, "description": "e.g. ['sa-1']" },
+        "timeout": { "type": "integer", "description": "Seconds, default 600" }
       }
     }
   },
   {
     "name": "bg_start",
-    "description": "Start a long-running shell command as a background terminal (executed via sh -c). Fire-and-forget: this returns immediately with an id, and you get a message with the final output when the process exits, unless bg_status or bg_kill already returned its final state. The process receives NO stdin (immediate EOF) and there is no way to send input later; interactive commands will not work, use bg_kill to stop a stuck one. Terminals are session-scoped: their process groups are killed when the agent exits. Output shown to you is tail-truncated: bg_status shows stdout 16.0KB/400 lines and stderr 8.0KB/200 lines, the exit message stdout 8.0KB/40 lines and stderr 4.0KB/20 lines. The full logs are in files whose paths the truncation notice gives; the /ps viewer shows the last 1.0MB. Max 8 background terminals can run at once.",
+    "description": "Start a long-running `sh -c` command in the background and return its id at once; its final output arrives as a message when it exits. No stdin. Output is tail-truncated and names its full log. Max 8 at once; killed when the agent exits.",
     "input_schema": {
       "type": "object",
       "required": ["command", "title"],
       "properties": {
-        "command": { "type": "string", "description": "Shell command line to run in the background (sh -c). It receives no stdin (EOF immediately); interactive commands will not work." },
-        "title": { "type": "string", "description": "Short human-readable name shown in listings and the UI; whitespace is collapsed and it is cut to 80 characters" },
-        "working_dir": { "type": "string", "description": "Working directory (default: current working directory)" }
+        "command": { "type": "string" },
+        "title": { "type": "string", "description": "Short name for listings" },
+        "working_dir": { "type": "string", "description": "Default: current directory" }
       }
     }
   },
   {
     "name": "bg_status",
-    "description": "Peek at a background terminal's status and current output (tail-truncated) without blocking. If the terminal already exited, this returns its final state.",
+    "description": "A background terminal's status and output tail, without blocking.",
     "input_schema": {
       "type": "object",
       "required": ["id"],
@@ -502,12 +472,12 @@
   },
   {
     "name": "bg_list",
-    "description": "List all background terminals (running and settled) with pid, elapsed time, exit status, and output sizes.",
+    "description": "List background terminals with pid, elapsed time, exit status and output sizes.",
     "input_schema": { "type": "object", "properties": {} }
   },
   {
     "name": "bg_kill",
-    "description": "Stop one or more background terminals: SIGTERM to each terminal's process group, escalating to SIGKILL after 2s. A process that left the group (setsid, setpgid) is not reached. Returns each terminal's final state, or that it did not stop within 5s, in which case its exit arrives later as a message; already-settled ids are reported as such, and the group members they left behind are stopped too.",
+    "description": "Stop background terminals: SIGTERM to the process group, SIGKILL after 2s. Returns each final state.",
     "input_schema": {
       "type": "object",
       "required": ["ids"],
@@ -516,7 +486,7 @@
   },
   {
     "name": "ask_user_question",
-    "description": "Ask the user one or more structured questions during execution. Use when you need to:\n1. Gather user preferences or requirements\n2. Clarify ambiguous instructions\n3. Get decisions on implementation choices as you work\n4. Offer choices to the user about what direction to take\n\nUsage notes:\n- Users can type a custom answer via the automatically appended \"Type something.\" row on every question or press Esc to abandon the questionnaire. Do NOT author \"Other\", \"Next\" or \"Type something.\" labels yourself; reserved labels are rejected at runtime.\n- Use multiSelect: true when multiple answers are valid. The \"Type something.\" row is available on every question, including when options carry a `preview`; in preview mode it expands to the full pane width while typing so the custom answer is not cramped into the narrow options column.\n- If you recommend a specific option, make that the first option in the list and add \"(Recommended)\" at the end of the label.\n\nPreview feature:\nUse the optional `preview` field on options when presenting concrete artifacts that users need to visually compare:\n- ASCII mockups of UI layouts or components\n- Code snippets showing different implementations\n- Diagram variations\n- Configuration examples\n\nPreview content is rendered as markdown in a monospace box. Multi-line text with newlines is supported. When any option has a preview, the UI switches to a side-by-side layout with a vertical option list on the left and preview on the right. Do not use previews for simple preference questions where labels and descriptions suffice. Note: previews are only supported for single-select questions (not multiSelect).",
+    "description": "Ask the user structured questions for preferences, unclear instructions or decisions. A \"Type something.\" row for a custom answer is added to every question; never write \"Other\", \"Next\" or \"Type something.\" labels yourself. Put a recommended option first with \"(Recommended)\" at the end of its label. Use `preview` (markdown in a monospace box, single-select only) only to compare concrete artifacts such as mockups or code.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
@@ -533,12 +503,12 @@
             "properties": {
               "question": {
                 "type": "string",
-                "description": "The complete question to ask the user. Should be clear, specific, and end with a question mark. Example: \"Which library should we use for date formatting?\" If multiSelect is true, phrase it accordingly, e.g. \"Which features do you want to enable?\""
+                "description": "Clear, specific question ending with a question mark"
               },
               "header": {
                 "type": "string",
                 "maxLength": 16,
-                "description": "MAX 16 CHARACTERS; hard limit, requests over the limit are rejected. Very short chip/tag shown next to the question. Examples: \"Auth method\", \"Library\", \"Approach\"."
+                "description": "Short chip, e.g. \"Auth method\""
               },
               "options": {
                 "type": "array",
@@ -552,32 +522,31 @@
                     "label": {
                       "type": "string",
                       "maxLength": 60,
-                      "description": "MAX 60 CHARACTERS; hard limit, requests over the limit are rejected. The display text for this option that the user will see and select. Should be concise (1-5 words) and clearly describe the choice."
+                      "description": "1-5 words"
                     },
                     "description": {
                       "type": "string",
-                      "description": "Explanation of what this option means or what will happen if chosen. Useful for providing context about trade-offs or implications."
+                      "description": "What choosing it means, trade-offs"
                     },
                     "preview": {
                       "type": "string",
-                      "description": "Optional preview content rendered when this option is focused. Use for mockups, code snippets, or visual comparisons that help users compare options. See the tool description for the expected content format."
+                      "description": "Shown when the option is focused"
                     }
                   }
                 },
                 "minItems": 2,
                 "maxItems": 4,
-                "description": "The available choices for this question. Must have 2-4 options. Each option should be a distinct, mutually exclusive choice (unless multiSelect is enabled). The 'Type something.' row is appended automatically; do NOT author it."
+                "description": "Distinct choices, mutually exclusive unless multiSelect"
               },
               "multiSelect": {
                 "type": "boolean",
                 "default": false,
-                "description": "Set to true to allow the user to select multiple options instead of just one. Use when choices are not mutually exclusive."
+                "description": "Allow several answers"
               }
             }
           },
           "minItems": 1,
-          "maxItems": 4,
-          "description": "Questions to ask the user (1-4 questions)"
+          "maxItems": 4
         }
       },
       "required": [
@@ -586,135 +555,49 @@
     }
   },
   {
-    "name": "fd",
-    "description": "Find files and directories by name with fd. Respects .gitignore by default. Results are limited to 1000 entries unless a higher limit is given; output is limited to 2000 lines or 50KB, and complete truncated output is saved to a temporary file.",
-    "eager_input_streaming": true,
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "pattern": {
-          "type": "string",
-          "description": "Regex matched against file names (or a glob when glob is true). Omit to list everything under path."
-        },
-        "path": {
-          "type": "string",
-          "description": "Directory to search. Defaults to the current working directory."
-        },
-        "type": {
-          "type": "string",
-          "enum": [
-            "file",
-            "directory",
-            "symlink"
-          ],
-          "description": "Only return entries of this type: file, directory, or symlink."
-        },
-        "extension": {
-          "type": "string",
-          "description": "Only return files with this extension, e.g. 'ts' or 'md'."
-        },
-        "glob": {
-          "type": "boolean",
-          "description": "Treat pattern as a glob (e.g. '*.test.ts') instead of a regex."
-        },
-        "hidden": {
-          "type": "boolean",
-          "description": "Include hidden files and directories. Defaults to false."
-        },
-        "max_depth": {
-          "type": "integer",
-          "description": "Maximum directory depth to descend (1-64).",
-          "minimum": 1,
-          "maximum": 64
-        },
-        "limit": {
-          "type": "integer",
-          "description": "Maximum number of results (1-10000). Defaults to 1000.",
-          "minimum": 1,
-          "maximum": 10000
-        }
-      },
-      "required": []
-    }
-  },
-  {
-    "name": "add_directory",
-    "description": "Add a directory outside the working directory for this session, so search_external_files can find files in it. Returns the directory's AGENTS.md and the skills in its .agents/skills. Read and edit its files with the usual tools by absolute path.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "description": "Directory to add, absolute, relative to the working directory, or starting with ~/.",
-          "type": "string"
-        }
-      },
-      "required": ["path"]
-    }
-  },
-  {
-    "name": "search_external_files",
-    "description": "Find files by glob in the directories add_directory added, searched in the order they were added. Results are absolute paths grouped per directory, and stop at maxResults files in total.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "pattern": {
-          "description": "Glob on the file name, e.g. '*.md'. A pattern with / matches the path below each directory, e.g. 'docs/**/*.md'.",
-          "type": "string"
-        },
-        "maxResults": {
-          "description": "Maximum files across all directories (1-1000). Defaults to 50.",
-          "maximum": 1000,
-          "minimum": 1,
-          "type": "integer"
-        }
-      },
-      "required": ["pattern"]
-    }
-  },
-  {
     "name": "rg",
-    "description": "Search file contents with ripgrep. Uses smart-case matching, respects .gitignore by default, and returns at most 100 matches per file unless a different limit is given. Rows are `path:anchor│line` for matches and `path-anchor│line` for context; the anchors work in replace, insert and the other edit tools without a read. Output is limited to 2000 lines or 50KB; complete truncated output is saved to a temporary file.",
+    "description": "Search file contents with ripgrep: smart-case, respects .gitignore, at most 100 matches per file by default. Rows are `path:anchor│line` (match) and `path-anchor│line` (context); the anchors work in the edit tools without a read. Output is capped at 2000 lines or 50KB.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
       "properties": {
         "pattern": {
           "type": "string",
-          "description": "Regex to search for (literal text when fixed_strings is true)."
+          "description": "Regex, or literal with fixed_strings."
         },
         "path": {
           "type": "string",
-          "description": "File or directory to search. Defaults to the current working directory."
+          "description": "Default: current directory."
         },
         "glob": {
           "type": "string",
-          "description": "Only search files matching this glob, e.g. '*.ts' or 'src/**'."
+          "description": "e.g. '*.ts' or 'src/**'."
         },
         "file_type": {
           "type": "string",
-          "description": "Only search files of this ripgrep type, e.g. 'ts', 'js', 'py', 'rust'."
+          "description": "ripgrep type, e.g. 'ts', 'rust'."
         },
         "case_sensitive": {
           "type": "boolean",
-          "description": "true forces case-sensitive matching, false forces case-insensitive. Defaults to smart-case."
+          "description": "Default: smart-case."
         },
         "fixed_strings": {
           "type": "boolean",
-          "description": "Treat pattern as a literal string instead of a regex."
+          "description": "Literal pattern."
         },
         "hidden": {
           "type": "boolean",
-          "description": "Search hidden files and directories. Defaults to false."
+          "description": "Include hidden files."
         },
         "context": {
           "type": "integer",
-          "description": "Lines of context to show around each match (0-20).",
+          "description": "Context lines around each match.",
           "maximum": 20,
           "minimum": 0
         },
         "limit": {
           "type": "integer",
-          "description": "Maximum matches per file (1-1000). Defaults to 100.",
+          "description": "Max matches per file, default 100.",
           "minimum": 1,
           "maximum": 1000
         }
@@ -730,61 +613,60 @@
     "input_schema": {
       "type": "object",
       "properties": {
-        "query": { "type": "string", "description": "Single search query." },
-        "queries": { "type": "array", "items": { "type": "string" }, "description": "Multiple queries searched concurrently; vary angles for broader coverage." },
-        "numResults": { "type": "integer", "minimum": 1, "maximum": 20, "description": "Results per query (default: 5, max: 20)." },
-        "includeContent": { "type": "boolean", "description": "Also fetch full page content for the results, retrievable with get_search_content." },
-        "recencyFilter": { "type": "string", "enum": ["day", "week", "month", "year"], "description": "Filter results by recency." },
-        "domainFilter": { "type": "array", "items": { "type": "string" }, "description": "Limit to domains; prefix with - to exclude." },
-        "category": { "type": "string", "description": "Exa only: result category, e.g. news, research paper." },
+        "query": { "type": "string" },
+        "queries": { "type": "array", "items": { "type": "string" }, "description": "Searched concurrently; vary the angles." },
+        "numResults": { "type": "integer", "minimum": 1, "maximum": 20, "description": "Per query, default 5." },
+        "includeContent": { "type": "boolean", "description": "Also fetch the result pages." },
+        "recencyFilter": { "type": "string", "enum": ["day", "week", "month", "year"] },
+        "domainFilter": { "type": "array", "items": { "type": "string" }, "description": "Prefix - to exclude." },
+        "category": { "type": "string", "description": "Exa only, e.g. news, research paper." },
         "provider": {
           "anyOf": [
-            { "type": "string", "enum": ["auto", "all", "xai", "exa", "brave", "tavily", "perplexity", "jina"], "description": "Single provider." },
-            { "type": "array", "items": { "type": "string", "enum": ["xai", "exa", "brave", "tavily", "perplexity", "jina"], "description": "Provider." }, "minItems": 1 }
+            { "type": "string", "enum": ["auto", "all", "xai", "exa", "brave", "tavily", "perplexity", "jina"] },
+            { "type": "array", "items": { "type": "string", "enum": ["xai", "exa", "brave", "tavily", "perplexity", "jina"] }, "minItems": 1 }
           ],
-          "description": "Search provider, or a non-empty list of providers to search simultaneously. Omit or use auto for the configured provider; all searches every eligible provider. Providers without credentials return an error."
+          "description": "Omit for the configured one; all or a list searches several."
         },
-        "proxy": { "type": "string", "description": "http(s) or socks proxy URL for this call's outbound requests; empty string forces direct access. Page fetches refuse a proxy on a local or private address." }
+        "proxy": { "type": "string", "description": "http(s)/socks proxy URL; \"\" forces direct." }
       },
       "additionalProperties": false
     }
   },
   {
     "name": "fetch_content",
-    "description": "Fetch URL(s) and return bounded content. Supports web pages and GitHub repositories. Full content is stored for retrieval with get_search_content using the returned responseId.",
+    "description": "Fetch web pages or GitHub repositories; full content is kept for get_search_content by the returned responseId.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "url": { "type": "string", "description": "Single URL to fetch." },
-        "urls": { "type": "array", "items": { "type": "string" }, "description": "Multiple URLs fetched in parallel." },
-        "mode": { "type": "string", "enum": ["readable", "raw"], "description": "readable = extract readable content as markdown (default); raw = return the exact textual body using direct HTTP only." },
-        "forceClone": { "type": "boolean", "description": "Delete the cached clone of a GitHub repository and clone it again." },
-        "proxy": { "type": "string", "description": "http(s) or socks proxy URL for this call's outbound requests; empty string forces direct access. Page fetches refuse a proxy on a local or private address." }
+        "url": { "type": "string" },
+        "urls": { "type": "array", "items": { "type": "string" }, "description": "Fetched in parallel." },
+        "mode": { "type": "string", "enum": ["readable", "raw"], "description": "readable (default) extracts markdown; raw returns the body via direct HTTP." },
+        "forceClone": { "type": "boolean", "description": "Re-clone a cached GitHub repository." },
+        "proxy": { "type": "string", "description": "http(s)/socks proxy URL; \"\" forces direct." }
       },
       "additionalProperties": false
     }
   },
   {
     "name": "get_search_content",
-    "description": "Retrieve bounded pages of stored search results or fetched content from a previous web_search, fetch_content, or source_check call, or find matching passages with findText.",
+    "description": "Page through stored content of a web_search, fetch_content or source_check call, or find passages with findText.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "responseId": { "type": "string", "description": "The responseId from web_search, fetch_content, or source_check." },
-        "query": { "type": "string", "description": "Select stored results for this search query." },
-        "queryIndex": { "type": "integer", "minimum": 0, "description": "Select stored results for the query at this index." },
-        "url": { "type": "string", "description": "Select stored content for this URL." },
-        "urlIndex": { "type": "integer", "minimum": 0, "description": "Select stored content for the URL at this index." },
-        "offset": { "type": "integer", "minimum": 0, "description": "Character offset into the stored content (default 0). Ignored when findText is supplied." },
-        "limit": { "type": "integer", "minimum": 1, "description": "Maximum characters to return. Ignored when findText is supplied." },
+        "responseId": { "type": "string" },
+        "query": { "type": "string", "description": "Select by search query." },
+        "queryIndex": { "type": "integer", "minimum": 0 },
+        "url": { "type": "string", "description": "Select by URL." },
+        "urlIndex": { "type": "integer", "minimum": 0 },
+        "offset": { "type": "integer", "minimum": 0, "description": "Characters; ignored with findText." },
+        "limit": { "type": "integer", "minimum": 1, "description": "Characters; ignored with findText." },
         "findText": {
           "anyOf": [
             { "type": "string", "minLength": 1, "maxLength": 500 },
             { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 500 }, "minItems": 1, "maxItems": 10 }
-          ],
-          "description": "Text or texts to find in the selected stored content."
+          ]
         },
-        "findMode": { "type": "string", "enum": ["exact", "case-insensitive", "fuzzy"], "description": "Matching mode for findText (default: case-insensitive)." }
+        "findMode": { "type": "string", "enum": ["exact", "case-insensitive", "fuzzy"], "description": "Default case-insensitive." }
       },
       "required": ["responseId"],
       "additionalProperties": false
@@ -792,24 +674,24 @@
   },
   {
     "name": "source_check",
-    "description": "Gather web sources for a claim and return a bounded machine-readable research artifact with exact passage citations for manual review.",
+    "description": "Gather web sources for a claim; returns exact passage citations for manual review.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "claim": { "type": "string", "description": "The assertion to gather web sources for." },
-        "queries": { "type": "array", "items": { "type": "string" }, "description": "Search queries (default: the claim)." },
-        "numResults": { "type": "integer", "minimum": 1, "maximum": 20, "description": "Results per query (default: 5, max: 20)." },
-        "fetchContent": { "type": "boolean", "description": "Fetch up to 5 result pages for exact passage extraction." },
-        "recencyFilter": { "type": "string", "enum": ["day", "week", "month", "year"], "description": "Filter results by recency." },
-        "domainFilter": { "type": "array", "items": { "type": "string" }, "description": "Limit to domains; prefix with - to exclude." },
+        "claim": { "type": "string" },
+        "queries": { "type": "array", "items": { "type": "string" }, "description": "Default: the claim." },
+        "numResults": { "type": "integer", "minimum": 1, "maximum": 20, "description": "Per query, default 5." },
+        "fetchContent": { "type": "boolean", "description": "Fetch up to 5 pages for exact passages." },
+        "recencyFilter": { "type": "string", "enum": ["day", "week", "month", "year"] },
+        "domainFilter": { "type": "array", "items": { "type": "string" }, "description": "Prefix - to exclude." },
         "provider": {
           "anyOf": [
-            { "type": "string", "enum": ["auto", "all", "xai", "exa", "brave", "tavily", "perplexity", "jina"], "description": "Single provider." },
-            { "type": "array", "items": { "type": "string", "enum": ["xai", "exa", "brave", "tavily", "perplexity", "jina"], "description": "Provider." }, "minItems": 1 }
+            { "type": "string", "enum": ["auto", "all", "xai", "exa", "brave", "tavily", "perplexity", "jina"] },
+            { "type": "array", "items": { "type": "string", "enum": ["xai", "exa", "brave", "tavily", "perplexity", "jina"] }, "minItems": 1 }
           ],
-          "description": "Search provider, or a non-empty list of providers to search simultaneously. Omit or use auto for the configured provider; all searches every eligible provider. Providers without credentials return an error."
+          "description": "Omit for the configured one; all or a list searches several."
         },
-        "proxy": { "type": "string", "description": "http(s) or socks proxy URL for this call's outbound requests; empty string forces direct access. Page fetches refuse a proxy on a local or private address." }
+        "proxy": { "type": "string", "description": "http(s)/socks proxy URL; \"\" forces direct." }
       },
       "required": ["claim"],
       "additionalProperties": false

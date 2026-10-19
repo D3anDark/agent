@@ -3765,7 +3765,7 @@ fn render_tool(name: &str, input: &Value, result: Option<&(String, bool)>, width
     let pretty = serde_json::from_str::<Value>(output).ok().filter(|v| v.is_object() || v.is_array()).and_then(|v| serde_json::to_string_pretty(&v).ok());
     let output = pretty.as_deref().unwrap_or(output);
     let shown = output.lines().take(TOOL_OUTPUT_LINES).map(|line| line.replace('\t', "    "));
-    let is_diff = !is_error && matches!(name, "replace" | "replace_match" | "insert" | "copy" | "move");
+    let is_diff = !is_error && matches!(name, "replace" | "replace_match" | "insert" | "move");
     for (index, line) in shown.enumerate() {
         let lead = if index == 0 { "└ " } else { "  " };
         let style = match line.chars().next() {
@@ -3803,7 +3803,7 @@ fn tool_args(name: &str, input: &Value) -> String {
         "read_image" => field("image"),
         "read" => {
             if let Some(paths) = input["paths"].as_array() {
-                return paths.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ");
+                return paths.iter().filter_map(|entry| entry.as_str().or(entry["path"].as_str())).collect::<Vec<_>>().join(", ");
             }
             let mut text = field("path");
             if let Some(offset) = input["offset"].as_u64().map(|n| n.to_string()).or(input["offset"].as_str().map(String::from)) {
@@ -3815,10 +3815,10 @@ fn tool_args(name: &str, input: &Value) -> String {
             text
         }
         "write" => field("path"),
-        "replace" | "replace_match" | "insert" | "copy" | "move" => {
+        "replace" | "replace_match" | "insert" | "move" => {
             let anchors = match name {
                 "insert" => format!("{} {}", field("direction"), field("anchor")),
-                "copy" | "move" => format!("{}..{} {} {}", field("source_from"), field("source_to"), field("direction"), field("anchor")),
+                "move" => format!("{}..{} {} {}", field("source_from"), field("source_to"), field("direction"), field("anchor")),
                 _ => {
                     let from = input["remove_from"].as_str().or(input["replace_from"].as_str()).unwrap_or_default();
                     let to = input["remove_to"].as_str().or(input["replace_to"].as_str()).unwrap_or_default();
@@ -3835,7 +3835,6 @@ fn tool_args(name: &str, input: &Value) -> String {
             Some(path) => format!("{} in {path}", field("pattern")),
             None => field("pattern"),
         },
-        "fd" => input["pattern"].as_str().or(input["path"].as_str()).unwrap_or_default().to_string(),
         _ => match input {
             Value::Object(map) => map.iter().map(|(k, v)| format!("{k}: {}", plain_json(v))).collect::<Vec<_>>().join(" · "),
             _ => plain_json(input),

@@ -198,12 +198,8 @@ pub struct Agent {
     pub subagents: Arc<Mutex<Runs>>,
     pub subagent_concurrency: usize,
     pub subagent_effort: String,
-    /// Tool groups load_tools added; the base set is always on.
-    pub loaded_groups: Vec<String>,
     /// Stored web_search, fetch_content and source_check responses for get_search_content.
     pub web: tools::web::Web,
-    /// Directories add_directory opened to search_external_files.
-    pub extra_dirs: Vec<PathBuf>,
     pub spent: Spent,
     /// False in print mode: tools that need the user fail instead of waiting.
     pub interactive: bool,
@@ -257,8 +253,6 @@ pub struct History {
     pub condensed: Vec<Condensed>,
     pub todos: Todos,
     pub goal: Option<Goal>,
-    pub loaded_groups: Vec<String>,
-    pub extra_dirs: Vec<PathBuf>,
     pub spent: Spent,
     pub checkpoints: Vec<Checkpoint>,
     /// Provider to the account id that served the session's last reply, so a resume keeps the same account.
@@ -514,9 +508,6 @@ impl Agent {
             "context_tree_query" => condense::query(&self.messages, &self.condensed, input),
             "todo" => self.todo(input),
             "create_goal" | "get_goal" | "update_goal" => self.goal_tool(name, input),
-            "load_tools" => self.load_tools(input),
-            "add_directory" => self.add_directory(input),
-            "search_external_files" => tools::external::search(&self.extra_dirs, input, &self.abort),
             "bg_start" => self.terminals.lock().unwrap().start(input, &self.cwd, &self.follow_ups),
             "bg_status" => self.terminals.lock().unwrap().status_of(input, &self.follow_ups),
             "bg_list" => Ok(self.terminals.lock().unwrap().describe_all()),
@@ -548,7 +539,7 @@ impl Agent {
         }
         if name == "read" && !is_error {
             let paths = match input["paths"].as_array() {
-                Some(paths) => paths.iter().filter_map(Value::as_str).collect(),
+                Some(paths) => paths.iter().filter_map(|entry| entry.as_str().or(entry["path"].as_str())).collect(),
                 None => vec![input["path"].as_str().unwrap_or_default()],
             };
             for path in paths {
@@ -578,33 +569,6 @@ impl Agent {
             self.session.append(&self.todos.lock().unwrap().entry())?;
         }
         Ok(text)
-    }
-
-    /// pi's tool-loader: adds a group's tools to every later request of this session.
-    fn load_tools(&mut self, input: &Value) -> Result<String, String> {
-        let before: Vec<String> = tool_names(&self.tools);
-        for group in input["groups"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-            if !tools::GROUPS.iter().any(|(name, _)| *name == group) {
-                return Err(format!("Unknown tool group {group}"));
-            }
-            if !self.loaded_groups.iter().any(|g| g == group) {
-                self.loaded_groups.push(group.to_string());
-            }
-        }
-        self.tools = self.tool_schemas(&self.loaded_groups);
-        self.session.append(&json!({"type": "tools_loaded", "groups": self.loaded_groups}))?;
-        let added: Vec<String> = tool_names(&self.tools).into_iter().filter(|name| !before.contains(name)).collect();
-        Ok(if added.is_empty() { "All requested tools were already active.".into() } else { format!("Enabled: {}", added.join(", ")) })
-    }
-
-    fn add_directory(&mut self, input: &Value) -> Result<String, String> {
-        let dir = tools::external::directory(&self.cwd, input)?;
-        if !self.extra_dirs.contains(&dir) {
-            self.session.append(&json!({"type": "directory_added", "path": dir}))?;
-            self.extra_dirs.push(dir.clone());
-        }
-        let context = prompt::directory_context(&dir);
-        Ok(format!("Added {}. Search it with search_external_files.\n\n{context}", dir.display()).trim_end().to_string())
     }
 
     /// Steering and finished background work, taken after each tool batch and at turn end.
@@ -676,7 +640,7 @@ impl Agent {
                 let thinking = task.effort.clone().unwrap_or_else(|| self.effort.clone());
                 let provider = self.client.catalog().iter().find(|c| c.id == model).map(|c| c.provider.clone());
                 let account = provider.and_then(|provider| Some(format!("{provider}={}", self.client.account(&provider)?.0)));
-                let launch = Launch { label: task.label.clone(), task: task.prompt.clone(), cwd: cwd.clone(), model, thinking, mode, parent_session: self.session.id.clone(), account };
+                let launch = Launch { label: task.label.clone(), task: task.prompt.clone(), cwd: cwd.clone(), model, thinking, mode, parent_session: self.session.id.clone(), explore: task.explore, account };
                 // The tool reports failure, so this chunk's runs must not keep going; earlier chunks have finished.
                 match self.subagents.lock().unwrap().spawn(launch, background, &self.follow_ups) {
                     Ok(run) => started.push(run),
@@ -907,7 +871,7 @@ impl Agent {
     /// Snapshots around a tool that can change files, so a rewind touches only what this session changed.
     /// A file another session edits while this call runs still counts as this session's.
     fn run_tool_with_checkpoint(&mut self, name: &str, input: &Value, targets: &[PathBuf], user_request: &str, emit: &mut dyn FnMut(Event)) -> Result<(String, bool), String> {
-        const CHANGES_FILES: [&str; 9] = ["write", "replace", "replace_match", "insert", "copy", "move", "undo_last_change", "bash", "subagent"];
+        const CHANGES_FILES: [&str; 8] = ["write", "replace", "replace_match", "insert", "move", "undo_last_change", "bash", "subagent"];
         let Some(snapshots) = self.snapshots.as_ref().filter(|_| CHANGES_FILES.contains(&name)) else {
             return Ok(self.run_tool(name, input, targets, user_request, emit));
         };
@@ -941,8 +905,11 @@ impl Agent {
         };
         let conversation = serialize(&self.messages[..first_kept]);
         let prompt = format!("<conversation>\n{conversation}\n</conversation>\n\n{SUMMARY_PROMPT}");
-        let max_tokens = (self.reserve_tokens * 4 / 5).min(128_000);
-        let request = api::plain_request(&self.model, SUMMARY_SYSTEM, &prompt, max_tokens);
+        // The cheap model summarizes only when the conversation fits its window, so a 1M-context session keeps the main model.
+        let cheap = self.client.catalog().iter().find(|model| model.id == self.cheap_model && model.context_window >= self.context_window);
+        let (model, output_limit) = cheap.map_or((self.model.clone(), u64::MAX), |model| (model.id.clone(), model.max_tokens));
+        let max_tokens = (self.reserve_tokens * 4 / 5).min(128_000).min(output_limit);
+        let request = api::plain_request(&model, SUMMARY_SYSTEM, &prompt, max_tokens);
         let reply = self.client.send_quiet(&request, &self.abort)?;
         self.usage.add(reply.usage);
         if reply.stop_reason != "end_turn" {
@@ -972,7 +939,7 @@ impl Agent {
         self.condense = condense::Config::new(settings, cheap_model);
         self.subagent_concurrency = settings.subagent_concurrency;
         self.subagent_effort = settings.subagent_effort.clone();
-        self.tools = self.tool_schemas(&self.loaded_groups);
+        self.tools = self.tool_schemas();
         *self.permission_mode.lock().unwrap() = settings.permission_mode;
         self.rtk = if settings.rtk { Rtk::ON } else { Rtk::OFF };
         self.modes = modes::prompt(&self.home, &settings.ponytail, &settings.caveman);
@@ -1099,10 +1066,10 @@ impl Agent {
         context::split(&system, &tools, &condense::view(&self.messages, &self.condensed), self.last_context_tokens)
     }
 
-    fn tool_schemas(&self, loaded: &[String]) -> Value {
+    fn tool_schemas(&self) -> Value {
         // Condensed batches of a resumed session keep their originals reachable after condense is turned off.
         let context_tree_query = self.condense.enabled || !self.condensed.is_empty();
-        tools::schemas(loaded, &subagent::swarm_prompt(&self.agent_dir, &self.cwd, &self.subagent_effort), context_tree_query)
+        tools::schemas(&subagent::swarm_prompt(&self.agent_dir, &self.cwd, &self.subagent_effort), context_tree_query)
     }
 
     /// Replaces the conversation state with a saved (or empty) session's.
@@ -1113,9 +1080,7 @@ impl Agent {
         self.condensed = history.condensed;
         *self.todos.lock().unwrap() = history.todos;
         *self.goal.lock().unwrap() = history.goal;
-        self.tools = self.tool_schemas(&history.loaded_groups);
-        self.loaded_groups = history.loaded_groups;
-        self.extra_dirs = history.extra_dirs;
+        self.tools = self.tool_schemas();
         self.spent = history.spent;
         self.pending_condense.clear();
         self.last_context_tokens = 0;
@@ -1257,8 +1222,6 @@ impl Session {
                 }
                 Some("condense") => history.condensed.push(condense::from_entry(&entry)),
                 Some("goal") => history.goal = Goal::from_entry(&entry),
-                Some("tools_loaded") => history.loaded_groups = entry["groups"].as_array().into_iter().flatten().filter_map(|g| g.as_str().map(String::from)).collect(),
-                Some("directory_added") => history.extra_dirs.extend(entry["path"].as_str().map(PathBuf::from)),
                 Some("todo") => history.todos = Todos::from_entry(&entry),
                 Some("spent") => history.spent.add(Spent::from_entry(&entry)),
                 Some("usage") => {
@@ -1551,10 +1514,6 @@ fn truncate_chars(text: &str, max: usize) -> String {
     format!("{kept}\n\n[... {} more characters truncated]", total - max)
 }
 
-fn tool_names(tools: &Value) -> Vec<String> {
-    tools.as_array().into_iter().flatten().filter_map(|t| t["name"].as_str().map(String::from)).collect()
-}
-
 fn text_of(message: &Value) -> String {
     let blocks = message["content"].as_array().into_iter().flatten();
     blocks.filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n")
@@ -1669,17 +1628,6 @@ mod tests {
         let (_, history) = Session::resume(&dir, &session.id).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(history.spent, Spent { input: 150, output: 25, time: Duration::from_millis(62_500) });
-    }
-
-    #[test]
-    fn resumed_session_keeps_added_directories() {
-        let dir = std::env::temp_dir().join(format!("agent-dirs-{}", std::process::id()));
-        let session = Session::start(&dir, true, Path::new("/w"), "m").unwrap();
-        session.append(&json!({"type": "directory_added", "path": "/a"})).unwrap();
-        session.append(&json!({"type": "directory_added", "path": "/b"})).unwrap();
-        let (_, history) = Session::resume(&dir, &session.id).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(history.extra_dirs, [PathBuf::from("/a"), PathBuf::from("/b")]);
     }
 
     #[test]

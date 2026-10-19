@@ -50,7 +50,8 @@ Flags:
   --auto                      Let a reviewer model approve tool calls
   --full-access, --yolo       Run every tool call without asking
   --ask                       Ask before commands, file edits, URL fetches, subagents, MCP and plugin tools
-  --parent <id>               Run as a subagent of that session: linked to it, no load_tools or ask_user_question
+  --parent <id>               Run as a subagent of that session: linked to it, no subagent, terminal, web or ask_user_question tools
+  --explore                   With --parent: only read and rg, no modes prompt
   --account <p>=<name>        Use that saved account first for provider p, like a pin in /account
   -h, --help                  Display this help and exit
   --version                   Print the agent version and exit
@@ -82,6 +83,7 @@ struct Options {
     json: bool,
     headless: bool,
     parent: Option<String>,
+    explore: bool,
     /// Provider and account name the parent uses, pinned for this run only.
     account: Option<(String, String)>,
     save: bool,
@@ -146,7 +148,7 @@ fn main() {
 }
 
 fn parse_args(args: Vec<String>) -> Result<Options, String> {
-    let mut options = Options { model: None, thinking: None, permission_mode: None, print: false, json: false, headless: false, parent: None, account: None, save: true, resume: None, prompt: None };
+    let mut options = Options { model: None, thinking: None, permission_mode: None, print: false, json: false, headless: false, parent: None, explore: false, account: None, save: true, resume: None, prompt: None };
     let mut words = Vec::new();
     let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
@@ -179,6 +181,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
             "--json" => options.json = true,
             "--headless" => options.headless = true,
             "--parent" => options.parent = Some(value("--parent")?),
+            "--explore" => options.explore = true,
             "--account" => {
                 let account = value("--account")?;
                 let (provider, name) = account.split_once('=').ok_or("--account needs provider=name.")?;
@@ -313,7 +316,7 @@ fn run(options: Options) -> Result<(), String> {
         client,
         system: prompt::system_prompt(&agent_dir, &cwd, &settings.disabled_skills),
         modes: modes::prompt(&home, &settings.ponytail, &settings.caveman),
-        // agent.load below fills it, with the swarm prompt for the session's loaded groups.
+        // agent.load below fills it, with the session's swarm prompt.
         tools: Value::Null,
         anchors: Anchors::new(&session.id),
         rtk: if settings.rtk { rtk::Rtk::ON } else { rtk::Rtk::OFF },
@@ -350,8 +353,6 @@ fn run(options: Options) -> Result<(), String> {
         subagents: Arc::default(),
         subagent_concurrency: settings.subagent_concurrency,
         subagent_effort: settings.subagent_effort.clone(),
-        loaded_groups: Vec::new(),
-        extra_dirs: Vec::new(),
         spent: Spent::default(),
         interactive: false,
         agent_dir: agent_dir.clone(),
@@ -407,9 +408,15 @@ fn run(options: Options) -> Result<(), String> {
             eprintln!("{notice}");
         }
         agent.announce_session();
-        // After settle_model, which resets the tools to the session's loaded groups. Only the root spawns, and a child has no UI to ask in.
+        // After settle_model, which resets the tools. Only the root spawns, runs terminals and searches the web, and a child has no UI to ask in.
         if options.parent.is_some() {
-            agent.tools = Value::Array(agent.tools.as_array().into_iter().flatten().filter(|tool| !matches!(tool["name"].as_str(), Some("load_tools" | "ask_user_question"))).cloned().collect());
+            const ROOT_ONLY: [&str; 11] = ["subagent", "bg_wait", "bg_start", "bg_status", "bg_list", "bg_kill", "web_search", "fetch_content", "get_search_content", "source_check", "ask_user_question"];
+            let keep = |name: &str| if options.explore { matches!(name, "read" | "rg") } else { !ROOT_ONLY.contains(&name) };
+            agent.tools = Value::Array(agent.tools.as_array().into_iter().flatten().filter(|tool| keep(tool["name"].as_str().unwrap_or_default())).cloned().collect());
+            // An explore child only reads and reports, so the ponytail and caveman style rules would be dead weight.
+            if options.explore {
+                agent.modes.clear();
+            }
         }
         let result =
             if options.headless { headless_mode(&mut agent, prompt.as_deref().unwrap_or_default()) } else { print_mode(&mut agent, &prompt.ok_or("Print mode needs a message.")?, options.json) };

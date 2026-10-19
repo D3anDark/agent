@@ -14,7 +14,7 @@ use crate::settings::LspServer;
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// Some servers publish syntax errors first and type errors right after, for the same version.
 const QUIET: Duration = Duration::from_millis(200);
-const MAX_LISTED: usize = 20;
+const MAX_LISTED: usize = 10;
 /// A tsc-rs server holds 60-130 MB; one unused this long stops and the next edit starts it again.
 const IDLE: Duration = Duration::from_secs(5 * 60);
 

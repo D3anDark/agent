@@ -103,7 +103,7 @@ pub fn request_for(tool: &str, input: &Value, edited_files: &[PathBuf]) -> Optio
             };
             Some(Request { kind: Kind::Command, question: "Would you like to run the following command?", grant: format!("bash:{command}"), detail: command })
         }
-        "write" | "undo_last_change" | "replace" | "replace_match" | "insert" | "copy" | "move" => {
+        "write" | "undo_last_change" | "replace" | "replace_match" | "insert" | "move" => {
             let files = edited_files.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", ");
             // Unresolved anchors get a grant for this exact call, so one "don't ask again" cannot cover every later bad anchor.
             let files = if files.is_empty() { format!("unresolved {input}") } else { files };

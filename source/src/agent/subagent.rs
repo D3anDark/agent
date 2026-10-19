@@ -103,6 +103,8 @@ pub struct Launch {
     pub thinking: String,
     pub mode: Mode,
     pub parent_session: String,
+    /// Only read and rg, no modes prompt.
+    pub explore: bool,
     /// `provider=name` of the account the parent uses for the child's model.
     pub account: Option<String>,
 }
@@ -128,6 +130,9 @@ impl Runs {
         let mut args = vec!["--headless", "--model", &launch.model, "--thinking", &launch.thinking, mode, "--parent", &launch.parent_session];
         if let Some(account) = &launch.account {
             args.extend(["--account", account]);
+        }
+        if launch.explore {
+            args.push("--explore");
         }
         let mut child = crate::process::command(exe)
             .args(args)
@@ -250,9 +255,10 @@ pub struct Task {
     pub prompt: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+    pub explore: bool,
 }
 
-/// The `subagent` input: `{label, prompt, model?, effort?}` or `{tasks: [...]}`.
+/// The `subagent` input: `{label, prompt, model?, effort?, explore?}` or `{tasks: [...]}`.
 pub fn tasks(input: &Value) -> Result<Vec<Task>, String> {
     let one = |item: &Value| -> Result<Task, String> {
         let label = item["label"].as_str().filter(|l| !l.trim().is_empty()).ok_or("Each task needs a label.")?;
@@ -263,7 +269,7 @@ pub fn tasks(input: &Value) -> Result<Vec<Task>, String> {
         if let Some(effort) = effort.as_deref().filter(|e| !crate::tui::THINKING_LEVELS.contains(e)) {
             return Err(format!("Unknown effort {effort}; use one of: {}.", crate::tui::THINKING_LEVELS.join(", ")));
         }
-        Ok(Task { label: label.to_string(), prompt: prompt.to_string(), model, effort })
+        Ok(Task { label: label.to_string(), prompt: prompt.to_string(), model, effort, explore: item["explore"].as_bool() == Some(true) })
     };
     match input["tasks"].as_array() {
         Some(list) if !list.is_empty() => list.iter().map(one).collect(),
@@ -294,8 +300,8 @@ pub(crate) mod tests {
 
     #[test]
     fn single_and_parallel_task_shapes() {
-        let one = tasks(&json!({"label": "scout", "prompt": "look", "model": "inherit", "effort": "low"})).unwrap();
-        assert_eq!(one, [Task { label: "scout".into(), prompt: "look".into(), model: None, effort: Some("low".into()) }]);
+        let one = tasks(&json!({"label": "scout", "prompt": "look", "model": "inherit", "effort": "low", "explore": true})).unwrap();
+        assert_eq!(one, [Task { label: "scout".into(), prompt: "look".into(), model: None, effort: Some("low".into()), explore: true }]);
         assert_eq!(tasks(&json!({"tasks": [{"label": "a", "prompt": "x"}, {"label": "b", "prompt": "y"}]})).unwrap().len(), 2);
         assert!(tasks(&json!({"label": "a", "prompt": "x", "effort": "huge"})).unwrap_err().starts_with("Unknown effort huge;"));
         assert_eq!(tasks(&json!({"tasks": [{"label": " ", "prompt": "x"}]})).unwrap_err(), "Each task needs a label.");
@@ -344,6 +350,7 @@ pub(crate) mod tests {
             thinking: "low".into(),
             mode: Mode::Auto,
             parent_session: "parent".into(),
+            explore: false,
             account: None,
         };
         let error = runs.spawn(launch, true, &Arc::default()).err().unwrap();
