@@ -54,8 +54,20 @@ pub fn read_text(path: &Path) -> Option<String> {
     Some(text.strip_prefix('\u{feff}').map(String::from).unwrap_or(text))
 }
 
+/// `.agents` in cwd and its parents up to the git root, nearest first.
+pub fn project_agents_dirs(cwd: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for dir in cwd.ancestors() {
+        dirs.push(dir.join(".agents"));
+        if dir.join(".git").exists() {
+            break;
+        }
+    }
+    dirs
+}
+
 fn override_file(agent_dir: &Path, cwd: &Path, name: &str) -> Option<String> {
-    [cwd.join(".agents"), agent_dir.to_path_buf()].iter().find_map(|dir| read_text(&dir.join(name)))
+    project_agents_dirs(cwd).iter().chain([&agent_dir.to_path_buf()]).find_map(|dir| read_text(&dir.join(name)))
 }
 
 fn context_file(dir: &Path) -> Option<(PathBuf, String)> {
@@ -114,12 +126,7 @@ pub struct Skill {
 /// Skills from `~/.agents/skills` and `.agents/skills` in cwd and its parents up to the git root.
 pub fn load_skills(agent_dir: &Path, cwd: &Path, disabled: &[String]) -> Vec<Skill> {
     let mut dirs = vec![agent_dir.join("skills")];
-    for dir in cwd.ancestors() {
-        dirs.push(dir.join(".agents/skills"));
-        if dir.join(".git").exists() {
-            break;
-        }
-    }
+    dirs.extend(project_agents_dirs(cwd).iter().map(|dir| dir.join("skills")));
     let mut files = Vec::new();
     for dir in &dirs {
         collect_skill_files(dir, true, &mut files);
@@ -190,10 +197,11 @@ pub struct Template {
     pub path: PathBuf,
 }
 
-/// `*.md` in `~/.agents/prompts`, then in the project's `.agents/prompts`, which replace global ones by name.
+/// `*.md` in `~/.agents/prompts`, then in the project's `.agents/prompts` up to the git root; nearer ones replace by name.
 pub fn load_templates(agent_dir: &Path, cwd: &Path) -> Vec<Template> {
     let mut templates: Vec<Template> = Vec::new();
-    for dir in [agent_dir.join("prompts"), cwd.join(".agents/prompts")] {
+    let project = project_agents_dirs(cwd).into_iter().rev().map(|dir| dir.join("prompts"));
+    for dir in std::iter::once(agent_dir.join("prompts")).chain(project) {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|ext| ext == "md")).collect();
         paths.sort();
@@ -423,6 +431,25 @@ mod tests {
         let expanded: Vec<(String, String, String)> = templates.iter().map(|t| (t.name.clone(), t.description.clone(), expand_template(t, "HEAD~2").unwrap())).collect();
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(expanded, [("commit".into(), "Commit".into(), "Commit. Context: HEAD~2".into()), ("review".into(), String::new(), "Review HEAD~2".into())]);
+    }
+
+    #[test]
+    fn project_agents_dir_is_found_from_a_subdirectory_up_to_the_git_root() {
+        let root = std::env::temp_dir().join(format!("agent-project-dir-{}", std::process::id()));
+        std::fs::create_dir_all(root.join(".agents")).unwrap();
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        std::fs::create_dir_all(root.join("repo/.git")).unwrap();
+        std::fs::create_dir_all(root.join("repo/.agents/prompts")).unwrap();
+        std::fs::create_dir_all(root.join("repo/src")).unwrap();
+        std::fs::write(root.join(".agents/APPEND_SYSTEM.md"), "outside the repo").unwrap();
+        std::fs::write(root.join("repo/.agents/SYSTEM.md"), "repo system").unwrap();
+        std::fs::write(root.join("repo/.agents/prompts/review.md"), "Review").unwrap();
+        let cwd = root.join("repo/src");
+        let templates: Vec<String> = load_templates(&root.join("home"), &cwd).into_iter().map(|t| t.name).collect();
+        let system = system_prompt(&root.join("home"), &cwd, &[]);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(templates, ["review"]);
+        assert!(system.starts_with("repo system") && !system.contains("outside the repo"), "{system}");
     }
 
     #[test]

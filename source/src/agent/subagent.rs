@@ -17,10 +17,11 @@ const CHILD_BRIEF: &str = "You are a subagent. Another agent spawned you for the
 Nobody answers questions here: finish the task on your own, making the reasonable call where it is unclear. \
 End with a short report: what you found or changed with `path:line` references, how you checked it, and what you did not do and why.";
 
-/// jcode's swarm prompt lookup: `.agents/swarm-prompt.md`, then `~/.agents/swarm-prompt.md`, then the built-in.
+/// jcode's swarm prompt lookup: `.agents/swarm-prompt.md` up to the git root, then `~/.agents/swarm-prompt.md`, then the built-in.
 pub fn swarm_prompt(agent_dir: &Path, cwd: &Path, implementation_effort: &str) -> String {
-    [cwd.join(".agents"), agent_dir.to_path_buf()]
+    prompt::project_agents_dirs(cwd)
         .iter()
+        .chain([&agent_dir.to_path_buf()])
         .filter_map(|dir| prompt::read_text(&dir.join("swarm-prompt.md")))
         .map(|text| without_leading_comment(&text).to_string())
         .find(|text| !text.is_empty())
