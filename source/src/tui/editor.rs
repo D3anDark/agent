@@ -16,6 +16,14 @@ pub struct Editor {
     undo: Vec<(Vec<String>, usize, usize)>,
     /// Cursor after the last typed character, so a run of typing undoes as one word.
     typing_at: Option<(usize, usize)>,
+    /// Long pastes; `[Pasted text #n ...]` in the text refers to `pastes[n - 1]`.
+    pastes: Vec<String>,
+}
+
+const PASTE_LINES: usize = 3;
+
+fn paste_tag(number: usize, paste: &str) -> String {
+    format!("[Pasted text #{number} +{} lines]", paste.lines().count())
 }
 
 /// Where a cursor position `(line, col)` lands on screen.
@@ -62,9 +70,12 @@ impl Editor {
         self.col = self.lines[self.row].chars().count();
     }
 
-    /// Returns the text and clears the editor; non-empty text goes to history.
+    /// Returns the text with pastes expanded and clears the editor; non-empty text goes to history.
     pub fn take(&mut self) -> String {
-        let text = self.text();
+        let mut text = self.text();
+        for (index, paste) in std::mem::take(&mut self.pastes).iter().enumerate() {
+            text = text.replace(&paste_tag(index + 1, paste), paste);
+        }
         if !text.trim().is_empty() && self.history.last() != Some(&text) {
             self.history.push(text.clone());
         }
@@ -72,6 +83,18 @@ impl Editor {
         self.set("");
         self.undo.clear();
         text
+    }
+
+    /// Inserts a paste longer than `PASTE_LINES` lines as a `[Pasted text #n +N lines]` tag that `take` expands.
+    pub fn paste(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        if text.lines().count() <= PASTE_LINES {
+            self.insert(&text);
+            return;
+        }
+        self.pastes.push(text);
+        let tag = paste_tag(self.pastes.len(), self.pastes.last().unwrap());
+        self.insert(&tag);
     }
 
     pub fn insert(&mut self, text: &str) {
@@ -201,6 +224,14 @@ impl Editor {
             self.history_pos = None;
             self.set("");
         }
+    }
+
+    /// Moves the cursor `rows` screen rows down (up when negative), stopping at the first or last row; never walks history.
+    pub fn scroll(&mut self, width: usize, rows: isize) {
+        let (wrapped, spots) = self.wrap(width);
+        let here = self.cursor_spot(&spots);
+        let row = here.row.saturating_add_signed(rows).min(wrapped.len() - 1);
+        self.move_to_row(&spots, row, here.x);
     }
 
     pub fn home(&mut self) {
@@ -500,5 +531,27 @@ mod tests {
         editor.down(6);
         assert_eq!(editor.render(6).1, (4, 1));
         assert_eq!(editor.text(), "abcdef");
+    }
+
+    #[test]
+    fn a_long_paste_shows_as_a_tag_that_take_expands() {
+        let mut editor = Editor::new();
+        editor.paste("a\nb\nc");
+        editor.paste("1\r\n2\r\n3\r\n4");
+        assert_eq!(editor.text(), "a\nb\nc[Pasted text #1 +4 lines]");
+        assert_eq!(editor.take(), "a\nb\nc1\n2\n3\n4");
+    }
+
+    #[test]
+    fn scroll_moves_the_cursor_by_rows_without_walking_history() {
+        let mut editor = Editor::new();
+        editor.insert("old");
+        editor.take();
+        editor.insert("1\n2\n3");
+        editor.scroll(80, -5);
+        assert_eq!(editor.render(80).1, (3, 0));
+        editor.scroll(80, -1);
+        editor.scroll(80, 1);
+        assert_eq!((editor.text(), editor.render(80).1), ("1\n2\n3".into(), (3, 1)));
     }
 }

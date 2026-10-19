@@ -367,6 +367,7 @@ const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
 ];
 const MENU_ROWS: [usize; 5] = [4, 6, 8, 10, 12];
 const PANEL_ROWS: usize = 8;
+const EDITOR_ROWS: usize = 10;
 const SCROLL_LINES: [usize; 5] = [1, 2, 3, 5, 10];
 const SETTING_NAMES: [&str; 27] = [
     "Model",
@@ -539,8 +540,10 @@ struct App {
     input_selection: Selection,
     /// The last left press landed on the editor, so drags and the release belong to `input_selection`.
     selecting_input: bool,
-    /// Screen row of the first editor row and the editor's row count in the last frame.
-    input_view: (usize, usize),
+    /// Screen row of the first shown editor row, the shown row count, and the editor rows hidden below them, in the last frame.
+    input_view: (usize, usize, usize),
+    /// First editor row shown when the editor is taller than `EDITOR_ROWS`.
+    input_top: usize,
     todos: Arc<Mutex<Todos>>,
     goal: Arc<Mutex<Option<Goal>>>,
     follow_ups: Arc<Mutex<Vec<FollowUp>>>,
@@ -938,7 +941,8 @@ impl App {
             editor_width: 0,
             input_selection: Selection::default(),
             selecting_input: false,
-            input_view: (0, 0),
+            input_view: (0, 0, 0),
+            input_top: 0,
             todos: agent.todos.clone(),
             goal: agent.goal.clone(),
             follow_ups: agent.follow_ups.clone(),
@@ -997,10 +1001,16 @@ impl App {
         self.edge_drag = None;
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             self.input_selection = Selection::default();
-            let (top, rows) = self.input_view;
+            let (top, rows, _) = self.input_view;
             self.selecting_input = (top..top + rows).contains(&row);
         }
         let wheel = matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown);
+        let (top, rows, _) = self.input_view;
+        if wheel && (top..top + rows).contains(&row) {
+            let step = self.settings.scroll_lines as isize;
+            self.editor.scroll(self.editor_width, if mouse.kind == MouseEventKind::ScrollUp { -step } else { step });
+            return;
+        }
         if self.selecting_input && !wheel {
             self.input_mouse(mouse.kind, row, mouse.column);
             return;
@@ -1048,9 +1058,9 @@ impl App {
 
     /// Same selection as the transcript, over the editor rows; a drag outside them clamps to the edge row.
     fn input_mouse(&mut self, kind: MouseEventKind, row: usize, column: u16) {
-        let (top, rows) = self.input_view;
+        let (top, rows, below) = self.input_view;
         let row = row.clamp(top, top + rows - 1) - top;
-        let point = Point { line: rows - 1 - row, column: column as usize };
+        let point = Point { line: below + rows - 1 - row, column: column as usize };
         let text = text_in(&self.input_line(point.line), 0, usize::MAX);
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -1282,7 +1292,7 @@ impl App {
             Some(_) => {}
             None => match image::pasted_path(text) {
                 Some(path) => self.attach(image::block(&path)),
-                None => self.editor.insert(text),
+                None => self.editor.paste(text),
             },
         }
     }
@@ -3266,14 +3276,18 @@ impl App {
         }
         let (mut editor_rows, (cursor_x, cursor_row)) = self.editor.render(width);
         let editor_top = bottom.len();
-        let editor_height = editor_rows.len();
+        let shown = editor_rows.len().min(EDITOR_ROWS);
+        self.input_top = self.input_top.clamp((cursor_row + 1).saturating_sub(shown), cursor_row).min(editor_rows.len() - shown);
+        let below = editor_rows.len() - self.input_top - shown;
+        editor_rows.truncate(self.input_top + shown);
+        editor_rows.drain(..self.input_top);
         for (row, line) in editor_rows.iter_mut().enumerate() {
-            if let Some((from, to)) = self.input_selection.columns(editor_height - 1 - row) {
+            if let Some((from, to)) = self.input_selection.columns(below + shown - 1 - row) {
                 *line = select(line, from, to);
             }
         }
         bottom.extend(editor_rows);
-        let cursor = panel_cursor.unwrap_or((cursor_x, editor_top + cursor_row));
+        let cursor = panel_cursor.unwrap_or((cursor_x, editor_top + cursor_row - self.input_top));
         bottom.push(Vec::new());
         bottom.extend(self.footer(width));
 
@@ -3325,7 +3339,7 @@ impl App {
             rows[row].push(span(format!("{}{glyph}", " ".repeat(pad)), MUTED));
         }
         rows.resize(room, Vec::new());
-        self.input_view = (rows.len() + editor_top, editor_height);
+        self.input_view = (rows.len() + editor_top, shown, below);
         let cursor_y = rows.len() + cursor.1;
         rows.extend(bottom);
         rows.truncate(height);
