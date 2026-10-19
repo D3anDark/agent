@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::process;
+
 const RELEASES: &str = "https://github.com/rokartur/agent/releases";
 const RELEASES_API: &str = "https://api.github.com/repos/rokartur/agent/releases?per_page=20";
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
@@ -16,27 +18,31 @@ pub fn enabled() -> bool {
 
 /// Replaces the running binary with the newest release on `channel`. Returns the installed version.
 pub fn install_latest(channel: &str) -> Result<Option<String>, String> {
-    // Offline start is normal: no network means no update, not an error.
-    let Some(latest) = latest_version(channel == "pre-release") else { return Ok(None) };
+    let Some(latest) = latest_version(channel == "pre-release")? else { return Ok(None) };
     if !is_newer(&latest, CURRENT) {
         return Ok(None);
     }
     let exe = std::env::current_exe().map_err(|e| format!("Cannot find the agent binary: {e}"))?;
     let staged = exe.with_file_name(format!(".agent-update-{}", std::process::id()));
-    let result = download(&latest, &staged).and_then(|()| verify(&staged, &latest));
+    let result = download(&latest, &staged).and_then(|()| verify(&staged, &latest)).and_then(|()| std::fs::rename(&staged, &exe).map_err(|e| format!("Cannot replace {}: {e}", exe.display())));
     if let Err(error) = result {
         let _ = std::fs::remove_file(&staged);
         return Err(error);
     }
-    std::fs::rename(&staged, &exe).map_err(|e| format!("Cannot replace {}: {e}", exe.display()))?;
     Ok(Some(latest))
 }
 
-fn latest_version(include_prereleases: bool) -> Option<String> {
+/// Offline start is normal, so a network failure means no update; an HTTP error such as a 403 rate limit is reported.
+fn latest_version(include_prereleases: bool) -> Result<Option<String>, String> {
     let http: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(10))).build().into();
-    let body = http.get(RELEASES_API).call().ok()?.body_mut().read_to_string().ok()?;
-    let releases: Value = serde_json::from_str(&body).ok()?;
-    newest(&releases, include_prereleases).map(str::to_owned)
+    let mut response = match http.get(RELEASES_API).call() {
+        Ok(response) => response,
+        Err(ureq::Error::StatusCode(status)) => return Err(format!("Cannot check for updates: GitHub answered {status}.")),
+        Err(_) => return Ok(None),
+    };
+    let Ok(body) = response.body_mut().read_to_string() else { return Ok(None) };
+    let Ok(releases) = serde_json::from_str::<Value>(&body) else { return Ok(None) };
+    Ok(newest(&releases, include_prereleases).map(str::to_owned))
 }
 
 /// Unauthenticated API calls never list drafts.
@@ -53,15 +59,17 @@ fn download(version: &str, path: &Path) -> Result<(), String> {
     let asset = format!("agent-{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let url = format!("{RELEASES}/download/v{version}/{asset}");
     let http: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(300))).build().into();
+    // Created first, so an unwritable binary directory fails before a transfer of up to 100 MiB.
+    let mut file = std::fs::File::create(path).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
     let bytes = http.get(&url).call().and_then(|mut response| response.body_mut().with_config().limit(100 << 20).read_to_vec()).map_err(|e| format!("Cannot download {url}: {e}"))?;
-    std::fs::write(path, bytes).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+    std::io::Write::write_all(&mut file, &bytes).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("Cannot make {} executable: {e}", path.display()))
 }
 
 /// A truncated or wrong download must never replace a working binary.
 fn verify(path: &Path, version: &str) -> Result<(), String> {
-    let output = crate::process::output_within(crate::process::command(path).arg("--version"), std::time::Duration::from_secs(10))
+    let output = process::output_within(process::command(path).arg("--version"), Duration::from_secs(10))
         .map_err(|e| format!("Cannot run the downloaded agent: {e}"))?
         .ok_or("The downloaded agent did not answer --version within 10 s.")?;
     let reported = String::from_utf8_lossy(&output.stdout);
@@ -71,7 +79,7 @@ fn verify(path: &Path, version: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn is_newer(latest: &str, current: &str) -> bool {
+pub fn is_newer(latest: &str, current: &str) -> bool {
     match (precedence(latest), precedence(current)) {
         (Some(latest), Some(current)) => latest > current,
         _ => false,
@@ -86,6 +94,8 @@ enum Identifier {
 
 /// Semver order: 0.3.0-beta.2 < 0.3.0-beta.10 < 0.3.0-rc.1 < 0.3.0.
 fn precedence(version: &str) -> Option<(Vec<u64>, bool, Vec<Identifier>)> {
+    // Build metadata (`+1`) does not take part in semver precedence.
+    let version = version.split_once('+').map_or(version, |(version, _)| version);
     let (core, pre) = match version.split_once('-') {
         Some((core, pre)) => (core, Some(pre)),
         None => (version, None),
@@ -113,6 +123,7 @@ mod tests {
         assert!(is_newer("0.3.0-beta.1", "0.2.0"));
         assert!(is_newer("0.3.0-beta.10", "0.3.0-beta.2"));
         assert!(is_newer("0.3.0-rc.1", "0.3.0-beta.10"));
+        assert!(is_newer("0.3.1+7", "0.3.0+9") && !is_newer("0.3.0+9", "0.3.0"));
         assert!(is_newer("0.3.0", "0.3.0-rc.1"));
         assert!(!is_newer("0.3.0-rc.1", "0.3.0"));
     }

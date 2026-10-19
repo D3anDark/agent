@@ -43,7 +43,7 @@ Flags:
   --thinking <level>          off, minimal, low, medium, high, xhigh, max
   -p, --print                 Run the message, print the answer and exit
   --json                      Like --print, then print one JSON summary
-  --headless                  Run the message, print JSONL events (tool, session, done, error)
+  --headless                  Run the message, print JSONL events (tool, session, usage, done, error)
   -c, --continue              Continue the latest session in this directory
   -r, --resume [id]           Open a session by id or id prefix, or pick one from the list
   --no-session                Do not save the session
@@ -75,6 +75,7 @@ Learn more about agent:  https://agent.rokartur.com
 Report a problem:        https://github.com/rokartur/agent/issues"#
 );
 
+#[derive(Default)]
 struct Options {
     model: Option<String>,
     thinking: Option<String>,
@@ -98,8 +99,12 @@ enum Resume {
     Pick,
 }
 
+fn home() -> Result<PathBuf, String> {
+    std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| "HOME is not set.".into())
+}
+
 fn plugin_command(args: &[String]) -> Result<(), String> {
-    let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set.")?);
+    let home = home()?;
     match args {
         [action, source] if action == "install" => println!("Installed {}.", plugins::install(&home, source)?),
         [action, name] if action == "remove" => {
@@ -148,17 +153,21 @@ fn main() {
 }
 
 fn parse_args(args: Vec<String>) -> Result<Options, String> {
-    let mut options = Options { model: None, thinking: None, permission_mode: None, print: false, json: false, headless: false, parent: None, explore: false, account: None, save: true, resume: None, prompt: None };
+    let mut options = Options { save: true, ..Options::default() };
     let mut words = Vec::new();
     let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
-        let mut value = |name: &str| args.next().ok_or(format!("{name} needs a value."));
+        // `--model --print hi` must not set the model to `--print`.
+        let mut value = |name: &str| args.next().filter(|value| !value.starts_with("--")).ok_or(format!("{name} needs a value."));
+        if matches!(arg.as_str(), "--resume" | "-c" | "--continue") && options.resume.is_some() {
+            return Err("Pass one of -c and --resume.".into());
+        }
         match arg.as_str() {
             "--model" => options.model = Some(value("--model")?),
             "--thinking" => {
                 let level = value("--thinking")?;
-                if !tui::THINKING_LEVELS.contains(&level.as_str()) {
-                    return Err(format!("--thinking takes one of: {}.", tui::THINKING_LEVELS.join(", ")));
+                if !settings::THINKING_LEVELS.contains(&level.as_str()) {
+                    return Err(format!("--thinking takes one of: {}.", settings::THINKING_LEVELS.join(", ")));
                 }
                 options.thinking = Some(level);
             }
@@ -210,6 +219,12 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
     }
     if !words.is_empty() {
         options.prompt = Some(words.join(" "));
+    }
+    if !options.save && options.resume.is_some() {
+        return Err("--no-session cannot be combined with --resume or -c.".into());
+    }
+    if options.headless && options.print {
+        return Err("--headless cannot be combined with --print.".into());
     }
     let picks_session = matches!(options.resume, Some(Resume::Pick));
     if picks_session && (options.print || options.json || options.headless || options.parent.is_some()) {
@@ -264,7 +279,7 @@ fn run(options: Options) -> Result<(), String> {
     if matches!(options.resume, Some(Resume::Pick)) && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         return Err("--resume without an id opens the session list, so it needs a terminal.".into());
     }
-    let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set.")?);
+    let home = home()?;
     let agent_dir = home.join(".agents");
     // The flags below apply to this run only; /settings saves only the keys it changes.
     let mut settings = settings::load(&home)?;
@@ -349,7 +364,7 @@ fn run(options: Options) -> Result<(), String> {
         goal: Arc::default(),
         follow_ups: Arc::default(),
         terminals: Arc::default(),
-        web: tools::web::Web::new(&home, std::env::temp_dir().join(format!("agent-web-{}", std::process::id()))),
+        web: tools::web::Web::new(&home, tools::web::store_dir()),
         subagents: Arc::default(),
         subagent_concurrency: settings.subagent_concurrency,
         subagent_effort: settings.subagent_effort.clone(),
@@ -373,6 +388,10 @@ fn run(options: Options) -> Result<(), String> {
     let mut prompt = options.prompt;
     if !std::io::stdin().is_terminal() {
         let mut piped = String::new();
+        // An inherited pipe that never closes (IDE task, ssh) would otherwise hang here silently.
+        if std::io::stderr().is_terminal() {
+            eprintln!("Reading the message from stdin...");
+        }
         std::io::stdin().read_to_string(&mut piped).map_err(|e| format!("Cannot read stdin: {e}"))?;
         if !piped.trim().is_empty() {
             prompt = Some(match prompt {
@@ -410,16 +429,22 @@ fn run(options: Options) -> Result<(), String> {
         agent.announce_session();
         // After settle_model, which resets the tools. Only the root spawns, runs terminals and searches the web, and a child has no UI to ask in.
         if options.parent.is_some() {
-            const ROOT_ONLY: [&str; 11] = ["subagent", "bg_wait", "bg_start", "bg_status", "bg_list", "bg_kill", "web_search", "fetch_content", "get_search_content", "source_check", "ask_user_question"];
+            const ROOT_ONLY: [&str; 11] =
+                ["subagent", "bg_wait", "bg_start", "bg_status", "bg_list", "bg_kill", "web_search", "fetch_content", "get_search_content", "source_check", "ask_user_question"];
             let keep = |name: &str| if options.explore { matches!(name, "read" | "rg") } else { !ROOT_ONLY.contains(&name) };
-            agent.tools = Value::Array(agent.tools.as_array().into_iter().flatten().filter(|tool| keep(tool["name"].as_str().unwrap_or_default())).cloned().collect());
+            if let Some(tools) = agent.tools.as_array_mut() {
+                tools.retain(|tool| keep(tool["name"].as_str().unwrap_or_default()));
+            }
             // An explore child only reads and reports, so the ponytail and caveman style rules would be dead weight.
             if options.explore {
                 agent.modes.clear();
             }
         }
-        let result =
-            if options.headless { headless_mode(&mut agent, prompt.as_deref().unwrap_or_default()) } else { print_mode(&mut agent, &prompt.ok_or("Print mode needs a message.")?, options.json) };
+        let result = if options.headless {
+            headless_mode(&mut agent, prompt.as_deref().unwrap_or_default())
+        } else {
+            print_mode(&mut agent, &prompt.ok_or("A message is needed with --print, --json or a piped stdout.")?, options.json)
+        };
         agent.terminals.lock().unwrap().kill_all();
         agent.subagents.lock().unwrap().stop_all();
         tools::remove_spills();
@@ -436,6 +461,7 @@ fn run(options: Options) -> Result<(), String> {
 /// The panic hook's terminal restore does not run when a signal ends the process, so a `kill` would leave the shell in raw mode.
 fn clean_up_on_signal() {
     tools::remove_spills();
+    let _ = std::fs::remove_dir_all(tools::web::store_dir());
     if std::io::stdout().is_terminal() {
         tui::leave(&mut std::io::stdout());
     }
@@ -448,7 +474,7 @@ fn print_mode(agent: &mut Agent, prompt: &str, json: bool) -> Result<(), String>
             print!("{}", terminal_safe(&text));
             let _ = std::io::stdout().flush();
         }
-        Event::ToolStart { name, input, .. } if !json => eprintln!("· {name} {}", preview(&input)),
+        Event::ToolStart { name, input, .. } if !json => eprintln!("· {} {}", terminal_safe(&name), terminal_safe(&preview(&input))),
         Event::Notice(text) => eprintln!("{}", terminal_safe(&text)),
         Event::SubagentDone(run) => eprintln!("{}", terminal_safe(&run.summary())),
         Event::Permission { request, reply } => {
@@ -458,11 +484,15 @@ fn print_mode(agent: &mut Agent, prompt: &str, json: bool) -> Result<(), String>
         Event::Reviewed { allowed, detail, reason } => eprintln!("auto: {} {}: {}", if allowed { "allowed" } else { "denied" }, terminal_safe(&detail), terminal_safe(&reason)),
         Event::TurnEnd { .. } if !json => println!(),
         _ => {}
-    })?;
+    });
     if json {
-        println!("{}", agent.summary(&answer));
+        // A script reading stdout gets a JSON line on failure too, not an empty string.
+        match &answer {
+            Ok(answer) => println!("{}", agent.summary(answer)),
+            Err(message) => println!("{}", serde_json::json!({"error": message})),
+        }
     }
-    Ok(())
+    answer.map(|_| ())
 }
 
 /// Child-process mode: one JSON object per line on stdout, which the parent's subagent tool reads.
@@ -472,8 +502,9 @@ fn headless_mode(agent: &mut Agent, prompt: &str) -> Result<(), String> {
         let _ = std::io::stdout().flush();
     };
     if prompt.trim().is_empty() {
-        line(serde_json::json!({"type": "error", "message": "Headless mode needs a message."}));
-        return Err("Headless mode needs a message.".into());
+        let message = "Headless mode needs a message.";
+        line(serde_json::json!({"type": "error", "message": message}));
+        return Err(message.into());
     }
     if let Some(path) = &agent.session.path {
         line(serde_json::json!({"type": "session", "path": path}));
@@ -484,11 +515,11 @@ fn headless_mode(agent: &mut Agent, prompt: &str) -> Result<(), String> {
         _ => {}
     });
     line(usage::entry(&agent.model, agent.usage, process::now_ms()));
-    match result {
+    match &result {
         Ok(answer) => line(serde_json::json!({"type": "done", "answer": answer})),
         Err(message) => line(serde_json::json!({"type": "error", "message": message})),
     }
-    Ok(())
+    result.map(|_| ())
 }
 
 fn preview(input: &Value) -> String {
@@ -517,6 +548,20 @@ mod tests {
     fn thinking_flag_takes_only_known_levels() {
         assert_eq!(super::parse_args(vec!["--thinking".into(), "low".into()]).unwrap().thinking.as_deref(), Some("low"));
         assert!(super::parse_args(vec!["--thinking".into(), "huge".into()]).is_err());
+    }
+
+    #[test]
+    fn no_session_refuses_to_reopen_a_saved_session() {
+        assert!(super::parse_args(vec!["--no-session".into(), "-c".into()]).is_err());
+        assert!(super::parse_args(vec!["--resume".into(), "abc".into(), "--no-session".into()]).is_err());
+        assert!(super::parse_args(vec!["--no-session".into()]).is_ok());
+    }
+
+    #[test]
+    fn conflicting_or_missing_flag_values_are_refused() {
+        assert!(super::parse_args(vec!["-c".into(), "--resume".into(), "abc".into()]).is_err());
+        assert!(super::parse_args(vec!["--model".into(), "--print".into(), "hi".into()]).is_err());
+        assert!(super::parse_args(vec!["--headless".into(), "--print".into(), "hi".into()]).is_err());
     }
 
     #[test]
