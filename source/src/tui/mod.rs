@@ -589,6 +589,9 @@ pub fn run(agent: Agent, setup: Setup, model_lists: JoinHandle<Vec<String>>) -> 
         spawn_update(app.settings.update_channel.clone(), events.clone());
     }
     spawn_on_start(app.settings.on_start.clone(), events.clone());
+    if app.settings.headroom && crate::process::installed("headroom") {
+        spawn_headroom_sync(app.home.clone(), app.settings.headroom_env.clone(), events.clone());
+    }
     spawn_input(events);
     let mut out = std::io::stdout();
     enter(&mut out).map_err(|e| format!("Cannot set up the terminal: {e}"))?;
@@ -821,6 +824,15 @@ fn spawn_on_start(commands: Vec<String>, events: Sender<Msg>) {
             let _ = events.send(Msg::Agent(Event::Notice(format!("on_start \"{command}\" failed: {failure}"))));
         });
     }
+}
+
+/// `install apply` restarts the proxy, so a reinstall at start can fail the first request or two.
+fn spawn_headroom_sync(home: PathBuf, env: std::collections::BTreeMap<String, String>, events: Sender<Msg>) {
+    std::thread::spawn(move || {
+        if let Err(error) = crate::headroom::sync(&home, &env) {
+            let _ = events.send(Msg::Agent(Event::Notice(format!("headroom sync failed: {}", tail(&error)))));
+        }
+    });
 }
 
 fn tail(text: &str) -> String {

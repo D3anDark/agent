@@ -24,7 +24,7 @@ const USAGE_TTL: Duration = Duration::from_secs(60);
 /// How long an account that answered 429 is skipped.
 const LIMITED_FOR: Duration = Duration::from_secs(60);
 /// `headroom proxy`'s default address; it serves both /v1/messages and /backend-api/codex/responses.
-const HEADROOM_URL: &str = "http://127.0.0.1:8787";
+pub const HEADROOM_URL: &str = "http://127.0.0.1:8787";
 
 /// Talks to Anthropic, Codex and OpenRouter. Clones share the accounts, the usage cache and the current pick.
 #[derive(Clone)]

@@ -1,5 +1,6 @@
 mod agent;
 mod api;
+mod headroom;
 mod image;
 mod mcp;
 mod plugins;
