@@ -76,7 +76,7 @@ The agent asks plugins in name order. Each plugin gets the text that the plugins
 
 `command` is a request with `params.name`, `params.args` and `params.context`. The agent sends it when the user types `/name args`. Answer with `{ "text": "Shown to the user." }`, or send an error with a `message`. The agent waits 5 seconds. Commands do not go to the model, also during a turn.
 
-`tool` is a request with `params.name` (without the plugin prefix), `params.input` and `params.context`. The agent sends it when the model calls one of the plugin's tools. Answer with `{ "text": "Shown to the model.", "isError": false }`, or send an error with a `message`. There is no time limit. If the user presses Esc, the agent stops waiting and the model gets `Operation aborted`.
+`tool` is a request with `params.name` (without the plugin prefix), `params.input` and `params.context`. The agent sends it when the model calls one of the plugin's tools. Answer with `{ "text": "Shown to the model.", "isError": false }`, or send an error with a `message`. There is no time limit. If the user presses Esc, the agent stops waiting and the model gets `Operation aborted`. The plugin gets no message about this. The agent ignores an answer that comes later, so a plugin that does long work must stop it by itself.
 
 ## Messages to the agent
 

@@ -22,10 +22,19 @@ pub fn swarm_prompt(agent_dir: &Path, cwd: &Path, implementation_effort: &str) -
     [cwd.join(".agents"), agent_dir.to_path_buf()]
         .iter()
         .filter_map(|dir| prompt::read_text(&dir.join("swarm-prompt.md")))
-        .map(|text| text.trim().to_string())
+        .map(|text| without_leading_comment(&text).to_string())
         .find(|text| !text.is_empty())
-        .unwrap_or_else(|| DEFAULT_SWARM_PROMPT.trim().to_string())
+        .unwrap_or_else(|| without_leading_comment(DEFAULT_SWARM_PROMPT).to_string())
         .replace("{implementation_effort}", implementation_effort)
+}
+
+/// The `<!-- ... -->` note on top of a swarm prompt is for whoever edits the file, not for the model.
+fn without_leading_comment(text: &str) -> &str {
+    let text = text.trim();
+    match text.strip_prefix("<!--").and_then(|rest| rest.split_once("-->")) {
+        Some((_, after)) => after.trim(),
+        None => text,
+    }
 }
 
 /// One child process, shared with /subagents.
@@ -69,9 +78,13 @@ impl Run {
     }
 
     pub fn stop(&self) {
+        // SIGTERM, not SIGKILL: the child's handler then ends its own bash commands, terminals and servers.
+        self.signal(crate::process::SIGTERM);
+    }
+
+    fn signal(&self, signal: i32) {
         if let Some(child) = self.child.lock().unwrap().as_mut() {
-            // SIGTERM, not SIGKILL: the child's handler then ends its own bash commands, terminals and servers.
-            crate::process::signal_group(child.id(), crate::process::SIGTERM);
+            crate::process::signal_group(child.id(), signal);
         }
     }
 
@@ -117,7 +130,7 @@ pub struct Runs {
 impl Runs {
     /// Starts the child and a thread reading its JSONL; a background run queues its answer as a follow-up.
     pub fn spawn(&mut self, launch: Launch, background: bool, follow_ups: &Arc<Mutex<Vec<FollowUp>>>) -> Result<Arc<Run>, String> {
-        let running = self.list.iter().filter(|run| run.state.lock().unwrap().result.is_none()).count();
+        let running = self.running();
         if running >= MAX_RUNNING {
             return Err(format!("{MAX_RUNNING} subagents are already running, the limit. Wait for one to finish."));
         }
@@ -165,7 +178,9 @@ impl Runs {
         let (watched, follow_ups) = (run.clone(), follow_ups.clone());
         std::thread::spawn(move || {
             let result = read_events(BufReader::new(stdout), &watched);
-            if let Some(mut child) = watched.child.lock().unwrap().take() {
+            // Taken out first: holding the lock through `wait` would block `Run::stop` until the child exits.
+            let child = watched.child.lock().unwrap().take();
+            if let Some(mut child) = child {
                 let _ = child.wait();
             }
             finish(&watched, result, &follow_ups);
@@ -175,7 +190,9 @@ impl Runs {
 
     /// Children belong to the session, so quitting stops them.
     pub fn stop_all(&self) {
-        self.list.iter().for_each(|run| run.stop());
+        for run in &self.list {
+            run.stop();
+        }
     }
 
     pub fn running(&self) -> usize {
@@ -191,8 +208,9 @@ impl Runs {
 /// Follows the child's JSONL into `run` until stdout closes; returns its answer or error.
 fn read_events(stdout: impl BufRead, run: &Run) -> Result<String, String> {
     let mut result = Err("The subagent exited without an answer.".to_string());
-    for line in stdout.lines().map_while(Result::ok) {
-        let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
+    // Raw lines: a non-UTF-8 line would end `lines()` and leave the child blocked on a full pipe.
+    for line in stdout.split(b'\n').map_while(Result::ok) {
+        let Ok(event) = serde_json::from_slice::<Value>(&line) else { continue };
         let mut state = run.state.lock().unwrap();
         match event["type"].as_str() {
             Some("tool") => {
@@ -209,11 +227,16 @@ fn read_events(stdout: impl BufRead, run: &Run) -> Result<String, String> {
     result
 }
 
-/// Waits for foreground runs; setting `abort` (Esc) kills them.
+/// Waits for foreground runs; setting `abort` (Esc) stops them, and kills the ones still running 2 s later.
 pub fn wait(runs: &[Arc<Run>], abort: &AtomicBool) {
+    let mut aborted_at = None;
     while runs.iter().any(|r| r.is_running()) {
         if abort.load(Ordering::Relaxed) {
-            runs.iter().for_each(|r| r.stop());
+            let since = *aborted_at.get_or_insert_with(Instant::now);
+            let signal = if since.elapsed() < Duration::from_secs(2) { crate::process::SIGTERM } else { crate::process::SIGKILL };
+            for run in runs {
+                run.signal(signal);
+            }
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -223,10 +246,11 @@ pub fn wait(runs: &[Arc<Run>], abort: &AtomicBool) {
 /// Holding `follow_ups` while the status flips lets bg_wait, which sees the run done, find its follow-up to withdraw.
 fn finish(run: &Run, result: Result<String, String>, follow_ups: &Mutex<Vec<FollowUp>>) {
     let mut queued = follow_ups.lock().unwrap();
-    let mut state = run.state.lock().unwrap();
-    state.elapsed = Some(run.started.elapsed());
-    state.result = Some(result);
-    drop(state);
+    {
+        let mut state = run.state.lock().unwrap();
+        state.elapsed = Some(run.started.elapsed());
+        state.result = Some(result);
+    }
     if run.background {
         let text = format!("Subagent {} ({}) finished.\n\n{}", run.id, run.label, run.result_text());
         queued.push(FollowUp { source: run.id.clone(), text });
@@ -239,12 +263,14 @@ pub fn wait_background(runs: &[Arc<Run>], timeout: Duration, abort: &AtomicBool,
     let deadline = Instant::now() + timeout;
     while runs.iter().any(|r| r.is_running()) && Instant::now() < deadline {
         if abort.load(Ordering::Relaxed) {
-            return Err("Operation aborted".into());
+            return Err(crate::agent::ABORTED.into());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    follow_ups.lock().unwrap().retain(|f| !runs.iter().any(|r| r.id == f.source));
+    // Answers are read under the lock, so a run that finishes now either shows here or keeps its follow-up.
+    let mut queued = follow_ups.lock().unwrap();
     let answers: Vec<String> = runs.iter().map(|r| format!("## {} ({}) {}\n\n{}", r.label, r.id, r.status(), r.result_text())).collect();
+    queued.retain(|f| !runs.iter().any(|r| r.id == f.source));
     Ok(answers.join("\n\n"))
 }
 
@@ -266,8 +292,8 @@ pub fn tasks(input: &Value) -> Result<Vec<Task>, String> {
         let model = item["model"].as_str().filter(|m| *m != "inherit").map(String::from);
         let effort = item["effort"].as_str().map(String::from);
         // The child rejects an unknown --thinking before its first JSONL line, so the parent would see no answer.
-        if let Some(effort) = effort.as_deref().filter(|e| !crate::tui::THINKING_LEVELS.contains(e)) {
-            return Err(format!("Unknown effort {effort}; use one of: {}.", crate::tui::THINKING_LEVELS.join(", ")));
+        if let Some(effort) = effort.as_deref().filter(|e| !crate::settings::THINKING_LEVELS.contains(e)) {
+            return Err(format!("Unknown effort {effort}; use one of: {}.", crate::settings::THINKING_LEVELS.join(", ")));
         }
         Ok(Task { label: label.to_string(), prompt: prompt.to_string(), model, effort, explore: item["explore"].as_bool() == Some(true) })
     };
@@ -279,7 +305,12 @@ pub fn tasks(input: &Value) -> Result<Vec<Task>, String> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) fn scan_run() -> Run {
+    Run { id: "sa-1".into(), label: "scan".into(), task: "scan".into(), background: true, started: Instant::now(), child: Mutex::new(None), state: Mutex::default() }
+}
+
+#[cfg(test)]
+mod tests {
     use super::*;
     use serde_json::json;
 
@@ -289,7 +320,8 @@ pub(crate) mod tests {
         let (home, project) = (root.join("home"), root.join("project"));
         std::fs::create_dir_all(project.join(".agents")).unwrap();
         std::fs::create_dir_all(&home).unwrap();
-        assert!(swarm_prompt(&home, &project, "medium").contains("Implementation tasks: `effort: \"medium\"`."));
+        let default = swarm_prompt(&home, &project, "medium");
+        assert!(default.contains("Implementation tasks: `effort: \"medium\"`.") && default.starts_with("When to spawn:"), "{default}");
         std::fs::write(home.join("swarm-prompt.md"), "global {implementation_effort}\n").unwrap();
         std::fs::write(project.join(".agents/swarm-prompt.md"), "  \n").unwrap();
         assert_eq!(swarm_prompt(&home, &project, "high"), "global high");
@@ -335,6 +367,13 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_non_utf8_line_does_not_hide_the_answer() {
+        let mut stdout = b"\xff\xfe not text\n".to_vec();
+        stdout.extend(format!("{}\n", json!({"type": "done", "answer": "ok"})).as_bytes());
+        assert_eq!(read_events(stdout.as_slice(), &scan_run()), Ok("ok".into()));
+    }
+
+    #[test]
     fn finished_runs_do_not_count_toward_the_limit() {
         let mut runs = Runs::default();
         for _ in 0..MAX_RUNNING {
@@ -370,9 +409,5 @@ pub(crate) mod tests {
         runs.running_first();
         let ids: Vec<&str> = runs.list.iter().map(|run| run.id.as_str()).collect();
         assert_eq!(ids, ["sa-2", "sa-4", "sa-1", "sa-3"]);
-    }
-
-    pub(crate) fn scan_run() -> Run {
-        Run { id: "sa-1".into(), label: "scan".into(), task: "scan".into(), background: true, started: Instant::now(), child: Mutex::new(None), state: Mutex::default() }
     }
 }

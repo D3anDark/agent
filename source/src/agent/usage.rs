@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::api::{Reply, Usage};
@@ -36,7 +37,7 @@ pub fn brief(usage: Usage) -> String {
 pub fn tokens(count: u64) -> String {
     match count {
         n if n < 1000 => n.to_string(),
-        n if n < 1_000_000 => format!("{}k", (n + 500) / 1000),
+        n if n < 999_500 => format!("{}k", (n + 500) / 1000),
         n => format!("{:.1}M", n as f64 / 1_000_000.0),
     }
 }
@@ -49,9 +50,9 @@ pub struct ModelTotal {
 }
 
 /// Sums the `usage` records of every session in `dir` for each of `SCOPES`, sorted by model.
-pub fn totals(dir: &Path, session_id: &str, now_ms: u64) -> [Vec<ModelTotal>; 4] {
-    let mut totals: [Vec<ModelTotal>; 4] = Default::default();
-    let Ok(files) = std::fs::read_dir(dir) else { return totals };
+pub fn totals(dir: &Path, session_id: &str, now_ms: u64) -> [Vec<ModelTotal>; SCOPES.len()] {
+    let mut by_model: [BTreeMap<String, ModelTotal>; SCOPES.len()] = Default::default();
+    let Ok(files) = std::fs::read_dir(dir) else { return Default::default() };
     for path in files.flatten().map(|file| file.path()) {
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         let current = path.file_stem().is_some_and(|stem| stem == session_id);
@@ -61,33 +62,19 @@ pub fn totals(dir: &Path, session_id: &str, now_ms: u64) -> [Vec<ModelTotal>; 4]
             if entry["type"] != "usage" {
                 continue;
             }
-            let number = |key: &str| entry[key].as_u64().unwrap_or(0);
             let usage = from_entry(&entry);
-            let age = now_ms.saturating_sub(number("timestamp"));
+            let age = now_ms.saturating_sub(entry["timestamp"].as_u64().unwrap_or(0));
             let model = entry["model"].as_str().unwrap_or("unknown");
-            for (scope, inside) in totals.iter_mut().zip([current, age < DAY_MS, age < 7 * DAY_MS, true]) {
+            for (scope, inside) in by_model.iter_mut().zip([current, age < DAY_MS, age < 7 * DAY_MS, true]) {
                 if inside {
-                    add(scope, model, usage);
+                    let total = scope.entry(model.to_string()).or_insert_with(|| ModelTotal { model: model.to_string(), ..Default::default() });
+                    total.requests += 1;
+                    total.usage.add(usage);
                 }
             }
         }
     }
-    for scope in &mut totals {
-        scope.sort_by(|a, b| a.model.cmp(&b.model));
-    }
-    totals
-}
-
-fn add(scope: &mut Vec<ModelTotal>, model: &str, usage: Usage) {
-    let index = match scope.iter().position(|total| total.model == model) {
-        Some(index) => index,
-        None => {
-            scope.push(ModelTotal { model: model.to_string(), ..Default::default() });
-            scope.len() - 1
-        }
-    };
-    scope[index].requests += 1;
-    scope[index].usage.add(usage);
+    by_model.map(|scope| scope.into_values().collect())
 }
 
 #[cfg(test)]

@@ -83,14 +83,14 @@ pub fn fetch(repo: &Repo, force_clone: bool) -> Result<String, String> {
     Ok(describe(repo, &dir))
 }
 
-/// shortcut: plain git, no `gh` auth and no repository size check; private repos fall back to the page fetch.
+/// shortcut: plain git with the user's credential helpers and no repository size check, so private repos the user can reach are cloned.
 fn clone(repo: &Repo, force_clone: bool) -> Result<PathBuf, String> {
     let git_ref = repo.git_ref.as_deref().unwrap_or("HEAD");
     let safe_ref: String = git_ref.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect();
     // Not the shared temp dir: on Linux another user could plant a clone there.
     let home = std::env::var_os("HOME").ok_or("HOME is not set.")?;
     // safe_ref maps `feature/x` and `feature_x` alike, so a hash of the real ref keeps them apart.
-    let ref_id = &super::research::hash(git_ref)["sha256:".len()..][..12];
+    let ref_id = &crate::process::hash(git_ref)["sha256:".len()..][..12];
     let dir = PathBuf::from(home).join(".cache/agent-github").join(&repo.owner).join(format!("{}@{safe_ref}-{ref_id}", repo.repo));
     // A branch moves, so a clone answers for an hour.
     let age = std::fs::metadata(dir.join(".git")).and_then(|meta| meta.modified()).ok().and_then(|modified| modified.elapsed().ok());
@@ -168,7 +168,7 @@ fn describe(repo: &Repo, dir: &Path) -> String {
                 format!("## {}", repo.path),
                 super::char_slice(&text, 0, FILE_CHARS).to_string(),
                 String::new(),
-                format!("[File truncated at 100K chars. Full file: {}]", target.display()),
+                format!("[File truncated at {FILE_CHARS} chars. Full file: {}]", target.display()),
                 String::new(),
             ]),
             Some(text) => lines.extend([format!("## {}", repo.path), text, String::new()]),
@@ -216,7 +216,7 @@ fn listing(dir: &Path) -> String {
         .map(|path| {
             let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
             match std::fs::metadata(&path) {
-                Ok(meta) if meta.is_file() => format!("  {name}  ({})", size(meta.len())),
+                Ok(meta) if meta.is_file() => format!("  {name}  ({})", crate::tools::format_size(meta.len() as usize)),
                 _ => format!("  {name}/"),
             }
         })
@@ -230,21 +230,13 @@ fn sorted(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn size(bytes: u64) -> String {
-    match bytes {
-        0..1024 => format!("{bytes} B"),
-        1024..1_048_576 => format!("{:.1} KB", bytes as f64 / 1024.0),
-        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
-    }
-}
-
 fn readme(dir: &Path) -> Option<(&'static str, String)> {
     ["README.md", "readme.md", "README", "README.txt", "README.rst"].into_iter().find_map(|name| {
         let text = std::fs::read_to_string(dir.join(name)).ok()?;
         if text.chars().count() <= README_CHARS {
             return Some((name, text));
         }
-        Some((name, format!("{}\n\n[README truncated at 8K chars]", super::char_slice(&text, 0, README_CHARS))))
+        Some((name, format!("{}\n\n[README truncated at {README_CHARS} chars]", super::char_slice(&text, 0, README_CHARS))))
     })
 }
 
@@ -280,7 +272,7 @@ mod tests {
         let expected = format!("Repository cloned to: {}\n\n## Structure\nREADME.md\nnode_modules/  [skipped]\nsrc/\nsrc/main.rs\n\n## README.md\n# Hi\n\n{FOOTER}", dir.display());
         assert_eq!(text, expected);
         let tree = Repo { kind: Kind::Tree, path: "src".into(), git_ref: Some("main".into()), ..repo };
-        assert!(describe(&tree, &dir).contains("## src\n  main.rs  (12 B)\n"));
+        assert!(describe(&tree, &dir).contains("## src\n  main.rs  (12B)\n"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

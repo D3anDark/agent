@@ -214,6 +214,9 @@ fn push_span(line: &mut Line, piece: Span) {
 
 /// Cuts a line to `max` columns, ending with "…" when it had to cut.
 pub fn truncate(line: &Line, max: usize) -> Line {
+    if max == 0 {
+        return Line::new();
+    }
     if line_width(line) <= max {
         return line.clone();
     }
@@ -525,5 +528,6 @@ mod tests {
     fn truncate_counts_wide_chars() {
         let line = vec![span("ąę中文abc", PLAIN)];
         assert_eq!(text(&[truncate(&line, 6)]), ["ąę中…"]);
+        assert!(truncate(&line, 0).is_empty());
     }
 }

@@ -1,8 +1,7 @@
 use serde_json::{Value, json};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use super::oauth::Tokens;
 
@@ -169,15 +168,14 @@ fn parse_codex_usage(data: &Value) -> Option<Usage> {
 /// Fetches an OAuth account's windows; `base` is the provider's API root.
 pub fn fetch_usage(account: &Account, base: &str) -> Result<Usage, String> {
     let Secret::OAuth(tokens) = &account.secret else { return Err("API keys have no usage windows.".into()) };
-    let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(10))).build().into();
+    let agent = super::models_agent();
     let request = match account.provider.as_str() {
         "anthropic" => agent.get(format!("{base}/api/oauth/usage")).header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219").header("user-agent", crate::api::CLAUDE_CODE_USER_AGENT),
         _ => agent.get(format!("{base}/wham/usage")).header("chatgpt-account-id", tokens.account_id.as_deref().unwrap_or_default()),
     };
-    let response = request.header("authorization", format!("Bearer {}", tokens.access)).header("accept", "application/json").call().map_err(|e| format!("Usage request failed: {e}."))?;
+    let mut response = request.header("authorization", format!("Bearer {}", tokens.access)).header("accept", "application/json").call().map_err(|e| format!("Usage request failed: {e}."))?;
     let status = response.status().as_u16();
-    let mut text = String::new();
-    response.into_body().into_reader().read_to_string(&mut text).map_err(|e| e.to_string())?;
+    let text = response.body_mut().read_to_string().map_err(|e| e.to_string())?;
     if status != 200 {
         return Err(format!("Usage request failed ({status})."));
     }
@@ -265,7 +263,7 @@ fn iso_ms(text: &str) -> Option<u64> {
     let mut date = date.split('-').map(|p| p.parse::<i64>().ok());
     let (year, month, day) = (date.next()??, date.next()??, date.next()??);
     let time = time.trim_end_matches('Z');
-    let time = time.split(['+']).next()?;
+    let time = time.split('+').next()?;
     let mut clock = time.split(':');
     let (hour, minute) = (clock.next()?.parse::<i64>().ok()?, clock.next()?.parse::<i64>().ok()?);
     let second = clock.next().map_or(Some(0.0), |s| s.parse::<f64>().ok())? as i64;

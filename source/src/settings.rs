@@ -81,6 +81,7 @@ pub struct LspServer {
     pub roots: Vec<String>,
 }
 
+pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 pub const PRUNE_SESSIONS: [&str; 6] = ["never", "24h", "3d", "7d", "14d", "30d"];
 pub const PROVIDER_SORTS: [&str; 3] = ["default", "alphabetical", "manual"];
 /// Below this a condensed batch costs more in cache rewrites than its summary saves on later cache reads.
@@ -149,6 +150,13 @@ fn saved_after(before: &Settings, after: &Settings, saved: &Settings) -> Setting
 }
 
 fn apply_changes(saved: &mut Value, before: &Value, after: &Value) {
+    if let (Some(before), Some(after), Some(saved)) = (before.as_array(), after.as_array(), saved.as_array_mut()) {
+        // This edit's order and additions, minus what another agent removed, then what another agent added.
+        let mut next: Vec<Value> = after.iter().filter(|item| saved.contains(item) || !before.contains(item)).cloned().collect();
+        next.extend(saved.iter().filter(|item| !before.contains(item) && !after.contains(item)).cloned());
+        *saved = next;
+        return;
+    }
     let (Some(before), Some(after), Some(saved)) = (before.as_object(), after.as_object(), saved.as_object_mut()) else {
         *saved = after.clone();
         return;
@@ -180,7 +188,7 @@ pub fn load(home: &Path) -> Result<Settings, String> {
 fn from_json(own: &Value) -> Settings {
     Settings {
         model: own["model"].as_str().unwrap_or("claude-opus-5-5").to_string(),
-        thinking: level(&own["thinking"], &crate::tui::THINKING_LEVELS, "high"),
+        thinking: level(&own["thinking"], &THINKING_LEVELS, "high"),
         permission_mode: own["permission_mode"].as_str().and_then(Mode::parse).unwrap_or(Mode::Ask),
         auto_compact: own["auto_compact"].as_bool().unwrap_or(true),
         // Compaction asks for 4/5 of it as max_tokens; 0 is an API error and a few hundred cut the summary off.
@@ -191,8 +199,8 @@ fn from_json(own: &Value) -> Settings {
         condense_model: own["condense"]["model"].as_str().unwrap_or_default().to_string(),
         condense_min_batch_chars: own["condense"]["min_batch_chars"].as_u64().unwrap_or(CONDENSE_MIN_BATCH_CHARS).max(CONDENSE_MIN_BATCH_CHARS),
         subagent_concurrency: own["subagents"]["concurrency"].as_u64().unwrap_or(4) as usize,
-        subagent_effort: level(&own["subagents"]["implementation_effort"], &crate::tui::THINKING_LEVELS, "medium"),
-        switch_at_percent: own["accounts"]["switch_at_percent"].as_u64().unwrap_or(90),
+        subagent_effort: level(&own["subagents"]["implementation_effort"], &THINKING_LEVELS, "medium"),
+        switch_at_percent: own["accounts"]["switch_at_percent"].as_u64().unwrap_or(90).min(100),
         when_all_over_limit: own["accounts"]["when_all_over_limit"].as_str().and_then(Policy::parse).unwrap_or(Policy::LeastUsed),
         fallback_model: own["accounts"]["fallback_model"].as_str().unwrap_or_default().to_string(),
         default_accounts: own["accounts"]["default"].as_object().into_iter().flatten().filter_map(|(provider, name)| Some((provider.clone(), name.as_str()?.to_string()))).collect(),
@@ -210,8 +218,8 @@ fn from_json(own: &Value) -> Settings {
         rtk: own["rtk"].as_bool().unwrap_or(true),
         headroom: own["headroom"].as_bool().unwrap_or(false),
         notifications: own["notifications"].as_bool().unwrap_or(true),
-        scroll_lines: own["scroll_lines"].as_u64().unwrap_or(3) as usize,
-        menu_rows: own["menu_rows"].as_u64().unwrap_or(6) as usize,
+        scroll_lines: own["scroll_lines"].as_u64().unwrap_or(3).max(1) as usize,
+        menu_rows: own["menu_rows"].as_u64().unwrap_or(6).max(1) as usize,
         copy_on_select: own["copy_on_select"].as_bool().unwrap_or(true),
         update_channel: level(&own["update_channel"], &crate::update::CHANNELS, "latest"),
         prune_sessions: own["prune_sessions"].as_str().unwrap_or("never").to_string(),
@@ -356,6 +364,20 @@ mod tests {
     }
 
     #[test]
+    fn list_edits_from_two_agents_both_survive() {
+        let before = load(Path::new("/nonexistent")).unwrap();
+        let mut saved = before.clone();
+        saved.disabled_plugins = vec!["theirs".into()];
+        let mut edited = before.clone();
+        edited.disabled_plugins = vec!["mine".into()];
+        let next = saved_after(&before, &edited, &saved);
+        assert_eq!(next.disabled_plugins, ["mine", "theirs"]);
+        let mut enabled_again = edited.clone();
+        enabled_again.disabled_plugins.clear();
+        assert_eq!(saved_after(&edited, &enabled_again, &next).disabled_plugins, ["theirs"]);
+    }
+
+    #[test]
     fn settings_survive_a_save() {
         let home = std::env::temp_dir().join(format!("agent-settings-{}", std::process::id()));
         let mut settings = load(&home).unwrap();
@@ -403,8 +425,8 @@ mod tests {
         assert_same_keys(&written, &schema, "settings");
         assert_same_keys(&written["lsp"]["rust"], &schema["properties"]["lsp"]["additionalProperties"], "lsp.rust");
         let properties = &schema["properties"];
-        assert_eq!(properties["thinking"]["enum"], json!(crate::tui::THINKING_LEVELS));
-        assert_eq!(properties["subagents"]["properties"]["implementation_effort"]["enum"], json!(crate::tui::THINKING_LEVELS));
+        assert_eq!(properties["thinking"]["enum"], json!(THINKING_LEVELS));
+        assert_eq!(properties["subagents"]["properties"]["implementation_effort"]["enum"], json!(THINKING_LEVELS));
         assert_eq!(properties["permission_mode"]["enum"], json!(crate::agent::permissions::MODES.map(|mode| mode.label())));
         assert_eq!(properties["accounts"]["properties"]["when_all_over_limit"]["enum"], json!(Policy::ALL.map(|policy| policy.label())));
         assert_eq!(properties["ponytail"]["enum"], json!(crate::agent::modes::PONYTAIL_LEVELS));

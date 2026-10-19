@@ -32,6 +32,6 @@ Checked 2026-10 with live requests. Credentials came from `~/.agents/accounts.js
 - `Client::load_catalog` in `source/src/api/mod.rs` fetches OpenRouter's public list, then the list of each Anthropic and Codex account. A list that fails becomes a startup notice.
 - `models::merge` keeps one entry per model and records in `Model.accounts` which accounts listed it. `/model` shows these accounts next to the provider.
 - `choose` sends a request only to an account that listed the model. An account with no list (a failed fetch, a `/login` after startup, an OpenRouter key) is not checked, so the API decides.
-- If no account lists the configured model, the agent uses the first model an account lists and shows a notice.
+- If the configured model id is not in the merged catalog, the agent uses the first model an account lists and shows a notice.
 - There is no price. `models::small_model` picks the provider's `haiku` or `luna` model for summaries and reviews, or the main model if there is none.
 - Without network or accounts only OpenRouter's list is left. If that fails too, the TUI opens with an error and print mode exits.

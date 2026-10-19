@@ -11,6 +11,8 @@ const READ_DEFAULT_LINES: usize = 400;
 
 // Two-letter pieces (sorted), then a row-major bitset of valid piece pairs, packed from pi's anchor table.
 const TABLE: &[u8] = include_bytes!("anchors.bin");
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x100_0000_01b3;
 const PIECES: usize = 1360;
 const ROW_BYTES: usize = PIECES / 8;
 const ANCHOR_COUNT: u32 = 1_353_139;
@@ -56,9 +58,9 @@ impl Anchors {
         }
         assert_eq!(total, ANCHOR_COUNT);
         // The clock keeps a resumed session from re-minting anchors its history still shows on other lines.
-        let mut probe: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut probe = FNV_OFFSET;
         for byte in seed.bytes().chain(crate::process::now_ms().to_le_bytes()) {
-            probe = (probe ^ byte as u64).wrapping_mul(0x100_0000_01b3);
+            probe = (probe ^ byte as u64).wrapping_mul(FNV_PRIME);
         }
         Anchors { row_starts, probe: (probe % ANCHOR_COUNT as u64) as u32, minted: 0, owner: HashMap::new(), files: HashMap::new(), undo: HashMap::new() }
     }
@@ -151,7 +153,7 @@ impl Anchors {
             }
             return self.read_many(cwd, paths);
         }
-        let path = existing_file(cwd, str_arg(input, &["path"])?)?;
+        let path = existing_file(cwd, str_arg(input, "path")?)?;
         let text = Text::load(&path)?;
         let empty = text.is_empty();
         self.sync(&path, text.lines)?;
@@ -162,13 +164,13 @@ impl Anchors {
         let total = snapshot.lines.len();
         let start = match &input["offset"] {
             Value::Null => 0,
-            Value::Number(n) => n.as_u64().filter(|&n| n >= 1).ok_or("[E_BAD_SHAPE] Read request field \"offset\" must be a positive integer.")? as usize - 1,
+            Value::Number(n) => n.as_u64().filter(|&n| n >= 1).ok_or("[E_BAD_SHAPE] Read request field \"offset\" must be a positive line number or an anchor.")? as usize - 1,
             Value::String(s) => match s.parse::<usize>() {
-                Ok(0) => return Err("[E_BAD_SHAPE] Read request field \"offset\" must be a positive integer or an anchor.".into()),
+                Ok(0) => return Err("[E_BAD_SHAPE] Read request field \"offset\" must be a positive line number or an anchor.".into()),
                 Ok(n) => n - 1,
                 Err(_) => self.index_of(&path, s)? + 1,
             },
-            _ => return Err("[E_BAD_SHAPE] offset must be a line number or an anchor.".into()),
+            _ => return Err("[E_BAD_SHAPE] Read request field \"offset\" must be a positive line number or an anchor.".into()),
         };
         let limit = match &input["limit"] {
             Value::Null => Some(READ_DEFAULT_LINES),
@@ -236,9 +238,9 @@ impl Anchors {
     }
 
     pub fn replace(&mut self, input: &Value) -> Result<String, String> {
-        let from = str_arg(input, &["remove_from"])?;
-        let to = str_arg(input, &["remove_to"])?;
-        let text = str_arg(input, &["text"])?;
+        let from = str_arg(input, "remove_from")?;
+        let to = str_arg(input, "remove_to")?;
+        let text = str_arg(input, "text")?;
         let (path, mut file, first, last) = self.resolve_range(from, to)?;
         let at_end = last + 1 == file.lines.len();
         file.lines.splice(first..=last, split_text(text));
@@ -247,10 +249,10 @@ impl Anchors {
     }
 
     pub fn replace_match(&mut self, input: &Value) -> Result<String, String> {
-        let from = str_arg(input, &["replace_from"])?;
-        let to = str_arg(input, &["replace_to"])?;
-        let old = str_arg(input, &["old_string"])?;
-        let new = str_arg(input, &["new_string"])?;
+        let from = str_arg(input, "replace_from")?;
+        let to = str_arg(input, "replace_to")?;
+        let old = str_arg(input, "old_string")?;
+        let new = str_arg(input, "new_string")?;
         if old.is_empty() {
             return Err("[E_BAD_SHAPE] old_string must not be empty.".into());
         }
@@ -271,7 +273,8 @@ impl Anchors {
         let new = new.replace("\r\n", "\n");
         let mut lines: Vec<String> = region.replace(old, &new).split('\n').map(String::from).collect();
         // Like replace: a trailing break ends the last line written instead of adding a blank one.
-        if new.ends_with('\n') && region.ends_with(old) {
+        let at = region.find(old).expect("counted above");
+        if new.ends_with('\n') && at + old.len() == region.len() {
             lines.pop();
             file.final_newline |= last + 1 == file.lines.len();
         }
@@ -280,8 +283,8 @@ impl Anchors {
     }
 
     pub fn insert(&mut self, input: &Value) -> Result<String, String> {
-        let anchor = str_arg(input, &["anchor"])?;
-        let text = str_arg(input, &["text"])?;
+        let anchor = str_arg(input, "anchor")?;
+        let text = str_arg(input, "text")?;
         let after = direction_is_after(input)?;
         let (path, mut file, index, _) = self.resolve_range(anchor, anchor)?;
         let lines = if text.is_empty() { vec![String::new()] } else { split_text(text) };
@@ -294,7 +297,7 @@ impl Anchors {
 
     /// Moves the source range next to `anchor`; across files the destination is written first, then the source.
     pub fn move_lines(&mut self, input: &Value) -> Result<String, String> {
-        let (source, mut source_file, first, last) = self.resolve_range(str_arg(input, &["source_from"])?, str_arg(input, &["source_to"])?)?;
+        let (source, mut source_file, first, last) = self.resolve_range(str_arg(input, "source_from")?, str_arg(input, "source_to")?)?;
         let (path, mut file, at) = self.destination(input)?;
         let block: Vec<String> = source_file.lines.drain(first..=last).collect();
         if path == source {
@@ -317,7 +320,7 @@ impl Anchors {
 
     /// Restores the bytes from before the last anchored edit of `path`, unless the file changed since.
     pub fn undo(&mut self, cwd: &Path, input: &Value) -> Result<String, String> {
-        let raw = str_arg(input, &["path"])?;
+        let raw = str_arg(input, "path")?;
         let path = canonical_even_if_deleted(resolve(cwd, raw));
         let Some((before, after)) = self.undo.get(&path) else {
             return Err(format!("[E_UNDO_NONE] No undo history for {raw}."));
@@ -348,7 +351,7 @@ impl Anchors {
 
     /// The file `anchor` belongs to and the line index a block lands on, from `direction`.
     fn destination(&mut self, input: &Value) -> Result<(PathBuf, Text, usize), String> {
-        let anchor = str_arg(input, &["anchor"])?;
+        let anchor = str_arg(input, "anchor")?;
         let after = direction_is_after(input)?;
         let (path, file, index, _) = self.resolve_range(anchor, anchor)?;
         Ok((path, file, if after { index + 1 } else { index }))
@@ -429,6 +432,7 @@ impl Anchors {
 }
 
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const BINARY_SNIFF_BYTES: usize = 8192;
 
 impl Text {
     fn load(path: &Path) -> Result<Text, String> {
@@ -437,7 +441,7 @@ impl Text {
             return Err(format!("{} is {}, over the {} limit for anchored files. Use bash with sed -n and head.", path.display(), format_size(size as usize), format_size(MAX_FILE_BYTES as usize)));
         }
         let bytes = std::fs::read(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-        if bytes[..bytes.len().min(8192)].contains(&0) {
+        if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
             return Err(format!("{} is a binary file. Use bash with file, xxd or strings to inspect it.", path.display()));
         }
         let raw = String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text. Use bash with iconv to convert it, or edit it with bash.", path.display()))?;
@@ -494,7 +498,7 @@ fn row_text(anchor: &str, line: &str, number: usize, path: &Path) -> String {
     if row.len() <= MAX_BYTES {
         return row;
     }
-    let quoted = format!("'{}'", path.display().to_string().replace('\'', r"'\''"));
+    let quoted = crate::agent::edit_hooks::shell_quote(&path.display().to_string());
     format!("{anchor}│[Line {number} is {}, exceeds {}; content not shown. Use bash: sed -n '{number}p' {quoted} | head -c {MAX_BYTES}]", format_size(line.len()), format_size(MAX_BYTES))
 }
 
@@ -508,7 +512,7 @@ fn split_text(text: &str) -> Vec<String> {
 }
 
 fn direction_is_after(input: &Value) -> Result<bool, String> {
-    match str_arg(input, &["direction"])? {
+    match str_arg(input, "direction")? {
         "after" => Ok(true),
         "before" => Ok(false),
         other => Err(format!("[E_BAD_SHAPE] direction must be \"after\" or \"before\", got \"{other}\".")),
@@ -523,11 +527,11 @@ fn refuse_inside(at: usize, first: usize, last: usize) -> Result<(), String> {
     Ok(())
 }
 
-pub fn str_arg<'a>(input: &'a Value, names: &[&str]) -> Result<&'a str, String> {
-    names.iter().find_map(|name| input[name].as_str()).ok_or_else(|| format!("[E_BAD_SHAPE] Missing string field \"{}\".", names[0]))
+pub fn str_arg<'a>(input: &'a Value, name: &str) -> Result<&'a str, String> {
+    input[name].as_str().ok_or_else(|| format!("[E_BAD_SHAPE] Missing string field \"{name}\"."))
 }
 
-/// Writes `new` to a temp file next to `path` and renames it over, so a crash or a full disk never leaves `path` truncated.
+/// Replaces an existing `path` through a temp file and rename, so a crash or full disk never truncates it; a new file is written in place.
 pub(super) fn replace_file(path: &Path, new: &[u8]) -> Result<(), String> {
     // rename would replace a symlink itself, so the temp file goes next to the file it points to.
     let Ok(path) = path.canonicalize() else { return std::fs::write(path, new).map_err(|e| format!("Cannot write {}: {e}", path.display())) };
@@ -703,6 +707,15 @@ mod tests {
         let error = anchors.replace_match(&json!({"replace_from": a[0], "replace_to": a[0], "old_string": "foo", "new_string": "bar"})).unwrap_err();
         assert!(error.starts_with("[E_AMBIGUOUS]"), "{error}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo(foo)\n");
+    }
+
+    #[test]
+    fn replace_match_with_a_trailing_break_keeps_text_after_the_match() {
+        let path = temp_file("overlap", "aaa\n");
+        let mut anchors = Anchors::new("s");
+        let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
+        anchors.replace_match(&json!({"replace_from": a[0], "replace_to": a[0], "old_string": "aa", "new_string": "x\n"})).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x\na\n");
     }
 
     #[test]

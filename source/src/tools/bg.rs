@@ -12,6 +12,7 @@ use crate::tools::format_size;
 
 /// pi's background-terminals limits.
 const MAX_RUNNING: usize = 8;
+const MAX_TITLE_CHARS: usize = 80;
 const STATUS_TAIL: (u64, usize) = (16 * 1024, 400);
 const STATUS_STDERR_TAIL: (u64, usize) = (8 * 1024, 200);
 const RESULT_TAIL: (u64, usize) = (8 * 1024, 40);
@@ -96,7 +97,7 @@ impl Terminals {
         if self.running() >= MAX_RUNNING {
             return Err(format!("Max {MAX_RUNNING} background terminals can run concurrently. Stop one with bg_kill before starting another."));
         }
-        let title: String = input["title"].as_str().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
+        let title: String = input["title"].as_str().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(MAX_TITLE_CHARS).collect();
         let title = if title.is_empty() { "terminal".to_string() } else { title };
         let (stdout_file, stdout) = super::private_file("bg", "stdout")?;
         let (stderr_file, stderr) = super::private_file("bg", "stderr")?;
@@ -177,7 +178,7 @@ impl Terminals {
     }
 }
 
-/// bg_kill: SIGTERM to each group, SIGKILL after two seconds, then the final states.
+/// bg_kill: SIGTERM to each group, SIGKILL after `FORCE_KILL_AFTER`, then the final states.
 pub fn kill(terminals: &[Arc<Terminal>], follow_ups: &Arc<Mutex<Vec<FollowUp>>>, abort: &AtomicBool) -> String {
     let was_running: Vec<bool> = terminals.iter().map(|t| t.stop()).collect();
     let deadline = Instant::now() + STOP_TIMEOUT;
@@ -297,13 +298,13 @@ impl Terminal {
 fn exit_text(code: Option<i32>, signal: Option<i32>) -> String {
     match (code, signal) {
         (Some(code), _) => format!("exit {code}"),
-        (None, Some(1)) => "SIGHUP".into(),
+        (None, Some(crate::process::SIGHUP)) => "SIGHUP".into(),
         (None, Some(2)) => "SIGINT".into(),
         (None, Some(6)) => "SIGABRT".into(),
-        (None, Some(9)) => "SIGKILL".into(),
+        (None, Some(crate::process::SIGKILL)) => "SIGKILL".into(),
         (None, Some(11)) => "SIGSEGV".into(),
         (None, Some(13)) => "SIGPIPE".into(),
-        (None, Some(15)) => "SIGTERM".into(),
+        (None, Some(crate::process::SIGTERM)) => "SIGTERM".into(),
         (None, Some(signal)) => format!("signal {signal}"),
         (None, None) => "exit ?".into(),
     }

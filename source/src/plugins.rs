@@ -190,7 +190,7 @@ impl Plugins {
         }
         let params = json!({"name": tool, "input": input, "context": context});
         Some(match self.request_until(owner, "tool", params, None, abort) {
-            None if abort.load(Ordering::Relaxed) => ("Operation aborted".into(), true),
+            None if abort.load(Ordering::Relaxed) => (crate::agent::ABORTED.into(), true),
             None => (format!("{owner} stopped before answering {name}."), true),
             Some(reply) => match reply["error"]["message"].as_str() {
                 Some(message) => (message.to_string(), true),
@@ -334,10 +334,15 @@ impl Plugins {
                 }
             }
         });
-        let last_error = std::thread::spawn(move || BufReader::new(stderr).lines().map_while(Result::ok).filter(|line| !line.trim().is_empty()).last());
+        // Raw lines, so one non-UTF-8 line neither stops a reader nor leaves a pipe undrained.
+        let last_error = std::thread::spawn(move || {
+            let lines = BufReader::new(stderr).split(b'\n').map_while(Result::ok);
+            lines.map(|line| String::from_utf8_lossy(&line).trim().to_string()).filter(|line| !line.is_empty()).last()
+        });
         let (plugins, name) = (self.clone(), name.to_string());
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            for line in BufReader::new(stdout).split(b'\n').map_while(Result::ok) {
+                let line = String::from_utf8_lossy(&line);
                 plugins.receive(&name, run, &line);
             }
             plugins.exited(&name, run, last_error.join().unwrap_or_default());
@@ -387,14 +392,19 @@ impl Plugins {
     fn exited(&self, name: &str, run: u64, last_error: Option<String>) {
         let mut state = self.state.lock().unwrap();
         let Some(index) = state.plugins.iter().position(|plugin| plugin.name == name && plugin.process.as_ref().is_some_and(|p| p.run == run)) else { return };
-        let plugin = &mut state.plugins[index];
-        let mut process = plugin.process.take().unwrap();
-        let code = process.child.wait().map(|status| status.to_string()).unwrap_or_else(|e| e.to_string());
-        plugin.error = Some(match last_error {
-            Some(line) => format!("Exited ({code}): {line}"),
-            None => format!("Exited ({code})."),
-        });
+        let mut process = state.plugins[index].process.take().unwrap();
         clear_run(&mut state, index);
+        drop(state);
+        // A plugin that closed stdout can no longer answer; waiting under the lock would freeze every plugin call.
+        let code = process.child.wait().map(|status| status.to_string()).unwrap_or_else(|e| e.to_string());
+        let mut state = self.state.lock().unwrap();
+        // Skip when the plugin was removed or started again while it was waited on.
+        if let Some(plugin) = state.plugins.iter_mut().find(|plugin| plugin.name == name && plugin.process.is_none()) {
+            plugin.error = Some(match last_error {
+                Some(line) => format!("Exited ({code}): {line}"),
+                None => format!("Exited ({code})."),
+            });
+        }
         let on_change = state.on_change.clone();
         drop(state);
         if let Some(on_change) = on_change {

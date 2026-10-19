@@ -5,7 +5,7 @@ mod find;
 mod github;
 mod html;
 mod providers;
-pub mod research;
+mod research;
 
 pub use providers::PROVIDERS as SEARCH_PROVIDERS;
 
@@ -48,17 +48,15 @@ pub fn host(url: &str) -> Option<String> {
     (!hostname.is_empty()).then(|| hostname.to_lowercase())
 }
 
-/// `proxy` None keeps ureq's env proxy, an empty string connects directly.
 /// Redirects come back as responses: ureq would keep custom headers such as `x-api-key` on a cross-host redirect,
 /// and `fetch::fetch_http` vets each hop before following it.
-pub(super) fn http_agent(proxy: Option<&str>, timeout: Duration) -> Result<ureq::Agent, String> {
-    let mut config = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(timeout)).max_redirects(0);
-    if let Some(proxy) = proxy.map(str::trim) {
-        // The URL may carry `user:password@`, so the error does not echo it.
-        let proxy = if proxy.is_empty() { None } else { Some(ureq::Proxy::new(proxy).map_err(|e| format!("Invalid proxy URL: {e}"))?) };
-        config = config.proxy(proxy);
-    }
-    Ok(config.build().into())
+pub(super) fn http_agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(timeout)).max_redirects(0).build().into()
+}
+
+/// Where this run's `Web` keeps its responses; the signal handler removes it, since `Drop` does not run there.
+pub fn store_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("agent-web-{}", std::process::id()))
 }
 
 /// Session store of tool responses: the last 20 as JSON files in `dir`, looked up by responseId.
@@ -128,7 +126,6 @@ impl Web {
         let config = providers::load_config(&self.config_path, self.provider_order()?)?;
         let domains = string_list(&input["domainFilter"]);
         let include_content = input["includeContent"].as_bool().unwrap_or(false);
-        let proxy = input["proxy"].as_str();
         let search = |text: &str| {
             let query = providers::Query {
                 text,
@@ -137,7 +134,6 @@ impl Web {
                 domains: &domains,
                 include_content,
                 category: input["category"].as_str(),
-                proxy,
             };
             providers::search(&config, &input["provider"], &query)
         };
@@ -172,7 +168,7 @@ impl Web {
         let mut guidance = String::new();
         let missing: Vec<String> = urls.iter().filter(|u| !inline.iter().any(|p| &p.url == *u)).take(MAX_FETCHED_PAGES).cloned().collect();
         if include_content && !missing.is_empty() {
-            inline.extend(fetch::fetch_all(&missing, false, false, proxy));
+            inline.extend(fetch::fetch_all(&missing, false, false));
         }
         if include_content && !inline.is_empty() {
             let fetch_id = self.store(fetch_entry(&inline))?;
@@ -531,11 +527,5 @@ mod tests {
     fn host_lowercases_and_strips_userinfo_and_port() {
         assert_eq!(host("https://user@Docs.RS:443/x?y").as_deref(), Some("docs.rs"));
         assert_eq!(host("not a url"), None);
-    }
-
-    #[test]
-    fn a_socks_proxy_is_used_not_a_crash() {
-        let agent = http_agent(Some("socks5://127.0.0.1:1"), Duration::from_secs(5)).unwrap();
-        assert!(agent.get("http://example.com/").call().is_err());
     }
 }

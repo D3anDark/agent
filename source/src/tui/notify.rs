@@ -11,9 +11,9 @@ pub fn sequence(title: &str, body: &str, env: impl Fn(&str) -> Option<String>) -
         format!("\x1b]9;{title}: {body}\x07")
     } else {
         // Terminal.app and the rest have no notification sequence; the bell bounces the Dock icon or marks the tab.
-        "\x07".to_string()
+        return "\x07".to_string();
     };
-    if env("TMUX").is_none() || raw == "\x07" {
+    if env("TMUX").is_none() {
         return raw;
     }
     // tmux forwards a sequence to the outer terminal only inside DCS passthrough, with every ESC doubled.

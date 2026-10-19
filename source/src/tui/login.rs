@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::editor::Editor;
 use super::panel;
 use super::render::{BRIGHT, Line, MUTED, span, wrap};
+use crate::api::AccountView;
 use crate::api::accounts::{Account, Secret};
 use crate::api::oauth::{self, Pending, Tokens};
 
@@ -149,6 +150,13 @@ impl Login {
         Ok(())
     }
 
+    /// On the naming step, the typed name when its provider already has an account by it; saving would replace that account.
+    pub fn taken_name(&self, accounts: &[AccountView]) -> Option<String> {
+        let Login::Name { provider, input, .. } = self else { return None };
+        let name = input.text().trim().to_string();
+        accounts.iter().any(|account| account.provider == *provider && account.name == name).then_some(name)
+    }
+
     fn choose(&mut self) -> Action {
         let Login::Choose { api, query, index } = self else { return Action::None };
         let Some(&method) = methods(*api, query).get(*index) else { return Action::None };
@@ -215,7 +223,7 @@ impl Login {
             Login::ApiKey { title, input, .. } => ((*title).into(), vec![field("Key", input.field(Some('•')))], "paste the key     enter continue     esc cancel"),
             Login::Waiting { url, .. } => (
                 "Login".into(),
-                vec![panel::Row { left: "Waiting for the sign-in to finish...".into(), right: Vec::new() }],
+                vec![panel::Row { left: "Waiting for the sign-in to finish…".into(), right: Vec::new() }],
                 if url.is_some() { "ctrl+y copy link     esc cancel" } else { "esc cancel" },
             ),
             Login::Name { input, .. } => ("Account name".into(), vec![field("Name", input.field(None))], "enter save     esc cancel"),
@@ -283,6 +291,9 @@ mod tests {
         login.key(KeyCode::Enter.into());
         login.paste("sk-or-1");
         login.key(KeyCode::Enter.into());
+        let saved = |provider: &str| AccountView { provider: provider.into(), name: "openrouter".into(), oauth: false, account_id: None, usage: None, current: false, pinned: false };
+        assert_eq!(login.taken_name(&[saved("anthropic")]), None);
+        assert_eq!(login.taken_name(&[saved("openrouter")]).as_deref(), Some("openrouter"));
         let Action::Save(account) = login.key(KeyCode::Enter.into()) else { panic!("expected a save") };
         assert_eq!((account.provider.as_str(), account.name.as_str()), ("openrouter", "openrouter"));
     }

@@ -4,8 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use crate::settings::LspServer;
@@ -14,7 +13,9 @@ use crate::settings::LspServer;
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// Some servers publish syntax errors first and type errors right after, for the same version.
 const QUIET: Duration = Duration::from_millis(200);
-const MAX_LISTED: usize = 10;
+/// New errors listed per edit; the rest become "+N more".
+const MAX_LISTED_ERRORS: usize = 10;
+const MAX_FRAME_BYTES: usize = 64 << 20;
 /// A tsc-rs server holds 60-130 MB; one unused this long stops and the next edit starts it again.
 const IDLE: Duration = Duration::from_secs(5 * 60);
 
@@ -49,12 +50,8 @@ impl Lsp {
         if self.baselines.contains_key(file) {
             return Ok(());
         }
-        let errors = if file.exists() {
-            let Some(errors) = self.errors(file, abort)? else { return Ok(()) };
-            errors
-        } else {
-            Vec::new()
-        };
+        let errors = if file.exists() { self.errors(file, abort)? } else { Some(Vec::new()) };
+        let Some(errors) = errors else { return Ok(()) };
         self.baselines.insert(file.to_path_buf(), errors.into_iter().map(|error| error.message).collect());
         Ok(())
     }
@@ -71,9 +68,9 @@ impl Lsp {
         }
         let shown = file.strip_prefix(cwd).unwrap_or(file).display();
         let mut lines = vec![format!("[lsp] {} new error{} in {shown}:", added.len(), if added.len() == 1 { "" } else { "s" })];
-        lines.extend(added.iter().take(MAX_LISTED).map(|error| format!("{}:{} {}", error.line + 1, error.column + 1, error.message)));
-        if added.len() > MAX_LISTED {
-            lines.push(format!("+{} more", added.len() - MAX_LISTED));
+        lines.extend(added.iter().take(MAX_LISTED_ERRORS).map(|error| format!("{}:{} {}", error.line + 1, error.column + 1, error.message)));
+        if added.len() > MAX_LISTED_ERRORS {
+            lines.push(format!("+{} more", added.len() - MAX_LISTED_ERRORS));
         }
         Ok(Some(lines.join("\n")))
     }
@@ -112,8 +109,9 @@ impl Lsp {
         self.servers.remove(key);
         self.off.insert(key.0.clone());
         let why = match stop {
-            Stop::NotInstalled => "is not installed".to_string(),
-            Stop::Stopped => "stopped".to_string(),
+            Stop::NotInstalled => "is not installed".into(),
+            Stop::CannotStart(e) => format!("cannot start: {e}"),
+            Stop::Stopped => "stopped".into(),
             Stop::TimedOut => format!("gave no answer within {} s", TIMEOUT.as_secs()),
             Stop::Aborted => unreachable!("an aborted wait leaves the server on"),
         };
@@ -175,6 +173,7 @@ fn new_errors(errors: Vec<Error>, baseline: &[String]) -> Vec<Error> {
 
 enum Stop {
     NotInstalled,
+    CannotStart(std::io::Error),
     Stopped,
     TimedOut,
     Aborted,
@@ -182,7 +181,8 @@ enum Stop {
 
 struct Server {
     child: Child,
-    stdin: Arc<Mutex<ChildStdin>>,
+    /// Messages for the writer thread, so a server that stops reading cannot block past the deadline or Esc.
+    outbox: Sender<Value>,
     /// Responses and notifications; a reader thread answers the server's own requests.
     inbox: Receiver<Value>,
     next_id: u64,
@@ -200,12 +200,12 @@ impl Server {
         let mut child = match crate::process::command(program).args(words).current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
             Ok(child) => child,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(Stop::NotInstalled),
-            Err(_) => return Err(Stop::Stopped),
+            Err(e) => return Err(Stop::CannotStart(e)),
         };
-        let stdin = Arc::new(Mutex::new(child.stdin.take().expect("stdin is piped")));
+        let outbox = writer(child.stdin.take().expect("stdin is piped"));
         let stdout = child.stdout.take().expect("stdout is piped");
         let (sender, inbox) = mpsc::channel();
-        let replies = stdin.clone();
+        let replies = outbox.clone();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             while let Some(message) = read_frame(&mut reader) {
@@ -213,15 +213,15 @@ impl Server {
                     // workspace/configuration wants one value per item; null means "use your defaults".
                     let items = message["params"]["items"].as_array().filter(|_| method == "workspace/configuration");
                     let result = items.map_or(Value::Null, |items| Value::Array(vec![Value::Null; items.len()]));
-                    let _ = send(&replies, json!({"id": id, "result": result}));
+                    let _ = replies.send(json!({"id": id, "result": result}));
                 } else if sender.send(message).is_err() {
                     return;
                 }
             }
         });
-        let mut server = Server { child, stdin, inbox, next_id: 1, pull: false, versions: HashMap::new(), last_used: Instant::now() };
+        let mut server = Server { child, outbox, inbox, next_id: 1, pull: false, versions: HashMap::new(), last_used: Instant::now() };
         let uri = file_uri(root);
-        let name = root.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
+        let name = root.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
         let capabilities = json!({"textDocument": {"publishDiagnostics": {"versionSupport": true}, "diagnostic": {"dynamicRegistration": false}}});
         let params = json!({"processId": std::process::id(), "rootUri": uri, "workspaceFolders": [{"uri": uri, "name": name}], "capabilities": capabilities});
         let reply = server.request("initialize", params, deadline, abort)?;
@@ -234,6 +234,8 @@ impl Server {
     fn diagnostics(&mut self, file: &Path, text: &str, language_id: &str, deadline: Instant, abort: &AtomicBool) -> Result<Value, Stop> {
         let uri = file_uri(file);
         let version = self.versions.get(file).map_or(1, |version| version + 1);
+        // Diagnostics queued for an earlier version carry no version on some servers and would pass as this one's.
+        while self.inbox.try_recv().is_ok() {}
         if version == 1 {
             self.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri, "languageId": language_id, "version": version, "text": text}}))?;
         } else {
@@ -243,7 +245,8 @@ impl Server {
         self.last_used = Instant::now();
         if self.pull {
             let reply = self.request("textDocument/diagnostic", json!({"textDocument": {"uri": uri}}), deadline, abort)?;
-            return Ok(reply["result"]["items"].clone());
+            // An error reply has no items; returning Null would read as "no errors".
+            return reply["result"]["items"].is_array().then(|| reply["result"]["items"].clone()).ok_or(Stop::Stopped);
         }
         let own = |message: &Value| {
             let params = &message["params"];
@@ -262,12 +265,12 @@ impl Server {
     fn request(&mut self, method: &str, params: Value, deadline: Instant, abort: &AtomicBool) -> Result<Value, Stop> {
         let id = self.next_id;
         self.next_id += 1;
-        send(&self.stdin, json!({"id": id, "method": method, "params": params})).map_err(|_| Stop::Stopped)?;
+        self.outbox.send(json!({"id": id, "method": method, "params": params})).map_err(|_| Stop::Stopped)?;
         self.wait_for(deadline, abort, |message| message["id"] == id && message.get("method").is_none())
     }
 
     fn notify(&self, method: &str, params: Value) -> Result<(), Stop> {
-        send(&self.stdin, json!({"method": method, "params": params})).map_err(|_| Stop::Stopped)
+        self.outbox.send(json!({"method": method, "params": params})).map_err(|_| Stop::Stopped)
     }
 
     /// The first message that `wanted` accepts; checks Esc every 50 ms.
@@ -296,12 +299,19 @@ impl Drop for Server {
     }
 }
 
-fn send(stdin: &Mutex<ChildStdin>, mut message: Value) -> std::io::Result<()> {
-    message["jsonrpc"] = "2.0".into();
-    let body = message.to_string();
-    let mut stdin = stdin.lock().unwrap();
-    write!(stdin, "Content-Length: {}\r\n\r\n{body}", body.len())?;
-    stdin.flush()
+/// Writes each queued message to the server; ends when the server closes its stdin or every sender is gone.
+fn writer(mut stdin: ChildStdin) -> Sender<Value> {
+    let (outbox, queued) = mpsc::channel::<Value>();
+    std::thread::spawn(move || {
+        for mut message in queued {
+            message["jsonrpc"] = "2.0".into();
+            let body = message.to_string();
+            if write!(stdin, "Content-Length: {}\r\n\r\n{body}", body.len()).and_then(|()| stdin.flush()).is_err() {
+                return;
+            }
+        }
+    });
+    outbox
 }
 
 /// One `Content-Length` framed JSON message; None when the stream ends or breaks the framing.
@@ -322,19 +332,21 @@ fn read_frame(reader: &mut impl BufRead) -> Option<Value> {
             length = value.trim().parse().ok();
         }
     }
-    let mut body = vec![0; length?];
+    // A broken or hostile server could announce terabytes; the allocation would abort the agent.
+    let mut body = vec![0; length.filter(|length| *length <= MAX_FRAME_BYTES)?];
     reader.read_exact(&mut body).ok()?;
     serde_json::from_slice(&body).ok()
 }
 
 /// RFC 3986 path: every byte except unreserved characters and `/` is percent-encoded.
 fn file_uri(path: &Path) -> String {
+    use std::fmt::Write as _;
     let mut uri = String::from("file://");
     for byte in path.to_string_lossy().bytes() {
         if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
             uri.push(byte as char);
         } else {
-            uri.push_str(&format!("%{byte:02X}"));
+            write!(uri, "%{byte:02X}").expect("writing to a String cannot fail");
         }
     }
     uri
@@ -352,6 +364,7 @@ mod tests {
         assert_eq!(read_frame(&mut reader), Some(json!({"id": 1, "result": "é"})));
         assert_eq!(read_frame(&mut reader), Some(json!({})));
         assert_eq!(read_frame(&mut reader), None);
+        assert_eq!(read_frame(&mut "Content-Length: 100000000000\r\n\r\n{}".as_bytes()), None);
     }
 
     #[test]
@@ -374,8 +387,8 @@ mod tests {
     fn servers_unused_for_the_idle_time_stop() {
         let server = |last_used: Instant| {
             let mut child = crate::process::command("sleep").arg("60").stdin(Stdio::piped()).spawn().unwrap();
-            let stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
-            Server { child, stdin, inbox: mpsc::channel().1, next_id: 1, pull: false, versions: HashMap::new(), last_used }
+            let outbox = writer(child.stdin.take().unwrap());
+            Server { child, outbox, inbox: mpsc::channel().1, next_id: 1, pull: false, versions: HashMap::new(), last_used }
         };
         let mut lsp = Lsp::new(BTreeMap::new());
         lsp.servers.insert(("typescript".into(), "/old".into()), server(Instant::now() - IDLE - Duration::from_secs(1)));

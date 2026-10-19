@@ -104,7 +104,8 @@ pub fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut
         }
         let Some(data) = line.strip_prefix("data:").map(str::trim).filter(|d| *d != "[DONE]") else { continue };
         let event: Value = serde_json::from_str(data).map_err(|e| ApiError::fatal(format!("Bad stream event: {e}.")))?;
-        let index = event["output_index"].as_u64().unwrap_or(0) as usize;
+        // Bounded, so a bad index cannot make resize allocate gigabytes.
+        let index = event["output_index"].as_u64().unwrap_or(0).min(1023) as usize;
         if slots.len() <= index {
             slots.resize(index + 1, None);
             arguments.resize(index + 1, String::new());
@@ -114,7 +115,7 @@ pub fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut
             "response.output_item.added" => {
                 slots[index] = match item["type"].as_str() {
                     Some("message") => Some(json!({"type": "text", "text": ""})),
-                    Some("function_call") => Some(json!({"type": "tool_use", "id": item["call_id"], "name": item["name"], "input": {}})),
+                    // A call joins the reply only once output_item.done brings its arguments; a cut stream must not run it with `{}`.
                     _ => None,
                 };
             }
@@ -233,6 +234,21 @@ mod tests {
         assert_eq!(reply.stop_reason, "tool_use");
         assert_eq!((reply.usage.input, reply.usage.cache_read, reply.usage.output), (40, 60, 7));
         assert_eq!(reply.message["content"], json!([{"type": "text", "text": "Hi"}, {"type": "tool_use", "id": "call_1", "name": "bash", "input": {"command": "ls"}}]));
+    }
+
+    #[test]
+    fn an_aborted_stream_drops_a_tool_call_whose_arguments_never_arrived() {
+        struct Cut;
+        impl std::io::Read for Cut {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::ConnectionReset.into())
+            }
+        }
+        let added = r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"bash","arguments":""}}"#;
+        let body = format!("data: {added}\n\n");
+        let mut reader = std::io::BufReader::new(std::io::Read::chain(body.as_bytes(), Cut));
+        let reply = parse_stream(&mut reader, &AtomicBool::new(true), &mut |_| {}).ok().unwrap();
+        assert_eq!((reply.stop_reason.as_str(), &reply.message["content"]), ("aborted", &json!([])));
     }
 
     #[test]

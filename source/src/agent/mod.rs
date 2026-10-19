@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -80,9 +80,16 @@ Keep each section concise. Preserve exact file paths, function names, and error 
 
 const SUMMARY_PREFIX: &str = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 const SUMMARY_SUFFIX: &str = "\n</summary>";
+/// The result of a tool call or wait that Esc stopped.
+pub const ABORTED: &str = "Operation aborted";
 const TOOL_RESULT_SUMMARY_CHARS: usize = 2000;
+const COMPACT_MAX_TOKENS: u64 = 128_000;
+const SNAPSHOT_FAILED: &str = "File snapshot failed, a rewind will not restore files from this tool call";
 const NAMING_SYSTEM: &str =
     "Name a coding session from the user's first message. Reply with the name only: 3 to 6 words naming the concrete task, in the language of the message, one line, no quotes, no markdown.";
+const NAMING_PROMPT_CHARS: usize = 2000;
+const NAMING_MAX_TOKENS: u64 = 1000;
+const TITLE_CHARS: usize = 80;
 /// What the agent reports while it works; the TUI renders these, print mode writes them to stdout.
 pub enum Event {
     Text(String),
@@ -175,7 +182,7 @@ pub struct Agent {
     pub condensed: Vec<Condensed>,
     /// Number of the next short ref (`t7`).
     pub next_ref: usize,
-    pub pending_condense: Vec<JoinHandle<Result<(Condensed, Usage), String>>>,
+    pub pending_condense: Vec<JoinHandle<Result<(Condensed, api::Reply), String>>>,
     pub pending_title: Option<JoinHandle<Result<String, String>>>,
     pub usage: Usage,
     pub turns: u64,
@@ -307,9 +314,12 @@ impl Agent {
             self.start_naming(text);
         }
         let mut content: Vec<Value> = self.shell_context.drain(..).map(|text| json!({"type": "text", "text": text})).collect();
-        let todo_notes = std::mem::take(&mut self.todos.lock().unwrap().user_notes);
+        let mut todos = self.todos.lock().unwrap();
+        let todo_notes = std::mem::take(&mut todos.user_notes);
+        let todo_entry = todos.entry();
+        drop(todos);
         if !todo_notes.is_empty() {
-            self.session.append(&self.todos.lock().unwrap().entry())?;
+            self.session.append(&todo_entry)?;
             content.push(json!({"type": "text", "text": todo_notes.join("\n")}));
         }
         content.append(&mut self.images);
@@ -317,9 +327,13 @@ impl Agent {
         self.push(json!({"role": "user", "content": content}))?;
         let turns_before = self.turns;
         let result = self.run_turns(text, emit);
-        if result.is_err() && self.turns == turns_before {
-            // No reply means the API refused this prompt (e.g. a 400 on its image); resending it would fail again.
-            self.rewind(self.messages.len() - 1)?;
+        if let Err(error) = &result {
+            if self.turns == turns_before {
+                // No reply means the API refused this prompt (e.g. a 400 on its image); resending it would fail again.
+                self.rewind(self.messages.len() - 1).map_err(|e| format!("{error}; {e}"))?;
+            } else {
+                self.answer_unpaired_calls(error).map_err(|e| format!("{error}; {e}"))?;
+            }
         }
         // A title is cosmetic: on failure /resume falls back to the first prompt line, and one still naming waits for the next prompt.
         if let Some(naming) = self.pending_title.take_if(|naming| naming.is_finished())
@@ -329,6 +343,23 @@ impl Agent {
         }
         self.plugins.event(json!({"type": "prompt_end", "error": result.as_ref().err(), "context": self.plugin_context()}));
         result
+    }
+
+    /// A turn that failed between a reply's tool calls and their results leaves calls the API requires answers to,
+    /// so every later prompt would get a 400. Answering them with the error keeps the files the calls changed.
+    fn answer_unpaired_calls(&mut self, error: &str) -> Result<(), String> {
+        let Some(last) = self.messages.last().filter(|message| message["role"] == "assistant") else { return Ok(()) };
+        let results: Vec<Value> = last["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|block| block["type"] == "tool_use")
+            .map(|call| json!({"type": "tool_result", "tool_use_id": call["id"], "content": format!("Interrupted: {error}"), "is_error": true}))
+            .collect();
+        if results.is_empty() {
+            return Ok(());
+        }
+        self.push(json!({"role": "user", "content": results}))
     }
 
     /// Sent with every plugin message; see plugins/README.md.
@@ -374,7 +405,8 @@ impl Agent {
             }
             self.last_context_tokens = reply.usage.context_tokens();
             emit(Event::TurnEnd { usage: reply.usage });
-            if reply.stop_reason == "aborted" {
+            let aborted = reply.stop_reason == "aborted";
+            if aborted {
                 keep_finished_text(&mut reply.message);
             }
             let calls: Vec<Value> = reply.message["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use").cloned().collect();
@@ -382,8 +414,8 @@ impl Agent {
             if reply.message["content"].as_array().is_some_and(|c| !c.is_empty()) {
                 self.push(reply.message)?;
             }
-            if reply.stop_reason == "aborted" {
-                emit(Event::Notice("Operation aborted".into()));
+            if aborted {
+                emit(Event::Notice(ABORTED.into()));
                 return Ok(answer);
             }
             if calls.is_empty() {
@@ -393,7 +425,8 @@ impl Agent {
                 }
                 let queued = self.take_queued(emit);
                 if queued.is_empty() {
-                    let failures = self.run_edit_hooks(std::mem::take(&mut edited), text, emit);
+                    // Every file edited this prompt, so a fix round that leaves a failing file alone still sees it fail.
+                    let failures = self.run_edit_hooks(edited.clone(), text, emit);
                     if failures.is_empty() || self.abort.load(Ordering::Relaxed) {
                         return Ok(answer);
                     }
@@ -443,7 +476,7 @@ impl Agent {
             results.extend(self.take_queued(emit));
             self.push(json!({"role": "user", "content": results}))?;
             if self.abort.load(Ordering::Relaxed) {
-                emit(Event::Notice("Operation aborted".into()));
+                emit(Event::Notice(ABORTED.into()));
                 return Ok(answer);
             }
             self.start_condense(&answer, finished);
@@ -456,17 +489,15 @@ impl Agent {
         if files.is_empty() {
             return Vec::new();
         }
-        let hooks = match edit_hooks::hooks(&files) {
-            Ok(hooks) => hooks,
-            Err(error) => return vec![error],
-        };
-        let mut failures = Vec::new();
+        let (hooks, mut failures) = edit_hooks::hooks(&files);
         for hook in hooks {
             if self.abort.load(Ordering::Relaxed) {
                 break;
             }
             let input = json!({"command": hook.command, "timeout": 120});
-            if let Some(refusal) = self.check_permission("bash", &input, &[], user_request, emit) {
+            // The directory is part of what gets approved, so a grant does not also cover the command in cwd.
+            let approved = json!({"command": format!("cd {} && {}", edit_hooks::shell_quote(&hook.dir.display().to_string()), hook.command), "timeout": 120});
+            if let Some(refusal) = self.check_permission("bash", &approved, &[], user_request, emit) {
                 emit(Event::Notice(format!("[edit-hooks] {} skipped: {refusal}", hook.command)));
                 continue;
             }
@@ -482,14 +513,14 @@ impl Agent {
     /// Runs one tool call after the permission check; agent-level tools are handled here, file and shell tools in `tools`.
     fn run_tool(&mut self, name: &str, input: &Value, targets: &[PathBuf], user_request: &str, emit: &mut dyn FnMut(Event)) -> (String, bool) {
         if self.abort.load(Ordering::Relaxed) {
-            return ("Operation aborted".into(), true);
+            return (ABORTED.into(), true);
         }
         if matches!(name, "bash" | "bg_start")
             && let Some(reason) = guard::bash(input["command"].as_str().unwrap_or_default())
         {
             return (reason, true);
         }
-        if name == "bash"
+        if matches!(name, "bash" | "bg_start")
             && let Some(reason) = conflicts::commit_blocked(input["command"].as_str().unwrap_or_default(), &self.cwd)
         {
             return (reason, true);
@@ -499,7 +530,7 @@ impl Agent {
         }
         // After the permission check: starting a language server runs the repo's build scripts.
         // Files outside the project get no baseline, so after_edit skips them too: no server starts for /tmp or node_modules elsewhere.
-        for file in edit_hooks::edited_files(name, input, &self.cwd, &self.anchors).iter().filter(|file| file.starts_with(&self.cwd)) {
+        for file in targets.iter().filter(|file| file.starts_with(&self.cwd)) {
             if let Err(notice) = self.lsp.before_edit(file, &self.abort) {
                 emit(Event::Notice(notice));
             }
@@ -519,10 +550,7 @@ impl Agent {
             "bg_wait" => self.bg_wait(input),
             "web_search" | "fetch_content" | "get_search_content" | "source_check" => self.web.run(name, input),
             "ask_user_question" => self.ask_user(input, emit),
-            _ => match self.plugins.tool(name, input, &self.plugin_context(), &self.abort).or_else(|| self.mcp.tool(name, input, &self.abort)) {
-                Some(answer) => return answer,
-                None => return self.run_file_tool(name, input),
-            },
+            _ => return self.plugins.tool(name, input, &self.plugin_context(), &self.abort).or_else(|| self.mcp.tool(name, input, &self.abort)).unwrap_or_else(|| self.run_file_tool(name, input)),
         };
         match result {
             Ok(text) => (text, false),
@@ -560,7 +588,7 @@ impl Agent {
         }
         let Some(skill) = prompt::parse_skill(path) else { return };
         // Usage stats must not fail the read that triggered them.
-        let _ = skill_usage::record(&self.agent_dir, &skill.name, "agent", &self.cwd);
+        let _ = skill_usage::record(&self.agent_dir, &skill.name, skill_usage::By::Agent, &self.cwd);
     }
 
     fn todo(&mut self, input: &Value) -> Result<String, String> {
@@ -605,7 +633,7 @@ impl Agent {
                     .iter()
                     .map(|id| {
                         let id = id.as_str().unwrap_or_default();
-                        subagents.list.iter().find(|r| r.id == id && r.background).cloned().ok_or(format!("No background subagent {id}."))
+                        subagents.list.iter().find(|r| r.id == id && r.background).cloned().ok_or_else(|| format!("No background subagent {id}."))
                     })
                     .collect::<Result<_, _>>()?,
                 None => subagents.list.iter().filter(|r| r.background && r.is_running()).cloned().collect(),
@@ -640,7 +668,8 @@ impl Agent {
                 let thinking = task.effort.clone().unwrap_or_else(|| self.effort.clone());
                 let provider = self.client.catalog().iter().find(|c| c.id == model).map(|c| c.provider.clone());
                 let account = provider.and_then(|provider| Some(format!("{provider}={}", self.client.account(&provider)?.0)));
-                let launch = Launch { label: task.label.clone(), task: task.prompt.clone(), cwd: cwd.clone(), model, thinking, mode, parent_session: self.session.id.clone(), explore: task.explore, account };
+                let launch =
+                    Launch { label: task.label.clone(), task: task.prompt.clone(), cwd: cwd.clone(), model, thinking, mode, parent_session: self.session.id.clone(), explore: task.explore, account };
                 // The tool reports failure, so this chunk's runs must not keep going; earlier chunks have finished.
                 match self.subagents.lock().unwrap().spawn(launch, background, &self.follow_ups) {
                     Ok(run) => started.push(run),
@@ -655,7 +684,7 @@ impl Agent {
             }
             runs.extend(started);
             if self.abort.load(Ordering::Relaxed) {
-                return Err("Operation aborted".into());
+                return Err(ABORTED.into());
             }
         }
         if background {
@@ -672,20 +701,21 @@ impl Agent {
         let mut goal = self.goal.lock().unwrap();
         let text = match name {
             "create_goal" => {
-                let objective = input["objective"].as_str().filter(|o| !o.trim().is_empty()).ok_or("Error: objective required")?;
+                let objective = input["objective"].as_str().filter(|o| !o.trim().is_empty()).ok_or("Objective required.")?;
                 *goal = Some(Goal::new(objective, input["token_budget"].as_u64()));
                 format!("Goal created: {objective}")
             }
             "update_goal" => {
                 if input["status"] != "complete" {
-                    return Err("Error: status must be \"complete\"".into());
+                    return Err("Status must be \"complete\".".into());
                 }
-                let goal = goal.as_mut().ok_or("Error: no goal")?;
+                let goal = goal.as_mut().ok_or("No goal.")?;
                 goal.status = GoalStatus::Complete;
                 goal.evidence = input["evidence"].as_str().map(String::from);
                 "Goal marked complete.".into()
             }
-            _ => return Ok(goal.as_ref().map_or("No goal.".into(), Goal::summary)),
+            "get_goal" => return Ok(goal.as_ref().map_or("No goal.".into(), Goal::summary)),
+            _ => unreachable!("run_tool routes only the goal tools here"),
         };
         self.session.append(&Goal::entry(goal.as_ref()))?;
         Ok(text)
@@ -750,8 +780,8 @@ impl Agent {
     }
 
     fn naming_request(&self, text: &str) -> Value {
-        let prompt: String = text.chars().take(2000).collect();
-        api::plain_request(&self.cheap_model, NAMING_SYSTEM, &prompt, 1000)
+        let prompt: String = text.chars().take(NAMING_PROMPT_CHARS).collect();
+        api::plain_request(&self.cheap_model, NAMING_SYSTEM, &prompt, NAMING_MAX_TOKENS)
     }
 
     /// Summarizes the turn's tool results on a background thread; the next request picks the summary up.
@@ -764,17 +794,17 @@ impl Agent {
             return;
         }
         let (system, prompt) = condense::summarizer_prompt(assistant_text, &calls);
-        let request = api::plain_request(&self.condense.model, system, &prompt, 4096);
+        let request = api::plain_request(&self.condense.model, system, &prompt, condense::SUMMARY_MAX_TOKENS);
         let client = self.client.clone();
         let first_ref = self.next_ref;
         self.next_ref += calls.len();
         self.pending_condense.push(std::thread::spawn(move || {
             let reply = client.send_quiet(&request, &AtomicBool::new(false))?;
             let summary = text_of(&reply.message);
-            if summary.trim().is_empty() || reply.stop_reason == "max_tokens" {
+            if summary.trim().is_empty() || reply.stop_reason != "end_turn" {
                 return Err("the summary came back empty or cut off".to_string());
             }
-            Ok((condense::condensed(&summary, &calls, first_ref), reply.usage))
+            Ok((condense::condensed(&summary, &calls, first_ref), reply))
         }));
     }
 
@@ -784,8 +814,9 @@ impl Agent {
         self.pending_condense = running;
         for handle in finished {
             match handle.join().unwrap_or_else(|_| Err("the summarizer thread panicked".into())) {
-                Ok((batch, usage)) => {
-                    self.usage.add(usage);
+                Ok((batch, reply)) => {
+                    self.usage.add(reply.usage);
+                    self.session.append(&usage::reply_entry(&reply, now_ms()))?;
                     self.session.append(&condense::entry(&batch))?;
                     self.condensed.push(batch);
                 }
@@ -836,6 +867,9 @@ impl Agent {
         match self.client.send_quiet(&api::plain_request(&self.cheap_model, permissions::REVIEW_SYSTEM, prompt, 2000), &self.abort) {
             Ok(reply) => {
                 self.usage.add(reply.usage);
+                if let Err(error) = self.session.append(&usage::reply_entry(&reply, now_ms())) {
+                    return (false, format!("the review could not be saved: {error}"));
+                }
                 permissions::parse_review(&text_of(&reply.message))
             }
             Err(error) => (false, format!("review failed: {error}")),
@@ -857,14 +891,11 @@ impl Agent {
     /// Drops the message at `index` and everything after it, and puts back the files those prompts changed.
     /// None: the work tree is not snapshotted, so files stay as they are.
     pub fn rewind(&mut self, index: usize) -> Result<Option<RestoredFiles>, String> {
-        let files = match &self.snapshots {
-            Some(snapshots) => Some(restore_files(snapshots, &self.checkpoints, index)?),
-            None => None,
-        };
+        let files = self.snapshots.as_ref().map(|snapshots| restore_files(snapshots, &self.checkpoints, index)).transpose()?;
         self.checkpoints.retain(|checkpoint| checkpoint.at < index);
         self.messages.truncate(index);
         self.session.append(&json!({"type": "rewind", "to": index}))?;
-        self.last_context_tokens = 0;
+        self.estimate_context_tokens();
         Ok(files)
     }
 
@@ -878,13 +909,13 @@ impl Agent {
         let before = match snapshots.take() {
             Ok(before) => before,
             Err(error) => {
-                emit(Event::Notice(format!("File snapshot failed, a rewind will not restore files from this tool call: {error}")));
+                emit(Event::Notice(format!("{SNAPSHOT_FAILED}: {error}")));
                 return Ok(self.run_tool(name, input, targets, user_request, emit));
             }
         };
         let result = self.run_tool(name, input, targets, user_request, emit);
-        let Some(snapshots) = &self.snapshots else { return Ok(result) };
-        let changed = snapshots.take().and_then(|after| Ok((snapshots.changed(&before, &after)?, after)));
+        let snapshots = self.snapshots.as_ref().expect("checked at the top of run_tool_with_checkpoint");
+        let changed = snapshots.take().and_then(|after| snapshots.changed(&before, &after).map(|paths| (paths, after)));
         match changed {
             Ok((paths, _)) if paths.is_empty() => {}
             Ok((paths, after)) => {
@@ -892,7 +923,7 @@ impl Agent {
                 self.session.append(&json!({"type": "tool_checkpoint", "at": at, "before": before, "after": after, "paths": paths}))?;
                 self.checkpoints.push(Checkpoint { at, before, after, paths });
             }
-            Err(error) => emit(Event::Notice(format!("File snapshot failed, a rewind will not restore files from this tool call: {error}"))),
+            Err(error) => emit(Event::Notice(format!("{SNAPSHOT_FAILED}: {error}"))),
         }
         Ok(result)
     }
@@ -908,10 +939,11 @@ impl Agent {
         // The cheap model summarizes only when the conversation fits its window, so a 1M-context session keeps the main model.
         let cheap = self.client.catalog().iter().find(|model| model.id == self.cheap_model && model.context_window >= self.context_window);
         let (model, output_limit) = cheap.map_or((self.model.clone(), u64::MAX), |model| (model.id.clone(), model.max_tokens));
-        let max_tokens = (self.reserve_tokens * 4 / 5).min(128_000).min(output_limit);
+        let max_tokens = (self.reserve_tokens * 4 / 5).min(COMPACT_MAX_TOKENS).min(output_limit);
         let request = api::plain_request(&model, SUMMARY_SYSTEM, &prompt, max_tokens);
         let reply = self.client.send_quiet(&request, &self.abort)?;
         self.usage.add(reply.usage);
+        self.session.append(&usage::reply_entry(&reply, now_ms()))?;
         if reply.stop_reason != "end_turn" {
             return Err(format!("Compaction summary stopped with {}.", reply.stop_reason));
         }
@@ -954,11 +986,8 @@ impl Agent {
         let Some(model) = model.cloned() else {
             return Err("No provider listed any model.".into());
         };
-        let mut notice = None;
-        if model.id != settings.model {
-            notice = Some(format!("{} is not on any account's model list; using {}.", settings.model, model.id));
-            settings.model = model.id.clone();
-        }
+        let notice = (model.id != settings.model).then(|| format!("{} is not on any account's model list; using {}.", settings.model, model.id));
+        settings.model = model.id.clone();
         let cheap_model = api::models::small_model(catalog, &model).id.clone();
         self.apply(settings, &model, &cheap_model);
         Ok(notice)
@@ -991,8 +1020,7 @@ impl Agent {
         // Earlier snapshots belong to the old checkout's snapshot repo.
         session.append(&json!({"type": "checkpoints_reset"}))?;
         self.grants = Grants::default();
-        let from = self.cwd.display();
-        self.shell_context.push(format!("Session moved from {from} to {}. Paths and git state from earlier messages refer to the old checkout.", cwd.display()));
+        self.shell_context.push(format!("Session moved from {} to {}. Paths and git state from earlier messages refer to the old checkout.", self.cwd.display(), cwd.display()));
         self.system = prompt::system_prompt(&self.agent_dir, &cwd, &disabled_skills);
         self.anchors = Anchors::new(&session.id);
         self.nested_instructions.clear();
@@ -1039,31 +1067,34 @@ impl Agent {
             std::fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?
         };
         // create_new: `/export README.md` must not replace a project file that no snapshot covers. 0600 like the session file it copies.
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(out).map_err(|e| match e.kind() {
+        write_new_private(out, &text).map_err(|e| match e.kind() {
             std::io::ErrorKind::AlreadyExists => format!("{} exists.", out.display()),
             _ => format!("Cannot write {}: {e}", out.display()),
-        })?;
-        if let Err(e) = std::io::Write::write_all(&mut file, text.as_bytes()) {
-            _ = std::fs::remove_file(out);
-            return Err(format!("Cannot write {}: {e}", out.display()));
-        }
-        Ok(())
+        })
     }
 
     /// The system prompt and tool schemas the next request sends, with modes and plugin tools applied.
     fn system_and_tools(&self) -> (String, Value) {
         let system = if self.modes.is_empty() { self.system.clone() } else { format!("{}\n\n{}", self.system, self.modes) };
         let mut tools = self.tools.clone();
-        tools.as_array_mut().expect("tool schemas are an array").extend(self.plugins.tools());
-        tools.as_array_mut().expect("tool schemas are an array").extend(self.mcp.tools());
+        let list = tools.as_array_mut().expect("tool schemas are an array");
+        list.extend(self.plugins.tools());
+        list.extend(self.mcp.tools());
         (system, tools)
     }
 
     /// The last request's context tokens split across `context::PARTS`.
-    pub fn context_split(&self) -> [u64; 5] {
+    pub fn context_split(&self) -> context::PerPart {
         let (system, tools) = self.system_and_tools();
         let system = format!("{system}{}", prompt::cwd_section(&self.cwd));
         context::split(&system, &tools, &condense::view(&self.messages, &self.condensed), self.last_context_tokens)
+    }
+
+    /// Set after a resume or rewind, so auto-compact runs before a first request that would not fit.
+    fn estimate_context_tokens(&mut self) {
+        let (system, tools) = self.system_and_tools();
+        let system = format!("{system}{}", prompt::cwd_section(&self.cwd));
+        self.last_context_tokens = context::estimate(&system, &tools, &condense::view(&self.messages, &self.condensed));
     }
 
     fn tool_schemas(&self) -> Value {
@@ -1083,7 +1114,8 @@ impl Agent {
         self.tools = self.tool_schemas();
         self.spent = history.spent;
         self.pending_condense.clear();
-        self.last_context_tokens = 0;
+        self.pending_title = None;
+        self.estimate_context_tokens();
         self.nested_instructions.clear();
         self.checkpoints = history.checkpoints;
     }
@@ -1128,10 +1160,22 @@ pub struct SessionInfo {
 }
 
 impl Session {
+    /// The session file for display; `None` when the session is not saved.
+    pub fn display_path(&self) -> Option<String> {
+        self.path.as_ref().map(|p| p.display().to_string())
+    }
+
     pub fn start(dir: &Path, save: bool, cwd: &Path, model: &str) -> Result<Session, String> {
         // 8 hex chars from the clock and pid: short enough to type after `--resume`.
-        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() ^ ((std::process::id() as u128) << 64);
-        let id = format!("{:08x}", (seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 64) as u32);
+        let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() ^ ((std::process::id() as u128) << 64);
+        // A colliding id would append this session's header to another session's file.
+        let id = loop {
+            let id = format!("{:08x}", (seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 64) as u32);
+            if !save || !dir.join(format!("{id}.jsonl")).exists() {
+                break id;
+            }
+            seed += 1;
+        };
         let mut session = Session { path: save.then(|| dir.join(format!("{id}.jsonl"))), id, forked_from: None, lock: None };
         if save {
             std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
@@ -1165,8 +1209,9 @@ impl Session {
     }
 
     fn fork(dir: &Path, path: &Path, id: String) -> Result<Session, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read session {}: {e}", path.display()))?;
-        let header: Value = serde_json::from_str(text.lines().next().unwrap_or_default()).map_err(|e| format!("{}:1: {e}", path.display()))?;
+        let cannot_read = |e: std::io::Error| format!("Cannot read {}: {e}", path.display());
+        let first_line = BufReader::new(File::open(path).map_err(cannot_read)?).lines().next().transpose().map_err(cannot_read)?;
+        let header: Value = serde_json::from_str(&first_line.unwrap_or_default()).map_err(|e| format!("{}:1: {e}", path.display()))?;
         let (Some(cwd), Some(model)) = (header["cwd"].as_str(), header["model"].as_str()) else {
             return Err(format!("{}:1: session header without cwd or model", path.display()));
         };
@@ -1188,19 +1233,19 @@ impl Session {
 
     /// Replays a session file without opening the session, e.g. to show a subagent's transcript.
     pub fn history(path: &Path) -> Result<History, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read session {}: {e}", path.display()))?;
+        let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
         let mut history = History::default();
         for (number, line) in text.lines().enumerate() {
             let entry: Value = serde_json::from_str(line).map_err(|e| format!("{}:{}: {e}", path.display(), number + 1))?;
+            let missing = |field: &str| format!("{}:{}: {} without {field}", path.display(), number + 1, entry["type"].as_str().unwrap_or_default());
             match entry["type"].as_str() {
                 Some("message") => history.messages.push(entry["message"].clone()),
                 Some("rewind") => {
-                    let to = entry["to"].as_u64().ok_or(format!("{}:{}: rewind without to", path.display(), number + 1))?;
+                    let to = entry["to"].as_u64().ok_or_else(|| missing("to"))?;
                     history.messages.truncate(to as usize);
                     history.checkpoints.retain(|checkpoint| checkpoint.at < to as usize);
                 }
                 Some("tool_checkpoint") => {
-                    let missing = |field: &str| format!("{}:{}: tool_checkpoint without {field}", path.display(), number + 1);
                     let text = |field: &str| entry[field].as_str().map(String::from).ok_or_else(|| missing(field));
                     let paths = entry["paths"].as_array().ok_or_else(|| missing("paths"))?;
                     history.checkpoints.push(Checkpoint {
@@ -1212,15 +1257,16 @@ impl Session {
                 }
                 Some("checkpoints_reset") => history.checkpoints.clear(),
                 Some("compaction") => {
-                    let first_kept = entry["first_kept"].as_u64().ok_or(format!("{}:{}: compaction without first_kept", path.display(), number + 1))?;
+                    let first_kept = entry["first_kept"].as_u64().ok_or_else(|| missing("first_kept"))?;
+                    let summary = entry["summary"].as_str().ok_or_else(|| missing("summary"))?;
                     // Two processes appending to one session file interleave their messages, so first_kept can point past them.
                     if first_kept as usize > history.messages.len() {
                         return Err(format!("{}:{}: compaction keeps from message {first_kept} of {}", path.display(), number + 1, history.messages.len()));
                     }
-                    history.messages = compacted(&history.messages, entry["summary"].as_str().unwrap_or_default(), first_kept as usize);
+                    history.messages = compacted(&history.messages, summary, first_kept as usize);
                     shift_checkpoints(&mut history.checkpoints, first_kept as usize);
                 }
-                Some("condense") => history.condensed.push(condense::from_entry(&entry)),
+                Some("condense") => history.condensed.push(condense::from_entry(&entry).ok_or_else(|| missing("refs or summary"))?),
                 Some("goal") => history.goal = Goal::from_entry(&entry),
                 Some("todo") => history.todos = Todos::from_entry(&entry),
                 Some("spent") => history.spent.add(Spent::from_entry(&entry)),
@@ -1277,8 +1323,11 @@ impl Session {
                 continue;
             }
             let Ok(modified) = path.metadata().and_then(|m| m.modified()) else { continue };
+            if modified >= cutoff {
+                continue;
+            }
             let Ok(file) = File::open(&path) else { continue };
-            if modified < cutoff && file.try_lock().is_ok() {
+            if file.try_lock().is_ok() {
                 // A file that cannot be removed now is tried again at the next start.
                 let _ = std::fs::remove_file(&path);
             }
@@ -1313,19 +1362,22 @@ impl Session {
             return Err(format!("{} is not an exported session.", file.display()));
         }
         let target = dir.join(format!("{id}.jsonl"));
-        if target.exists() {
-            return Err(format!("Session {id} is already here; /resume {id}."));
-        }
         std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
         // 0600 like `append`: a transcript holds file contents and command output.
-        let mut out = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&target).map_err(|e| format!("Cannot write {}: {e}", target.display()))?;
-        if let Err(e) = out.write_all(text.as_bytes()) {
-            // A partial file would pass as "already here" on the next import.
-            _ = std::fs::remove_file(&target);
-            return Err(format!("Cannot write {}: {e}", target.display()));
-        }
+        write_new_private(&target, &text).map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => format!("Session {id} is already here; /resume {id}."),
+            _ => format!("Cannot write {}: {e}", target.display()),
+        })?;
         Ok(id.to_string())
     }
+}
+
+/// Writes `text` to a new 0600 file; a failed write removes it, since a partial file would pass as "already here" on the next import.
+fn write_new_private(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+    file.write_all(text.as_bytes()).inspect_err(|_| {
+        let _ = std::fs::remove_file(path);
+    })
 }
 
 /// The full id for an exact id or a unique prefix of a saved session's id.
@@ -1346,7 +1398,7 @@ fn resolve_id(dir: &Path, prefix: &str) -> Result<String, String> {
     }
 }
 
-/// Index of the assistant message where the kept tail starts: the latest one with at least `keep_tokens` after it.
+/// Index of the assistant message where the kept tail starts: the latest one with at least `keep_tokens` after it, else the latest assistant message.
 fn cut_point(messages: &[Value], keep_tokens: u64) -> Option<usize> {
     let mut kept_chars = 0;
     let mut latest_assistant = None;
@@ -1356,7 +1408,7 @@ fn cut_point(messages: &[Value], keep_tokens: u64) -> Option<usize> {
             continue;
         }
         latest_assistant.get_or_insert(index);
-        if kept_chars / 4 >= keep_tokens {
+        if kept_chars / context::BYTES_PER_TOKEN >= keep_tokens {
             return Some(index);
         }
     }
@@ -1373,10 +1425,11 @@ pub fn rewind_points(messages: &[Value]) -> Vec<RewindPoint> {
         }
         // The typed text is the last block; shell output and todo notes come before it.
         let Some(text) = blocks.iter().rev().find_map(|block| block["text"].as_str()) else { continue };
-        if !text.starts_with(SUMMARY_PREFIX) {
-            let images = blocks.iter().filter(|block| block["type"] == "image").cloned().collect();
-            points.push(RewindPoint { at, text: text.to_string(), images });
+        if text.starts_with(SUMMARY_PREFIX) {
+            continue;
         }
+        let images = blocks.iter().filter(|block| block["type"] == "image").cloned().collect();
+        points.push(RewindPoint { at, text: text.to_string(), images });
     }
     points
 }
@@ -1390,12 +1443,7 @@ pub struct FileChange {
 
 /// Files this session's tool calls changed that still differ from how they were before the first change.
 fn session_changes(snapshots: &Snapshots, checkpoints: &[Checkpoint]) -> Result<Vec<FileChange>, String> {
-    let mut first_before: BTreeMap<&str, &str> = BTreeMap::new();
-    for checkpoint in checkpoints {
-        for path in &checkpoint.paths {
-            first_before.entry(path).or_insert(&checkpoint.before);
-        }
-    }
+    let first_before = first_before(checkpoints);
     if first_before.is_empty() {
         return Ok(Vec::new());
     }
@@ -1420,11 +1468,11 @@ pub struct RestoredFiles {
 /// Puts each file this session's tool calls from message `index` on changed back as it was before the first of them.
 fn restore_files(snapshots: &Snapshots, checkpoints: &[Checkpoint], index: usize) -> Result<RestoredFiles, String> {
     let mut files = RestoredFiles::default();
-    let mut first_before: BTreeMap<&str, &str> = BTreeMap::new();
+    let checkpoints: Vec<&Checkpoint> = checkpoints.iter().filter(|checkpoint| checkpoint.at >= index).collect();
+    let first_before = first_before(checkpoints.iter().copied());
     let mut last_after: BTreeMap<&str, &str> = BTreeMap::new();
-    for checkpoint in checkpoints.iter().filter(|checkpoint| checkpoint.at >= index) {
+    for checkpoint in checkpoints {
         for path in &checkpoint.paths {
-            first_before.entry(path).or_insert(&checkpoint.before);
             last_after.insert(path, &checkpoint.after);
         }
     }
@@ -1439,11 +1487,13 @@ fn restore_files(snapshots: &Snapshots, checkpoints: &[Checkpoint], index: usize
         let before_blob = snapshots.blob(before, path);
         if current != snapshots.blob(after, path) {
             files.kept.push(path.into());
-        } else if current != before_blob && before_blob.is_none() {
-            deletions.push((path, before));
         } else if current != before_blob {
-            snapshots.restore(before, path)?;
-            files.restored.push(path.into());
+            if before_blob.is_none() {
+                deletions.push((path, before));
+            } else {
+                snapshots.restore(before, path)?;
+                files.restored.push(path.into());
+            }
         }
     }
     // Snapshots skip ignored files, so a path missing from `before` may have been ignored then (an unignored `.env`).
@@ -1457,6 +1507,17 @@ fn restore_files(snapshots: &Snapshots, checkpoints: &[Checkpoint], index: usize
         }
     }
     Ok(files)
+}
+
+/// Each path's snapshot from before the first of `checkpoints` that changed it.
+fn first_before<'a>(checkpoints: impl IntoIterator<Item = &'a Checkpoint>) -> BTreeMap<&'a str, &'a str> {
+    let mut first_before = BTreeMap::new();
+    for checkpoint in checkpoints {
+        for path in &checkpoint.paths {
+            first_before.entry(path.as_str()).or_insert(checkpoint.before.as_str());
+        }
+    }
+    first_before
 }
 
 /// The summary takes index 0, so a kept message moves from first_kept to 1.
@@ -1528,7 +1589,9 @@ fn result_sections(runs: &[Arc<subagent::Run>]) -> String {
 fn stop_after_failed_spawn(error: String, started: &[Arc<subagent::Run>], finished: &[Arc<subagent::Run>]) -> String {
     let mut message = error;
     if !started.is_empty() {
-        started.iter().for_each(|run| run.stop());
+        for run in started {
+            run.stop();
+        }
         // A stopped background run still reports as a follow-up, so the model needs its id.
         let ids: Vec<&str> = started.iter().map(|run| run.id.as_str()).collect();
         message = format!("{message} Stopped the ones already started: {}.", ids.join(", "));
@@ -1554,15 +1617,14 @@ fn name_session(client: &Client, session: &Session, cwd: &Path, request: &Value)
 
 fn session_title(cwd: &Path, topic: &str) -> String {
     let project = cwd.file_name().unwrap_or_default().to_string_lossy();
-    format!("{project}｜{topic}").chars().take(80).collect()
+    format!("{project}｜{topic}").chars().take(TITLE_CHARS).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Snapshots keeps one git index per process, so tests that take snapshots run one at a time.
-    static SNAPSHOT_INDEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use snapshots::tests::{SNAPSHOT_INDEX, git_work};
 
     fn assistant(text: &str) -> Value {
         json!({"role": "assistant", "content": [{"type": "text", "text": text}]})
@@ -1724,11 +1786,7 @@ mod tests {
     #[test]
     fn rewind_restores_only_what_this_session_changed() {
         let _index = SNAPSHOT_INDEX.lock().unwrap();
-        let root = std::env::temp_dir().join(format!("agent-restore-{}", std::process::id()));
-        let work = root.join("work");
-        std::fs::create_dir_all(&work).unwrap();
-        let git = |args: &[&str]| assert!(crate::process::command("git").arg("-C").arg(&work).args(args).output().unwrap().status.success());
-        git(&["init", "-q"]);
+        let (root, work) = git_work("agent-restore");
         let write = |name: &str, text: &str| std::fs::write(work.join(name), text).unwrap();
         let read = |name: &str| std::fs::read_to_string(work.join(name)).ok();
         let snapshots = Snapshots::open(&root, &work).unwrap();
@@ -1742,6 +1800,8 @@ mod tests {
         };
         write("a.txt", "v1");
         let first = tool_call(1, &[("a.txt", "v2")]);
+        let store = std::fs::read_dir(root.join(".agents/snapshots")).unwrap().next().unwrap().unwrap();
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&store.metadata().unwrap().permissions()) & 0o777, 0o700, "snapshots hold file contents");
         write("between.txt", "user");
         let second = tool_call(3, &[("a.txt", "v3"), ("new.txt", "agent"), ("shared.txt", "agent")]);
         write("other.txt", "another session");
@@ -1758,10 +1818,7 @@ mod tests {
     #[test]
     fn rewind_keeps_a_file_that_was_ignored_before_the_tool_call() {
         let _index = SNAPSHOT_INDEX.lock().unwrap();
-        let root = std::env::temp_dir().join(format!("agent-restore-ignored-{}", std::process::id()));
-        let work = root.join("work");
-        std::fs::create_dir_all(&work).unwrap();
-        assert!(crate::process::command("git").arg("-C").arg(&work).args(["init", "-q"]).output().unwrap().status.success());
+        let (root, work) = git_work("agent-restore-ignored");
         std::fs::write(work.join(".gitignore"), ".env\n").unwrap();
         std::fs::write(work.join(".env"), "local").unwrap();
         let snapshots = Snapshots::open(&root, &work).unwrap();
@@ -1778,67 +1835,6 @@ mod tests {
     }
 
     #[test]
-    fn restoring_a_path_with_glob_characters_touches_only_that_file() {
-        let _index = SNAPSHOT_INDEX.lock().unwrap();
-        let root = std::env::temp_dir().join(format!("agent-restore-glob-{}", std::process::id()));
-        let work = root.join("work");
-        std::fs::create_dir_all(&work).unwrap();
-        assert!(crate::process::command("git").arg("-C").arg(&work).args(["init", "-q"]).status().unwrap().success());
-        std::fs::write(work.join("a*.txt"), "v1").unwrap();
-        std::fs::write(work.join("ab.txt"), "v1").unwrap();
-        let snapshots = Snapshots::open(&root, &work).unwrap();
-        let tree = snapshots.take().unwrap();
-        std::fs::write(work.join("a*.txt"), "v2").unwrap();
-        std::fs::write(work.join("ab.txt"), "user").unwrap();
-        snapshots.restore(&tree, "a*.txt").unwrap();
-        let state = [std::fs::read_to_string(work.join("a*.txt")).unwrap(), std::fs::read_to_string(work.join("ab.txt")).unwrap()];
-        std::fs::remove_dir_all(&root).unwrap();
-        assert_eq!(state, ["v1", "user"]);
-    }
-
-    #[test]
-    fn snapshots_skip_files_the_project_excludes_locally() {
-        let _index = SNAPSHOT_INDEX.lock().unwrap();
-        let root = std::env::temp_dir().join(format!("agent-snapshot-exclude-{}", std::process::id()));
-        let work = root.join("work");
-        std::fs::create_dir_all(&work).unwrap();
-        assert!(crate::process::command("git").arg("-C").arg(&work).args(["init", "-q"]).status().unwrap().success());
-        std::fs::write(work.join(".git/info/exclude"), ".env\n").unwrap();
-        std::fs::write(work.join(".env"), "TOKEN=x").unwrap();
-        std::fs::write(work.join("a.txt"), "a").unwrap();
-        let snapshots = Snapshots::open(&root, &work).unwrap();
-        let tree = snapshots.take().unwrap();
-        let git_dir = std::fs::read_dir(root.join(".agents/snapshots")).unwrap().next().unwrap().unwrap().path();
-        let listing = crate::process::command("git").arg("--git-dir").arg(&git_dir).args(["ls-tree", "--name-only", &tree]).output().unwrap();
-        std::fs::remove_dir_all(&root).unwrap();
-        assert_eq!(String::from_utf8(listing.stdout).unwrap(), "a.txt\n");
-    }
-
-    #[test]
-    fn opening_snapshots_drops_trees_older_than_the_kept_days() {
-        let _index = SNAPSHOT_INDEX.lock().unwrap();
-        let root = std::env::temp_dir().join(format!("agent-expire-{}", std::process::id()));
-        let work = root.join("work");
-        std::fs::create_dir_all(&work).unwrap();
-        assert!(crate::process::command("git").arg("-C").arg(&work).args(["init", "-q"]).status().unwrap().success());
-        std::fs::write(work.join("a.txt"), "v1").unwrap();
-        let recent = Snapshots::open(&root, &work).unwrap().take().unwrap();
-        let git_dir = std::fs::read_dir(root.join(".agents/snapshots")).unwrap().next().unwrap().unwrap().path();
-        let refs = || {
-            let output = crate::process::command("git").arg("--git-dir").arg(&git_dir).args(["for-each-ref", "--format=%(refname)"]).output().unwrap();
-            String::from_utf8(output.stdout).unwrap().lines().map(String::from).collect::<Vec<_>>()
-        };
-        let recent_ref = refs().pop().unwrap();
-        let old_ref = format!("refs/snapshots/1/{recent}");
-        assert!(crate::process::command("git").arg("--git-dir").arg(&git_dir).args(["update-ref", &old_ref, &recent]).status().unwrap().success());
-
-        Snapshots::open(&root, &work).unwrap();
-        let kept = refs();
-        std::fs::remove_dir_all(&root).unwrap();
-        assert_eq!(kept, [recent_ref]);
-    }
-
-    #[test]
     fn session_title_prefixes_the_project_and_cuts_at_80_code_points() {
         assert_eq!(session_title(Path::new("/src/agent"), "Fix /changes diff view"), "agent｜Fix /changes diff view");
         let title = session_title(Path::new("/src/zażółć"), &"ę".repeat(100));
@@ -1848,10 +1844,7 @@ mod tests {
     #[test]
     fn changes_list_files_this_session_left_different_with_their_diff() {
         let _index = SNAPSHOT_INDEX.lock().unwrap();
-        let root = std::env::temp_dir().join(format!("agent-changes-{}", std::process::id()));
-        let work = root.join("work");
-        std::fs::create_dir_all(&work).unwrap();
-        assert!(crate::process::command("git").arg("-C").arg(&work).args(["init", "-q"]).output().unwrap().status.success());
+        let (root, work) = git_work("agent-changes");
         let write = |name: &str, text: &str| std::fs::write(work.join(name), text).unwrap();
         let snapshots = Snapshots::open(&root, &work).unwrap();
         let tool_call = |writes: &[(&str, &str)]| {

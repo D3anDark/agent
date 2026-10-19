@@ -1,6 +1,7 @@
 //! source_check: search a claim, keep ranked sources with cited passages, and store the research artifact.
 
 use super::{Page, Web, fetch, providers, string_list};
+use crate::process::hash;
 use serde_json::{Map, Value, json};
 
 pub(super) const MAX_QUERIES: usize = 8;
@@ -21,15 +22,21 @@ impl Web {
         let config = providers::load_config(&self.config_path, self.provider_order()?)?;
         let domains = string_list(&input["domainFilter"]);
         let recency = input["recencyFilter"].as_str().and_then(super::providers::Recency::parse);
-        let proxy = input["proxy"].as_str();
+        let search = |text: &str| {
+            let query = providers::Query { text, num_results: super::num_results(&input["numResults"]), recency, domains: &domains, include_content: false, category: None };
+            providers::search(&config, &input["provider"], &query)
+        };
+        let outcomes: Vec<Result<providers::Response, String>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = queries.iter().map(|text| scope.spawn(|| search(text))).collect();
+            handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| Err("search thread panicked".into()))).collect()
+        });
 
         let mut provider = None;
         let mut summaries = Vec::new();
         let mut errors = Vec::new();
         let mut hits = Vec::new();
-        for text in &queries {
-            let query = providers::Query { text, num_results: super::num_results(&input["numResults"]), recency, domains: &domains, include_content: false, category: None, proxy };
-            match providers::search(&config, &input["provider"], &query) {
+        for (text, outcome) in queries.iter().zip(outcomes) {
+            match outcome {
                 Ok(response) => {
                     provider = provider.or(response.providers.first().cloned());
                     if !response.answer.is_empty() {
@@ -50,7 +57,7 @@ impl Web {
         hits.truncate(MAX_SOURCES);
         let fetched = if input["fetchContent"].as_bool().unwrap_or(false) {
             let urls: Vec<String> = hits.iter().take(FETCHED_SOURCES).map(|h| h.url.clone()).collect();
-            fetch::fetch_all(&urls, false, false, proxy)
+            fetch::fetch_all(&urls, false, false)
         } else {
             Vec::new()
         };
@@ -242,12 +249,6 @@ fn classify(url: &str) -> &'static str {
         return "blog";
     }
     "unknown"
-}
-
-pub fn hash(text: &str) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
-    let hex: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
-    format!("sha256:{hex}")
 }
 
 #[cfg(test)]

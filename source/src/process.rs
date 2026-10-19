@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 use std::os::fd::IntoRawFd;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output, Stdio};
@@ -26,6 +26,7 @@ struct SigInfo([u8; 128]);
 const P_PID: u32 = 1;
 const WEXITED: i32 = 4;
 const CLD_EXITED: i32 = 1;
+const CLD_DUMPED: i32 = 3;
 const SI_CODE_OFFSET: usize = 8;
 #[cfg(target_os = "linux")]
 const WNOWAIT: i32 = 0x0100_0000;
@@ -33,7 +34,7 @@ const WNOWAIT: i32 = 0x0100_0000;
 const WNOWAIT: i32 = 0x20;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 const SI_STATUS_OFFSET: usize = 24;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_pointer_width = "32")))]
 const SI_STATUS_OFFSET: usize = 20;
 
 pub const SIGHUP: i32 = 1;
@@ -62,7 +63,8 @@ fn new_session() -> std::io::Result<()> {
 /// existing one is kept only when this user made it private; another user's directory could hold planted symlinks.
 pub fn private_dir(dir: &Path) -> Result<(), String> {
     match std::fs::DirBuilder::new().mode(0o700).create(dir) {
-        Ok(()) => return Ok(()),
+        // The umask can strip owner bits from `mode`, and the next call would then refuse this directory.
+        Ok(()) => return std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("Cannot restrict {}: {e}", dir.display())),
         Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(format!("Cannot create {}: {e}", dir.display())),
         Err(_) => {}
     }
@@ -76,20 +78,38 @@ pub fn private_dir(dir: &Path) -> Result<(), String> {
 }
 
 /// Runs a `command(..)` with stdout and stderr captured. Past `timeout` its group is killed and the result is None.
-/// shortcut: output is read after exit, so a child that writes more than a pipe buffer (64 KiB) waits out the timeout.
 pub fn output_within(command: &mut Command, timeout: Duration) -> std::io::Result<Option<Output>> {
     let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    // Read while it runs: a child writing more than a pipe buffer (64 KiB) would otherwise block until the timeout.
+    let stdout = read_in_background(child.stdout.take());
+    let stderr = read_in_background(child.stderr.take());
     let deadline = Instant::now() + timeout;
-    while child.try_wait()?.is_none() {
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
         if Instant::now() > deadline {
             signal_group(child.id(), SIGKILL);
             child.wait()?;
             return Ok(None);
         }
-        // rtk's rewrite runs before every bash call, so the poll stays short.
+        // Short poll: callers such as the rtk rewrite sit on the bash tool's path.
         std::thread::sleep(Duration::from_millis(10));
-    }
-    child.wait_with_output().map(Some)
+    };
+    // A background child (`sleep 5 &`) keeps the pipes open, so the readers would wait for it.
+    signal_group(child.id(), SIGKILL);
+    let joined = |reader: std::thread::JoinHandle<Vec<u8>>| reader.join().expect("pipe reader does not panic");
+    Ok(Some(Output { status, stdout: joined(stdout), stderr: joined(stderr) }))
+}
+
+fn read_in_background(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+    let mut pipe = pipe.expect("piped above");
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        // A read error ends the capture early; the caller still gets the exit status and what arrived.
+        _ = pipe.read_to_end(&mut bytes);
+        bytes
+    })
 }
 
 /// Sends `signal` to every process in group `group`; a group that is already gone needs no handling.
@@ -112,8 +132,12 @@ pub fn wait_unreaped(pid: u32) -> std::io::Result<ExitStatus> {
     }
     let field = |offset: usize| i32::from_ne_bytes([info.0[offset], info.0[offset + 1], info.0[offset + 2], info.0[offset + 3]]);
     let status = field(SI_STATUS_OFFSET);
-    // The wait(2) encoding ExitStatus decodes: exit code in bits 8-15, terminating signal in bits 0-6.
-    Ok(ExitStatus::from_raw(if field(SI_CODE_OFFSET) == CLD_EXITED { (status & 0xff) << 8 } else { status & 0x7f }))
+    // The wait(2) encoding ExitStatus decodes: exit code in bits 8-15, terminating signal in bits 0-6, core dump in bit 7.
+    Ok(ExitStatus::from_raw(match field(SI_CODE_OFFSET) {
+        CLD_EXITED => (status & 0xff) << 8,
+        CLD_DUMPED => status & 0x7f | 0x80,
+        _ => status & 0x7f,
+    }))
 }
 
 static SIGNAL_PIPE: AtomicI32 = AtomicI32::new(-1);
@@ -147,17 +171,18 @@ pub fn exit_on_signal(cleanup: fn()) {
 
 /// Sends SIGHUP, then SIGKILL for those that ignore it (`nohup`), to the group of every direct child. Zombies count:
 /// a bg terminal whose `sh` exited (`wait_unreaped`) may still have members; macOS `pgrep -P` skips zombies, `ps` does not.
-fn hang_up_children() {
-    let Ok(ps) = command("ps").args(["-A", "-o", "pid=,ppid="]).stdout(Stdio::piped()).spawn() else { return };
-    let ps_pid = ps.id().to_string();
-    let Ok(output) = ps.wait_with_output() else { return };
+pub fn hang_up_children() {
+    // Bounded: a hung `ps` on a loaded host must not keep the agent from killing its children and exiting.
+    let Ok(Some(output)) = output_within(command("ps").args(["-A", "-o", "pid=,ppid=,comm="]), Duration::from_secs(2)) else { return };
     let agent = std::process::id().to_string();
     let mut groups: Vec<u32> = Vec::new();
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let mut fields = line.split_whitespace();
-        if let (Some(pid), Some(parent)) = (fields.next(), fields.next())
+        // `ps` lists itself as our child; it is reaped by now, so its pid may already belong to someone else.
+        if let (Some(pid), Some(parent), Some(program)) = (fields.next(), fields.next(), fields.next())
             && parent == agent
-            && pid != ps_pid
+            && program != "ps"
+            && !program.ends_with("/ps")
             && let Ok(pid) = pid.parse()
         {
             groups.push(pid);
@@ -176,12 +201,17 @@ fn hang_up_children() {
 }
 
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock is after 1970").as_millis() as u64
+}
+
+pub fn hash(text: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
+    let hex: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    format!("sha256:{hex}")
 }
 
 /// Whether `binary` is an executable file in some PATH directory; rtk and headroom are optional installs.
 pub fn installed(binary: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt;
     let Some(path) = std::env::var_os("PATH") else { return false };
     std::env::split_paths(&path).any(|dir| std::fs::metadata(dir.join(binary)).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
@@ -189,7 +219,6 @@ pub fn installed(binary: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn installed_finds_only_executables_on_path() {
@@ -215,6 +244,12 @@ mod tests {
         let started = Instant::now();
         assert!(output_within(command("sh").args(["-c", "sleep 5; echo late"]), Duration::from_millis(100)).unwrap().is_none());
         assert!(started.elapsed() < Duration::from_secs(2));
+        let started = Instant::now();
+        let output = output_within(command("sh").args(["-c", "echo hi; sleep 5 &"]), Duration::from_secs(5)).unwrap().unwrap();
+        assert_eq!(output.stdout, b"hi\n");
+        assert!(started.elapsed() < Duration::from_secs(2), "a leftover child holding the pipe was waited for");
+        let output = output_within(command("sh").args(["-c", "head -c 200000 /dev/zero"]), Duration::from_secs(2)).unwrap().expect("more than a pipe buffer is read while it runs");
+        assert_eq!(output.stdout.len(), 200_000);
     }
 
     #[test]

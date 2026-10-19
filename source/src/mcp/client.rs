@@ -5,13 +5,15 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
+/// Abort flag for requests nobody can cancel, like the handshake.
+static NEVER: AtomicBool = AtomicBool::new(false);
 /// `npx -y <package>` downloads the server on its first start.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 const TOOL_TIMEOUT: Duration = Duration::from_secs(600);
@@ -38,7 +40,7 @@ enum Transport {
 struct Process {
     child: Child,
     /// A writer thread owns stdin, so a server that stops reading never blocks the agent.
-    stdin: Sender<String>,
+    stdin: SyncSender<String>,
     pending: Pending,
 }
 
@@ -77,12 +79,11 @@ impl Client {
         };
         let client = Client { transport, next_id: AtomicU64::new(0) };
         client.handshake()?;
-        let never = AtomicBool::new(false);
         let mut tools = Vec::new();
         let mut cursor = Value::Null;
         loop {
             let params = if cursor.is_null() { json!({}) } else { json!({"cursor": cursor}) };
-            let page = client.request("tools/list", params, CONNECT_TIMEOUT, &never)?;
+            let page = client.request("tools/list", params, CONNECT_TIMEOUT, &NEVER)?;
             tools.extend(page["tools"].as_array().cloned().unwrap_or_default());
             if page["nextCursor"].is_null() {
                 return Ok((client, tools));
@@ -104,7 +105,7 @@ impl Client {
 
     fn handshake(&self) -> Result<(), String> {
         let params = json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "agent", "version": env!("CARGO_PKG_VERSION")}});
-        let result = self.request("initialize", params, CONNECT_TIMEOUT, &AtomicBool::new(false))?;
+        let result = self.request("initialize", params, CONNECT_TIMEOUT, &NEVER)?;
         if let (Transport::Http(http), Some(version)) = (&self.transport, result["protocolVersion"].as_str()) {
             *http.protocol.lock().unwrap() = version.into();
         }
@@ -140,7 +141,7 @@ impl Client {
         let message = json!({"jsonrpc": "2.0", "method": method});
         match &self.transport {
             Transport::Stdio(process) => {
-                let _ = process.stdin.send(message.to_string());
+                let _ = process.stdin.try_send(message.to_string());
                 Ok(())
             }
             // A notification gets 202 and no body, so the id is never read.
@@ -152,7 +153,7 @@ impl Client {
     fn cancel(&self, id: u64) {
         let message = json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": id}});
         match &self.transport {
-            Transport::Stdio(process) => _ = process.stdin.send(message.to_string()),
+            Transport::Stdio(process) => _ = process.stdin.try_send(message.to_string()),
             Transport::Http(http) => {
                 let request = http.prepare(&message);
                 std::thread::spawn(move || request.send(0));
@@ -168,7 +169,7 @@ impl Process {
             Some(pending) => pending.insert(id, reply),
             None => return Err(format!("The server exited before {method}.")),
         };
-        let _ = self.stdin.send(message.to_string());
+        let _ = self.stdin.try_send(message.to_string());
         let answer = wait(&answer, method, timeout, abort);
         if let Some(pending) = self.pending.lock().unwrap().as_mut() {
             pending.remove(&id);
@@ -183,7 +184,7 @@ fn wait<T>(answer: &Receiver<T>, method: &str, timeout: Duration, abort: &Atomic
         match answer.recv_timeout(Duration::from_millis(100)) {
             Ok(answer) => return Ok(answer),
             Err(RecvTimeoutError::Disconnected) => return Err(format!("The server exited during {method}.")),
-            Err(RecvTimeoutError::Timeout) if abort.load(Ordering::Relaxed) => return Err("Operation aborted".into()),
+            Err(RecvTimeoutError::Timeout) if abort.load(Ordering::Relaxed) => return Err(crate::agent::ABORTED.into()),
             Err(RecvTimeoutError::Timeout) if start.elapsed() >= timeout => return Err(format!("The server did not answer {method}.")),
             Err(RecvTimeoutError::Timeout) => {}
         }
@@ -201,7 +202,8 @@ fn spawn(command: &str, args: &[String], env: &[(String, String)], cwd: &Path, e
         .spawn()
         .map_err(|e| format!("Cannot start {command}: {e}"))?;
     let (mut stdin, stdout, stderr) = (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
-    let (lines, outbox) = mpsc::channel::<String>();
+    // Bounded: a server that never reads stdin must not grow memory; a dropped request times out in `wait`.
+    let (lines, outbox) = mpsc::sync_channel::<String>(64);
     std::thread::spawn(move || {
         for line in outbox {
             if writeln!(stdin, "{line}").is_err() {
@@ -226,7 +228,7 @@ fn spawn(command: &str, args: &[String], env: &[(String, String)], cwd: &Path, e
                     }
                 }
                 (_, Some(_)) if message.get("id").is_some() => {
-                    let _ = replies.send(answer_server_request(&message).to_string());
+                    let _ = replies.try_send(answer_server_request(&message).to_string());
                 }
                 _ => {}
             }
