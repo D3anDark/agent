@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -261,6 +261,8 @@ pub struct History {
     pub extra_dirs: Vec<PathBuf>,
     pub spent: Spent,
     pub checkpoints: Vec<Checkpoint>,
+    /// Provider to the account id that served the session's last reply, so a resume keeps the same account.
+    pub accounts: HashMap<String, String>,
 }
 
 /// Time and tokens of the user's commands, saved per command so the footer total survives a resume.
@@ -1002,14 +1004,15 @@ impl Agent {
         Ok(())
     }
 
-    /// Switches to the saved session `id`; returns its messages for the transcript.
-    pub fn open_session(&mut self, id: &str) -> Result<Vec<Value>, String> {
-        let (session, history) = Session::resume(&self.sessions_dir, id)?;
+    /// Switches to the saved session `id`; returns its messages for the transcript and the accounts that served it.
+    pub fn open_session(&mut self, id: &str) -> Result<(Vec<Value>, HashMap<String, String>), String> {
+        let (session, mut history) = Session::resume(&self.sessions_dir, id)?;
         self.session = session;
         let messages = history.messages.clone();
+        let accounts = std::mem::take(&mut history.accounts);
         self.load(history);
         self.announce_session();
-        Ok(messages)
+        Ok((messages, accounts))
     }
 
     /// /worktree: pi pins a session to its cwd, so the history moves to a new session started in `cwd`.
@@ -1043,7 +1046,7 @@ impl Agent {
     }
 
     /// /import: copies an exported session into the sessions dir and resumes it.
-    pub fn import_session(&mut self, file: &Path) -> Result<Vec<Value>, String> {
+    pub fn import_session(&mut self, file: &Path) -> Result<(Vec<Value>, HashMap<String, String>), String> {
         let id = Session::import(&self.sessions_dir, file)?;
         let target = self.sessions_dir.join(format!("{id}.jsonl"));
         self.open_session(&id).inspect_err(|_| {
@@ -1257,6 +1260,11 @@ impl Session {
                 Some("directory_added") => history.extra_dirs.extend(entry["path"].as_str().map(PathBuf::from)),
                 Some("todo") => history.todos = Todos::from_entry(&entry),
                 Some("spent") => history.spent.add(Spent::from_entry(&entry)),
+                Some("usage") => {
+                    if let (Some(provider), Some(account)) = (entry["provider"].as_str(), entry["account"].as_str()) {
+                        history.accounts.insert(provider.to_string(), account.to_string());
+                    }
+                }
                 _ => {}
             }
         }
@@ -1667,6 +1675,20 @@ mod tests {
         let (_, history) = Session::resume(&dir, &session.id).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(history.extra_dirs, [PathBuf::from("/a"), PathBuf::from("/b")]);
+    }
+
+    #[test]
+    fn resumed_session_remembers_the_last_account_per_provider() {
+        let dir = std::env::temp_dir().join(format!("agent-accounts-{}", std::process::id()));
+        let session = Session::start(&dir, true, Path::new("/w"), "m").unwrap();
+        session.append(&json!({"type": "usage", "provider": "anthropic", "account": "uuid-home"})).unwrap();
+        session.append(&json!({"type": "usage", "provider": "openai-codex", "account": "chatgpt-1"})).unwrap();
+        session.append(&json!({"type": "usage", "provider": "anthropic", "account": "uuid-work"})).unwrap();
+        session.append(&json!({"type": "usage", "provider": "anthropic", "account": null})).unwrap();
+        let (_, history) = Session::resume(&dir, &session.id).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let expected = HashMap::from([("anthropic".to_string(), "uuid-work".to_string()), ("openai-codex".to_string(), "chatgpt-1".to_string())]);
+        assert_eq!(history.accounts, expected);
     }
 
     #[test]
