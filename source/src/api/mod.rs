@@ -515,13 +515,15 @@ impl Client {
         self.refresh_usage(&accounts);
     }
 
-    /// Saves an account, replacing one with the same provider and name.
+    /// Saves an account, replacing one with the same provider and name and dropping that one's cached usage.
     pub fn add(&self, account: Account) -> Result<(), String> {
+        let usage_key = key(&account);
         let saved = accounts::update(&self.home, |list| {
             list.retain(|a| a.provider != account.provider || a.name != account.name);
             list.push(account);
             Ok(())
         })?;
+        self.state.lock().unwrap().usage.remove(&usage_key);
         self.reload(saved);
         Ok(())
     }

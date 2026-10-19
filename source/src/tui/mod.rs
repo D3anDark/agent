@@ -292,6 +292,11 @@ enum Command {
     PluginEvent(String, Value),
     /// Tells plugins the account picked in /account, so footer usage follows it.
     AccountPicked,
+    /// Tells plugins a /login overwrite gave a saved account a new provider account id, so per-id data can follow it.
+    AccountReplaced {
+        previous_id: String,
+        account_id: String,
+    },
     /// Writes the goal the UI changed to the session.
     SaveGoal,
     SaveSpent(Spent),
@@ -742,6 +747,11 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                 }
                 Command::AccountPicked => {
                     agent.plugins.event(json!({"type": "account_change", "context": agent.plugin_context()}));
+                    continue;
+                }
+                Command::AccountReplaced { previous_id, account_id } => {
+                    let params = json!({"type": "account_replace", "previousAccountId": previous_id, "accountId": account_id, "context": agent.plugin_context()});
+                    agent.plugins.event(params);
                     continue;
                 }
                 Command::PluginEvent(name, mut params) => {
@@ -1861,10 +1871,7 @@ impl App {
             return;
         }
         if let Some(Panel::Login(login)) = self.panel.as_mut() {
-            if key.code == KeyCode::Enter
-                && let Some(name) = login.taken_name(&self.client.accounts())
-            {
-                self.push(Item::Error(format!("An account named {name} already exists; pick another name.")));
+            if key.code == KeyCode::Enter && login.ask_overwrite(&self.client.accounts()) {
                 return;
             }
             let action = login.key(key);
@@ -2219,9 +2226,16 @@ impl App {
             login::Action::Save(account) => {
                 self.panel = None;
                 let name = account.name.clone();
+                let previous_id = self.client.accounts().into_iter().find(|saved| saved.provider == account.provider && saved.name == name).and_then(|saved| saved.account_id);
+                let account_id = account.account_id().map(String::from);
                 match self.client.add(account) {
                     Ok(()) => self.system("login", format!("Saved {name}.")),
-                    Err(error) => self.push(Item::Error(error)),
+                    Err(error) => return self.push(Item::Error(error)),
+                }
+                if let (Some(previous_id), Some(account_id)) = (previous_id, account_id)
+                    && previous_id != account_id
+                {
+                    let _ = self.commands.send(Command::AccountReplaced { previous_id, account_id });
                 }
             }
         }

@@ -60,10 +60,12 @@ pub enum Login {
         cancel: Arc<AtomicBool>,
         url: Option<String>,
     },
+    /// `overwrite` is set once the user confirmed replacing the saved account with the typed name.
     Name {
         provider: &'static str,
         secret: Secret,
         input: Editor,
+        overwrite: bool,
     },
 }
 
@@ -123,7 +125,15 @@ impl Login {
                 }
             },
             Login::Waiting { .. } => {}
-            Login::ClaudeCode { input, .. } | Login::ApiKey { input, .. } | Login::Name { input, .. } => match code {
+            Login::Name { input, overwrite, .. } => match code {
+                KeyCode::Enter if !input.text().trim().is_empty() => return self.submit(),
+                _ => {
+                    let before = input.text();
+                    input.edit_key(key);
+                    *overwrite &= input.text() == before;
+                }
+            },
+            Login::ClaudeCode { input, .. } | Login::ApiKey { input, .. } => match code {
                 KeyCode::Enter if !input.text().trim().is_empty() => return self.submit(),
                 _ => _ = input.edit_key(key),
             },
@@ -135,7 +145,10 @@ impl Login {
         if let Login::Choose { query, index, .. } = self {
             query.insert(text.trim());
             *index = 0;
-        } else if let Login::ClaudeCode { input, .. } | Login::ApiKey { input, .. } | Login::Name { input, .. } = self {
+        } else if let Login::Name { input, overwrite, .. } = self {
+            input.insert(text.trim());
+            *overwrite = false;
+        } else if let Login::ClaudeCode { input, .. } | Login::ApiKey { input, .. } = self {
             input.insert(text.trim());
         }
     }
@@ -146,15 +159,21 @@ impl Login {
             return Ok(());
         }
         let name = if provider == "anthropic" { "claude" } else { "codex" };
-        *self = Login::Name { provider, secret: Secret::OAuth(result?), input: Editor::from_text(name) };
+        *self = Login::Name { provider, secret: Secret::OAuth(result?), input: Editor::from_text(name), overwrite: false };
         Ok(())
     }
 
-    /// On the naming step, the typed name when its provider already has an account by it; saving would replace that account.
-    pub fn taken_name(&self, accounts: &[AccountView]) -> Option<String> {
-        let Login::Name { provider, input, .. } = self else { return None };
-        let name = input.text().trim().to_string();
-        accounts.iter().any(|account| account.provider == *provider && account.name == name).then_some(name)
+    /// On the naming step, true when the typed name is taken for its provider and the user has not confirmed replacing
+    /// that account yet; the call is the confirmation, so the next Enter saves over it.
+    pub fn ask_overwrite(&mut self, accounts: &[AccountView]) -> bool {
+        let Login::Name { provider, input, overwrite, .. } = self else { return false };
+        let name = input.text();
+        let taken = accounts.iter().any(|account| account.provider == *provider && account.name == name.trim());
+        if !taken || *overwrite {
+            return false;
+        }
+        *overwrite = true;
+        true
     }
 
     fn choose(&mut self) -> Action {
@@ -196,10 +215,10 @@ impl Login {
             }
             Login::ApiKey { provider, input, .. } => {
                 let name = if provider == "anthropic" { "api" } else { provider };
-                *self = Login::Name { provider, secret: Secret::ApiKey(input.text().trim().into()), input: Editor::from_text(name) };
+                *self = Login::Name { provider, secret: Secret::ApiKey(input.text().trim().into()), input: Editor::from_text(name), overwrite: false };
                 Action::None
             }
-            Login::Name { provider, secret, input } => Action::Save(Account { provider: provider.into(), name: input.text().trim().into(), secret }),
+            Login::Name { provider, secret, input, .. } => Action::Save(Account { provider: provider.into(), name: input.text().trim().into(), secret }),
             other => {
                 *self = other;
                 Action::None
@@ -226,7 +245,10 @@ impl Login {
                 vec![panel::Row { left: "Waiting for the sign-in to finish…".into(), right: Vec::new() }],
                 if url.is_some() { "ctrl+y copy link     esc cancel" } else { "esc cancel" },
             ),
-            Login::Name { input, .. } => ("Account name".into(), vec![field("Name", input.field(None))], "enter save     esc cancel"),
+            Login::Name { input, overwrite: false, .. } => ("Account name".into(), vec![field("Name", input.field(None))], "enter save     esc cancel"),
+            Login::Name { input, overwrite: true, .. } => {
+                (format!("An account named {} already exists", input.text().trim()).into(), vec![field("Name", input.field(None))], "enter overwrite     edit the name to keep both     esc cancel")
+            }
         };
         let selected = if let Login::Kind { index } | Login::Choose { index, .. } = self { *index } else { 0 };
         let search = if let Login::Choose { query, .. } = self { Some(query.field(None)) } else { None };
@@ -292,10 +314,22 @@ mod tests {
         login.paste("sk-or-1");
         login.key(KeyCode::Enter.into());
         let saved = |provider: &str| AccountView { provider: provider.into(), name: "openrouter".into(), oauth: false, account_id: None, usage: None, current: false, pinned: false };
-        assert_eq!(login.taken_name(&[saved("anthropic")]), None);
-        assert_eq!(login.taken_name(&[saved("openrouter")]).as_deref(), Some("openrouter"));
+        assert!(!login.ask_overwrite(&[saved("anthropic")]));
         let Action::Save(account) = login.key(KeyCode::Enter.into()) else { panic!("expected a save") };
         assert_eq!((account.provider.as_str(), account.name.as_str()), ("openrouter", "openrouter"));
+    }
+
+    #[test]
+    fn a_taken_name_saves_only_after_confirming_and_editing_asks_again() {
+        let mut login = Login::Name { provider: "openrouter", secret: Secret::ApiKey("sk-or-2".into()), input: Editor::from_text("work"), overwrite: false };
+        let saved = [AccountView { provider: "openrouter".into(), name: "work".into(), oauth: false, account_id: None, usage: None, current: false, pinned: false }];
+        assert!(login.ask_overwrite(&saved));
+        login.key(KeyCode::Char('2').into());
+        login.key(KeyCode::Backspace.into());
+        assert!(login.ask_overwrite(&saved));
+        assert!(!login.ask_overwrite(&saved));
+        let Action::Save(account) = login.key(KeyCode::Enter.into()) else { panic!("expected a save") };
+        assert_eq!(account.name, "work");
     }
 
     #[test]

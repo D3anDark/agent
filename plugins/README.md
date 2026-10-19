@@ -62,6 +62,7 @@ Every message has a `context`:
 | `tool_result` | after the tool call | `name`, `output`, `isError` |
 | `prompt_end` | the agent finishes a prompt | `error` (string or null) |
 | `account_change` | the user picks a default account in `/account` | |
+| `account_replace` | `/login` overwrites a saved account with one that has another account id | `previousAccountId`, `accountId` |
 | `panel_select` | the user presses Enter on a row of the plugin's panel | `panel` (the title), `id` (the row's `id`) |
 
 `input` is a request with `params.text` and `params.context`. The agent sends it before each prompt. Answer with one of these results:
