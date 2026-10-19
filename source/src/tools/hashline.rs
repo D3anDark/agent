@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::tools::{MAX_BYTES, MAX_LINES, format_size};
 
@@ -22,7 +23,7 @@ const PROBE_STRIDE: u32 = 836_286;
 pub struct Anchors {
     row_starts: Vec<u32>,
     probe: u32,
-    owner: HashMap<String, PathBuf>,
+    owner: HashMap<Anchor, Arc<Path>>,
     minted: u32,
     files: HashMap<PathBuf, Snapshot>,
     /// One level per file, like pi: the bytes before and after the last anchored edit.
@@ -32,12 +33,41 @@ pub struct Anchors {
 #[derive(Default)]
 struct Snapshot {
     lines: Vec<String>,
-    anchors: Vec<String>,
+    anchors: Vec<Anchor>,
+}
+
+/// Four ASCII letters kept inline: a long session holds one per line of every file it read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Anchor([u8; 4]);
+
+impl Anchor {
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.0).unwrap()
+    }
+}
+
+// Hashes as its str so `owner` can be looked up by the &str the model sends.
+impl std::hash::Hash for Anchor {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl std::borrow::Borrow<str> for Anchor {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for Anchor {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 struct Change {
     start: usize,
-    removed: Vec<(String, String)>,
+    removed: Vec<(Anchor, String)>,
     added: usize,
 }
 
@@ -65,7 +95,7 @@ impl Anchors {
         Anchors { row_starts, probe: (probe % ANCHOR_COUNT as u64) as u32, minted: 0, owner: HashMap::new(), files: HashMap::new(), undo: HashMap::new() }
     }
 
-    fn anchor_at(&self, index: u32) -> String {
+    fn anchor_at(&self, index: u32) -> Anchor {
         let row = self.row_starts.partition_point(|&start| start <= index) - 1;
         let mut rank = index - self.row_starts[row];
         let bits = row_bits(row);
@@ -74,7 +104,8 @@ impl Anchors {
                 continue;
             }
             if rank == 0 {
-                return format!("{}{}", piece(row), piece(col));
+                let (high, low) = (piece(row).as_bytes(), piece(col).as_bytes());
+                return Anchor([high[0], high[1], low[0], low[1]]);
             }
             rank -= 1;
         }
@@ -82,11 +113,11 @@ impl Anchors {
     }
 
     /// The stride is coprime with ANCHOR_COUNT, so the probe visits every anchor once before repeating; `sync` checks that some are left.
-    fn mint(&mut self, path: &Path) -> String {
+    fn mint(&mut self, path: &Arc<Path>) -> Anchor {
         self.minted += 1;
         self.probe = (self.probe + PROBE_STRIDE) % ANCHOR_COUNT;
         let anchor = self.anchor_at(self.probe);
-        self.owner.insert(anchor.clone(), path.to_path_buf());
+        self.owner.insert(anchor, Arc::clone(path));
         anchor
     }
 
@@ -104,11 +135,12 @@ impl Anchors {
         let mut removed = Vec::new();
         for i in prefix..old_end {
             self.owner.remove(&old.anchors[i]);
-            removed.push((old.anchors[i].clone(), old.lines[i].clone()));
+            removed.push((old.anchors[i], old.lines[i].clone()));
         }
         let mut anchors = old.anchors[..prefix].to_vec();
+        let owner = Arc::from(path);
         for _ in 0..added {
-            anchors.push(self.mint(path));
+            anchors.push(self.mint(&owner));
         }
         anchors.extend_from_slice(&old.anchors[old_end..]);
         self.files.insert(path.to_path_buf(), Snapshot { lines, anchors });
@@ -140,7 +172,7 @@ impl Anchors {
 
     /// The anchor of 1-based line `number` in a tracked file.
     pub fn line_anchor(&self, path: &Path, number: usize) -> Option<&str> {
-        self.files.get(path)?.anchors.get(number.checked_sub(1)?).map(String::as_str)
+        self.files.get(path)?.anchors.get(number.checked_sub(1)?).map(Anchor::as_str)
     }
 
     pub fn read(&mut self, cwd: &Path, input: &Value) -> Result<String, String> {
@@ -213,7 +245,7 @@ impl Anchors {
         let mut shown = start;
         let mut byte_limited = false;
         while shown < end {
-            let row = row_text(&snapshot.anchors[shown], &snapshot.lines[shown], shown + 1, path);
+            let row = row_text(snapshot.anchors[shown].as_str(), &snapshot.lines[shown], shown + 1, path);
             if shown - start == MAX_LINES || out.len() + usize::from(shown > start) + row.len() > MAX_BYTES {
                 byte_limited = shown - start < MAX_LINES;
                 break;
@@ -370,14 +402,14 @@ impl Anchors {
     }
 
     pub fn owner_of(&self, anchor: &str) -> Result<PathBuf, String> {
-        self.owner.get(anchor).cloned().ok_or_else(|| format!("[E_STALE_ANCHOR] \"{anchor}\" is not owned in this session. Call read() on the target file first."))
+        self.owner.get(anchor).map(|owner| owner.to_path_buf()).ok_or_else(|| format!("[E_STALE_ANCHOR] \"{anchor}\" is not owned in this session. Call read() on the target file first."))
     }
 
     fn index_of(&self, path: &Path, anchor: &str) -> Result<usize, String> {
-        if let Some(owner) = self.owner.get(anchor).filter(|owner| *owner != path) {
+        if let Some(owner) = self.owner.get(anchor).filter(|owner| owner.as_ref() != path) {
             return Err(format!("[E_STALE_ANCHOR] \"{anchor}\" is owned by {}. Read {0} to use that anchor.", owner.display()));
         }
-        self.files[path].anchors.iter().position(|a| a == anchor).ok_or_else(|| {
+        self.files[path].anchors.iter().position(|a| a.as_str() == anchor).ok_or_else(|| {
             format!("[E_STALE_ANCHOR] \"{anchor}\" is not a live anchor in {0}: the file changed since read, or the anchor is mistyped (send only the 4 letters before │). Call read() on {0} for fresh anchors.", path.display())
         })
     }
@@ -618,7 +650,7 @@ mod tests {
     #[test]
     fn anchor_table_matches_pi() {
         let anchors = Anchors::new("");
-        let picks: Vec<String> = [0, 1, 500_000, 836_286, 1_353_138].iter().map(|&i| anchors.anchor_at(i)).collect();
+        let picks: Vec<String> = [0, 1, 500_000, 836_286, 1_353_138].iter().map(|&i| anchors.anchor_at(i).to_string()).collect();
         assert_eq!(picks, ["AAAA", "AAAB", "PuOb", "ekJR", "zzzz"]);
     }
 
