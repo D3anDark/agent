@@ -21,27 +21,58 @@ use api::{Client, Usage};
 use tools::hashline::Anchors;
 use tools::rtk;
 
-const USAGE: &str = "Usage: agent [options] [message...]
-       agent plugin install <name|path>          Copy a bundled plugin or a plugin directory into ~/.agents/plugins
-       agent plugin remove <name>
-       agent plugin list
+const USAGE: &str = concat!(
+    "agent v",
+    env!("CARGO_PKG_VERSION"),
+    r#"
+Fast, native coding agent for the terminal.
 
-Options:
-  --model <id>          Model id, e.g. claude-opus-5-5
-  --thinking <level>    off, minimal, low, medium, high, xhigh, max
-  -p, --print           Run the message, print the answer, exit
-  --json                Like --print, then print one JSON summary
-  -c, --continue        Continue the latest session in this directory
-  --resume <id>         Open a session by id or id prefix
-  --no-session          Do not save the session
-  --auto                Let a reviewer model approve tool calls
-  --full-access, --yolo Run every tool call without asking
-  --ask                 Ask before commands, file edits, URL fetches, subagents, MCP and plugin tools
-  --headless            Run the message, print JSONL events (tool, session, done, error)
-  --parent <id>         Run as a subagent of that session: linked to it, no load_tools or ask_user_question
-  --account <p>=<name>  Use that saved account first for provider p, like a pin in /account
-  --version             Print the version
-  -h, --help            Print this help";
+agent starts an interactive session by default. Use `agent -p <message>` to run one noninteractive request.
+
+Usage:
+  agent [flags] [message...]
+  agent <command> [...args]
+
+Commands:
+  plugin install <name|path>  Copy a bundled plugin or a plugin directory into ~/.agents/plugins
+  plugin remove <name>        Remove an installed plugin
+  plugin list                 List bundled and installed plugins
+
+Flags:
+  --model <id>                Model id, e.g. claude-opus-5-5
+  --thinking <level>          off, minimal, low, medium, high, xhigh, max
+  -p, --print                 Run the message, print the answer and exit
+  --json                      Like --print, then print one JSON summary
+  --headless                  Run the message, print JSONL events (tool, session, done, error)
+  -c, --continue              Continue the latest session in this directory
+  --resume <id>               Open a session by id or id prefix
+  --no-session                Do not save the session
+  --auto                      Let a reviewer model approve tool calls
+  --full-access, --yolo       Run every tool call without asking
+  --ask                       Ask before commands, file edits, URL fetches, subagents, MCP and plugin tools
+  --parent <id>               Run as a subagent of that session: linked to it, no load_tools or ask_user_question
+  --account <p>=<name>        Use that saved account first for provider p, like a pin in /account
+  -h, --help                  Display this help and exit
+  --version                   Print the agent version and exit
+
+Examples:
+  agent
+      Start a fresh interactive session
+
+  agent -p "Explain the changes in this repository"
+      Run one request, print the answer and exit
+
+  agent -c
+      Continue the latest session in this directory
+
+  agent plugin list
+      Show bundled and installed plugins
+
+Run `/help` inside an interactive session for slash commands.
+
+Learn more about agent:  https://agent.rokartur.com
+Report a problem:        https://github.com/rokartur/agent/issues"#
+);
 
 struct Options {
     model: Option<String>,
@@ -143,7 +174,11 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
             "--full-access" | "--yolo" => options.permission_mode = Some(Mode::FullAccess),
             "--ask" => options.permission_mode = Some(Mode::Ask),
             "-h" | "--help" => {
-                println!("{USAGE}");
+                if std::io::stdout().is_terminal() {
+                    println!("{}", styled_help(USAGE))
+                } else {
+                    println!("{USAGE}")
+                }
                 std::process::exit(0);
             }
             "--version" => {
@@ -161,6 +196,44 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
     Ok(options)
 }
 
+/// Styles USAGE by the shape of each line: headings end with ':', entries split name and text on two spaces.
+fn styled_help(usage: &str) -> String {
+    const BOLD: &str = "\x1b[1m";
+    const DIM: &str = "\x1b[2m";
+    const UNDERLINE: &str = "\x1b[4m";
+    const RESET: &str = "\x1b[0m";
+    let mut lines = Vec::new();
+    for (index, line) in usage.lines().enumerate() {
+        let styled = if index == 0 {
+            let (name, version) = line.split_once(' ').unwrap_or((line, ""));
+            format!("{BOLD}{name}{RESET} {DIM}{version}{RESET}")
+        } else if line.is_empty() {
+            String::new()
+        } else if let Some(text) = line.strip_prefix("      ") {
+            format!("      {DIM}{text}{RESET}")
+        } else if let Some(entry) = line.strip_prefix("  ") {
+            match entry.split_once("  ") {
+                Some((name, rest)) => {
+                    let text = rest.trim_start();
+                    let gap = &entry[name.len()..entry.len() - text.len()];
+                    format!("  {name}{gap}{DIM}{text}{RESET}")
+                }
+                None => line.to_string(),
+            }
+        } else if line.ends_with(':') {
+            format!("{BOLD}{line}{RESET}")
+        } else if let Some((label, rest)) = line.split_once(":  ") {
+            let url = rest.trim_start();
+            let gap = &line[label.len() + 1..line.len() - url.len()];
+            format!("{BOLD}{label}:{RESET}{gap}{UNDERLINE}{url}{RESET}")
+        } else {
+            format!("{DIM}{line}{RESET}")
+        };
+        lines.push(styled);
+    }
+    lines.join("\n")
+}
+
 fn run(options: Options) -> Result<(), String> {
     let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set.")?);
     let agent_dir = home.join(".agents");
@@ -175,18 +248,10 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(mode) = options.permission_mode {
         settings.permission_mode = mode;
     }
-    let cwd = std::env::current_dir().map_err(|e| format!("Cannot read the working directory: {e}"))?;
-    let sessions_dir = home.join(".agents/sessions");
-    let (session, history) = match &options.resume {
-        Some(Resume::Id(id)) => Session::resume(&sessions_dir, id)?,
-        Some(Resume::Latest) => Session::resume(&sessions_dir, &Session::latest(&sessions_dir, &cwd)?)?,
-        None => (Session::start(&sessions_dir, options.save, &cwd, &settings.model)?, History::default()),
-    };
-    let client = Client::new(&home)?;
-    settings.default_accounts.extend(client.account_names(&history.accounts));
     if let Some((provider, name)) = options.account {
         settings.default_accounts.insert(provider, name);
     }
+    let client = Client::new(&home)?;
     client.configure(&settings);
     // About 0.5 s of network; the TUI opens meanwhile and settle_model waits for it.
     let model_lists = std::thread::spawn({
@@ -202,6 +267,13 @@ fn run(options: Options) -> Result<(), String> {
             move || modes::fetch(&home, &ponytail, &caveman, true)
         });
     }
+    let cwd = std::env::current_dir().map_err(|e| format!("Cannot read the working directory: {e}"))?;
+    let sessions_dir = home.join(".agents/sessions");
+    let (session, history) = match &options.resume {
+        Some(Resume::Id(id)) => Session::resume(&sessions_dir, id)?,
+        Some(Resume::Latest) => Session::resume(&sessions_dir, &Session::latest(&sessions_dir, &cwd)?)?,
+        None => (Session::start(&sessions_dir, options.save, &cwd, &settings.model)?, History::default()),
+    };
     if let Some(max_age) = settings.prune_sessions_after() {
         Session::prune(&sessions_dir, max_age);
     }
@@ -416,5 +488,18 @@ mod tests {
     #[test]
     fn terminal_safe_drops_escape_sequences() {
         assert_eq!(super::terminal_safe("a\x1b]52;c;eA==\x07b\n\tc\u{9b}"), "a]52;c;eA==b\n\tc");
+    }
+
+    #[test]
+    fn help_dims_descriptions_and_bolds_headings() {
+        let styled = super::styled_help("agent v1\nFast.\n\nFlags:\n  --ask  Ask first\n  agent -c\n      Continue\nDocs:  https://x.dev");
+        let lines: Vec<&str> = styled.lines().collect();
+        assert_eq!(lines[0], "\x1b[1magent\x1b[0m \x1b[2mv1\x1b[0m");
+        assert_eq!(lines[1], "\x1b[2mFast.\x1b[0m");
+        assert_eq!(lines[3], "\x1b[1mFlags:\x1b[0m");
+        assert_eq!(lines[4], "  --ask  \x1b[2mAsk first\x1b[0m");
+        assert_eq!(lines[5], "  agent -c");
+        assert_eq!(lines[6], "      \x1b[2mContinue\x1b[0m");
+        assert_eq!(lines[7], "\x1b[1mDocs:\x1b[0m  \x1b[4mhttps://x.dev\x1b[0m");
     }
 }
