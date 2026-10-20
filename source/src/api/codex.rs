@@ -143,7 +143,7 @@ pub fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut
             "response.output_item.done" => match item["type"].as_str() {
                 Some("function_call") => {
                     let raw = item["arguments"].as_str().filter(|a| !a.is_empty()).unwrap_or(&arguments[index]);
-                    let input: Value = serde_json::from_str(if raw.is_empty() { "{}" } else { raw }).map_err(|e| ApiError::fatal(format!("Bad tool input JSON: {e}.")))?;
+                    let input = super::parse_tool_input(if raw.is_empty() { "{}" } else { raw })?;
                     slots[index] = Some(json!({"type": "tool_use", "id": item["call_id"], "name": item["name"], "input": input}));
                 }
                 Some("message") => {

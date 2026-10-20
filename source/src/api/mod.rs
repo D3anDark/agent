@@ -772,7 +772,7 @@ fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn
                     && block["type"] == "tool_use"
                     && !partial.is_empty()
                 {
-                    block["input"] = serde_json::from_str(partial).map_err(|e| ApiError::fatal(format!("Bad tool input JSON: {e}.")))?;
+                    block["input"] = parse_tool_input(partial)?;
                 }
             }
             "message_delta" => {
@@ -807,6 +807,24 @@ fn read_usage(raw: &Value, usage: &mut Usage) {
             *slot = value;
         }
     }
+}
+
+/// Models sometimes write a raw tab or newline inside a string (tab-indented code); strict JSON rejects it, so escape it first.
+fn parse_tool_input(raw: &str) -> Result<Value, ApiError> {
+    let mut escaped = String::with_capacity(raw.len());
+    let (mut in_string, mut after_backslash) = (false, false);
+    for c in raw.chars() {
+        if in_string && c < ' ' {
+            escaped.push_str(&format!("\\u{:04x}", c as u32));
+        } else {
+            escaped.push(c);
+        }
+        if c == '"' && !after_backslash {
+            in_string = !in_string;
+        }
+        after_backslash = in_string && c == '\\' && !after_backslash;
+    }
+    serde_json::from_str(&escaped).map_err(|e| ApiError::fatal(format!("Bad tool input JSON: {e}.")))
 }
 
 #[cfg(test)]
@@ -914,6 +932,19 @@ mod tests {
         let reply = parse_stream(&mut body.as_bytes(), &AtomicBool::new(false), &mut |_| {}).ok().unwrap();
         assert_eq!((reply.usage.input, reply.usage.cache_read, reply.usage.cache_write), (641, 2769, 2769));
         assert_eq!(reply.context_tokens, 4 + 2769 + 211);
+    }
+
+    #[test]
+    fn tool_input_keeps_a_raw_tab_inside_a_string() {
+        let events = [
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"write","input":{}}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"text\": \"\\\"\tx\\n\"}"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"message_stop"}"#,
+        ];
+        let body: String = events.iter().map(|e| format!("event: x\ndata: {e}\n\n")).collect();
+        let reply = parse_stream(&mut body.as_bytes(), &AtomicBool::new(false), &mut |_| {}).ok().unwrap();
+        assert_eq!(reply.message["content"][0]["input"], json!({"text": "\"\tx\n"}));
     }
 
     #[test]
