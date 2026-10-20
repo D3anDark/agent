@@ -160,13 +160,7 @@ impl Todos {
     }
 
     pub fn entry(&self) -> Value {
-        let tasks: Vec<Value> = self
-            .tasks
-            .iter()
-            .map(|t| {
-                json!({"id": t.id, "subject": t.subject, "description": t.description, "activeForm": t.active_form, "status": t.status.as_str()})
-            })
-            .collect();
+        let tasks: Vec<Value> = self.tasks.iter().map(|t| json!({"id": t.id, "subject": t.subject, "description": t.description, "activeForm": t.active_form, "status": t.status.as_str()})).collect();
         json!({"type": "todo", "tasks": tasks, "next_id": self.next_id})
     }
 

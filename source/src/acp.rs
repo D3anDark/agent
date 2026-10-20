@@ -2,11 +2,11 @@
 //! shortcut: one session per process and no session/load, client MCP servers or client fs; add them when an editor needs them.
 
 use std::io::{BufRead, Write};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agent::permissions::Decision;
 use crate::agent::{Agent, Event};

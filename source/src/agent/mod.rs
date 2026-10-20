@@ -1306,11 +1306,7 @@ impl Session {
                 }
                 Some("tool_checkpoint") => {
                     let text = |field: &str| entry[field].as_str().map(String::from).ok_or_else(|| missing(field));
-                    history.checkpoints.push(Checkpoint {
-                        at: entry["at"].as_u64().ok_or_else(|| missing("at"))? as usize,
-                        before: text("before")?,
-                        after: text("after")?,
-                    });
+                    history.checkpoints.push(Checkpoint { at: entry["at"].as_u64().ok_or_else(|| missing("at"))? as usize, before: text("before")?, after: text("after")? });
                 }
                 Some("checkpoints_reset") => history.checkpoints.clear(),
                 Some("compaction") => {
@@ -1710,7 +1706,10 @@ mod tests {
     #[test]
     fn compacted_summary_points_at_the_saved_transcript() {
         let kept = compacted(&[user("a"), user("b")], "S", 1, Some(Path::new("/s/abc.jsonl")));
-        assert!(text_of(&json!({"content": kept[0]["content"]})).ends_with("</summary>\n\nThe full conversation before this summary is in /s/abc.jsonl, one JSON entry per line. Search it with rg when the summary lacks a detail you need."));
+        assert!(
+            text_of(&json!({"content": kept[0]["content"]}))
+                .ends_with("</summary>\n\nThe full conversation before this summary is in /s/abc.jsonl, one JSON entry per line. Search it with rg when the summary lacks a detail you need.")
+        );
     }
 
     #[test]

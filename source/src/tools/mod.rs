@@ -641,7 +641,8 @@ mod tests {
     #[test]
     fn long_bash_output_keeps_its_end_and_saves_the_full_log() {
         // 30 KB in 2000 lines: under the line and byte caps, over rtk's 24 KB.
-        let (out, _) = run("bash", &json!({"command": "awk 'BEGIN { for (i = 1; i <= 2000; i++) print \"line\", i, \"xxxx\" }'"}), Path::new("/tmp"), &mut Anchors::new("t"), &Rtk::ON, &Arc::default());
+        let (out, _) =
+            run("bash", &json!({"command": "awk 'BEGIN { for (i = 1; i <= 2000; i++) print \"line\", i, \"xxxx\" }'"}), Path::new("/tmp"), &mut Anchors::new("t"), &Rtk::ON, &Arc::default());
         assert!(out.contains("\nline 2000 xxxx\n"), "{}", &out[out.len().saturating_sub(300)..]);
         let path = out.rsplit("Full output: ").next().unwrap().trim_end_matches(']');
         assert_eq!(std::fs::read_to_string(path).unwrap(), (1..=2000).map(|i| format!("line {i} xxxx\n")).collect::<String>());

@@ -119,7 +119,10 @@ mod tests {
             ("cat \"notes.md\"", json!([{"path": "notes.md"}])),
             ("head -n20 a.md", json!([{"path": "a.md", "limit": 20}])),
             ("sed -n '1,40p' a.rs; echo ---; sed -n 5,9p b.rs", json!([{"path": "a.rs", "offset": 1, "limit": 40}, {"path": "b.rs", "offset": 5, "limit": 5}])),
-            ("cd /r && sed -n 1,5p a.rs && sed -n 9p a.rs\nhead b.rs", json!([{"path": "/r/a.rs", "offset": 1, "limit": 5}, {"path": "/r/a.rs", "offset": 9, "limit": 1}, {"path": "/r/b.rs", "limit": 10}])),
+            (
+                "cd /r && sed -n 1,5p a.rs && sed -n 9p a.rs\nhead b.rs",
+                json!([{"path": "/r/a.rs", "offset": 1, "limit": 5}, {"path": "/r/a.rs", "offset": 9, "limit": 1}, {"path": "/r/b.rs", "limit": 10}]),
+            ),
             ("cat a.rs; cat a.rs", json!([{"path": "a.rs"}])),
         ];
         for (command, paths) in reads {

@@ -470,12 +470,7 @@ fn replace_once(file: &mut Text, first: usize, last: usize, edit: &Value, path: 
         return Err(format!("[E_NO_MATCH] old_string was not found in lines {}-{} of {}. Copy the fragment exactly from the file.", first + 1, last + 1, path.display()));
     }
     if matches > 1 {
-        return Err(format!(
-            "[E_AMBIGUOUS] old_string occurs {matches} times in lines {}-{} of {}. Add surrounding text or narrow the range so it occurs once.",
-            first + 1,
-            last + 1,
-            path.display()
-        ));
+        return Err(format!("[E_AMBIGUOUS] old_string occurs {matches} times in lines {}-{} of {}. Add surrounding text or narrow the range so it occurs once.", first + 1, last + 1, path.display()));
     }
     let new = new.replace("\r\n", "\n");
     let mut lines: Vec<String> = region.replace(old, &new).split('\n').map(String::from).collect();
