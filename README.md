@@ -56,6 +56,7 @@ Same model (Claude Opus 5.5, medium thinking), same prompt, two coding tasks, 6 
 /voice      talk instead of type (whisper.cpp)
 /caveman    answers without the fluff
 /ponytail   writes less code
+/fast       faster output at a higher price (Anthropic)
 ```
 
 ## Scripts and CI

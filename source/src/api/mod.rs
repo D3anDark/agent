@@ -454,6 +454,8 @@ impl Client {
                     body["model"] = json!(first.id);
                     body["fallbacks"] = rest.iter().map(|m| json!({"model": m.id})).collect();
                 }
+                // Fast mode is an Anthropic API field, unknown to OpenRouter.
+                body.as_object_mut().expect("a request is an object").remove("speed");
                 // OpenRouter rejects the whole request when a non-Anthropic model gets block_binding.
                 if !body["model"].as_str().unwrap_or_default().starts_with("anthropic/")
                     && let Some(thinking) = body["thinking"].as_object_mut()
@@ -602,22 +604,26 @@ impl ApiError {
 }
 
 /// Builds a Messages request with cache breakpoints on the system prompt, the last tool, and the last message.
+/// `cache_ttl` is "5m" or "1h"; all three breakpoints share it, since a 1h one after a 5m one is a 400.
 /// `per_session_system` follows the cached system block, so a value that differs per session does not rewrite it.
 /// `thinking` is pi's level; "off" sends no thinking config and "minimal" maps to the lowest effort.
-pub fn request(model: &str, max_tokens: u64, thinking: &str, system: &str, per_session_system: &str, tools: &Value, messages: &[Value]) -> Value {
+#[allow(clippy::too_many_arguments)]
+pub fn request(model: &str, max_tokens: u64, thinking: &str, cache_ttl: &str, system: &str, per_session_system: &str, tools: &Value, messages: &[Value]) -> Value {
+    // Without ttl the API caches for 5 minutes.
+    let cache_control = if cache_ttl == "1h" { json!({"type": "ephemeral", "ttl": "1h"}) } else { json!({"type": "ephemeral"}) };
     let mut tools = tools.clone();
     if let Some(last) = tools.as_array_mut().and_then(|t| t.last_mut()) {
-        last["cache_control"] = json!({"type": "ephemeral"});
+        last["cache_control"] = cache_control.clone();
     }
     let mut messages = messages.to_vec();
     if let Some(block) = messages.last_mut().and_then(|m| m["content"].as_array_mut()).and_then(|c| c.last_mut()) {
-        block["cache_control"] = json!({"type": "ephemeral"});
+        block["cache_control"] = cache_control.clone();
     }
     let mut request = json!({
         "model": model,
         "max_tokens": max_tokens,
         "stream": true,
-        "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        "system": [{"type": "text", "text": system, "cache_control": cache_control}],
         "tools": tools,
         "messages": messages,
     });
@@ -914,14 +920,18 @@ mod tests {
     fn request_marks_cache_breakpoints() {
         let tools = json!([{"name": "a"}, {"name": "b"}]);
         let messages = [json!({"role": "user", "content": [{"type": "text", "text": "1"}, {"type": "text", "text": "2"}]})];
-        let body = request("m", 1000, "high", "sys", "<cwd>/a</cwd>", &tools, &messages);
+        let body = request("m", 1000, "high", "5m", "sys", "<cwd>/a</cwd>", &tools, &messages);
         assert!(body["tools"][0].get("cache_control").is_none());
         assert_eq!(body["tools"][1]["cache_control"]["type"], "ephemeral");
         assert!(body["messages"][0]["content"][0].get("cache_control").is_none());
         assert_eq!(body["messages"][0]["content"][1]["cache_control"]["type"], "ephemeral");
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(body["system"][1], json!({"type": "text", "text": "<cwd>/a</cwd>"}));
-        assert_eq!(request("m", 1000, "high", "sys", "", &tools, &messages)["system"].as_array().unwrap().len(), 1);
+        assert_eq!(request("m", 1000, "high", "5m", "sys", "", &tools, &messages)["system"].as_array().unwrap().len(), 1);
+        let hour = request("m", 1000, "high", "1h", "sys", "", &tools, &messages);
+        for breakpoint in [&hour["tools"][1], &hour["messages"][0]["content"][1], &hour["system"][0]] {
+            assert_eq!(breakpoint["cache_control"], json!({"type": "ephemeral", "ttl": "1h"}));
+        }
     }
 
     #[test]

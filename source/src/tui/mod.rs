@@ -40,7 +40,7 @@ use crate::api::oauth::Tokens;
 use crate::api::{AccountView, Client, Delta, Usage};
 use crate::image;
 use crate::settings::THINKING_LEVELS;
-use crate::settings::{self, CONFLICT_PRIORITIES, PROVIDER_SORTS, PRUNE_SESSIONS, Settings, model_key};
+use crate::settings::{self, CACHE_TTLS, CONFLICT_PRIORITIES, PROVIDER_SORTS, PRUNE_SESSIONS, Settings, model_key};
 use crate::tools::bg::{Status as TerminalStatus, Terminal, Terminals};
 use crate::tools::goal::{Goal, Status as GoalStatus};
 use crate::tools::rtk::strip_ansi;
@@ -335,6 +335,7 @@ const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
     ("settings", MidTurn::Runs, "Open settings menu"),
     ("permissions", MidTurn::Runs, "<mode>: ask, auto or full access"),
     ("thinking", MidTurn::Runs, "<level>: Set thinking level"),
+    ("fast", MidTurn::Runs, "Toggle fast output: quicker, billed higher, Anthropic models with fast mode only"),
     ("ponytail", MidTurn::Runs, "<off | lite | full | ultra>: Set the ponytail level"),
     ("caveman", MidTurn::Runs, "<off | full | ultra | wenyan>: Set the caveman level"),
     ("voice", MidTurn::Runs, "Dictate in any language with whisper.cpp, Enter to stop"),
@@ -369,7 +370,7 @@ const MENU_ROWS: [usize; 5] = [4, 6, 8, 10, 12];
 const PANEL_ROWS: usize = 8;
 const EDITOR_ROWS: usize = 10;
 const SCROLL_LINES: [usize; 5] = [1, 2, 3, 5, 10];
-const SETTING_NAMES: [&str; 27] = [
+const SETTING_NAMES: [&str; 31] = [
     "Model",
     "Thinking level",
     "Permission mode",
@@ -397,10 +398,14 @@ const SETTING_NAMES: [&str; 27] = [
     "Auto prune sessions",
     "Provider order",
     "Name conflicts prefer",
+    "Fast mode",
+    "Prompt cache TTL",
+    "Reviewer model",
+    "Subagent model",
 ];
 /// Rows of `SETTING_NAMES` in the order the settings panel lists them.
-const SETTING_ORDER: [usize; 27] = [0, 1, 18, 13, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 25, 14, 15, 16, 17, 26, 19, 20, 23, 21, 22, 24];
-const MODEL_ROWS: [usize; 3] = [0, 8, 12];
+const SETTING_ORDER: [usize; 31] = [0, 1, 27, 18, 30, 13, 2, 29, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 25, 28, 14, 15, 16, 17, 26, 19, 20, 23, 21, 22, 24];
+const MODEL_ROWS: [usize; 5] = [0, 8, 12, 29, 30];
 const CONTEXT_WINDOW_ROW: usize = 13;
 const PROVIDER_ORDER_ROW: usize = 25;
 const PROVIDER_LISTS: [&[&str]; 2] = [&models::PROVIDERS, &crate::tools::web::SEARCH_PROVIDERS];
@@ -1727,6 +1732,10 @@ impl App {
                 self.system("thinking", format!("Level set to {args}"));
             }
             "thinking" => self.push(Item::Error(format!("Unknown thinking level {args}. Levels: {}", THINKING_LEVELS.join(", ")))),
+            "fast" => {
+                self.update_settings(|s| s.fast = !s.fast);
+                self.system("fast", if self.settings.fast { "Fast mode on" } else { "Fast mode off" });
+            }
             "ponytail" | "caveman" if args.is_empty() => {
                 let (level, levels) = if name == "ponytail" { (&self.settings.ponytail, PONYTAIL_LEVELS) } else { (&self.settings.caveman, CAVEMAN_LEVELS) };
                 self.system(name, format!("{level}. Levels: {}", levels.join(", ")));
@@ -2586,14 +2595,18 @@ impl App {
             24 => s.prune_sessions = step(&PRUNE_SESSIONS, &s.prune_sessions.as_str(), forward).to_string(),
             25 => s.provider_sort = step(&PROVIDER_SORTS, &s.provider_sort.as_str(), forward).to_string(),
             26 => s.conflict_priority = step(&CONFLICT_PRIORITIES, &s.conflict_priority.as_str(), forward).to_string(),
-            _ => unreachable!("rows 0, 8, 12 and 13 open their own panels"),
+            27 => s.fast = !s.fast,
+            28 => s.cache_ttl = step(&CACHE_TTLS, &s.cache_ttl.as_str(), forward).to_string(),
+            _ => unreachable!("rows 0, 8, 12, 13, 29 and 30 open their own panels"),
         });
     }
 
-    fn setting_values(&self) -> [Line; 27] {
+    fn setting_values(&self) -> [Line; 31] {
         let s = &self.settings;
         let condense_model = if s.condense_model.is_empty() { "auto" } else { &s.condense_model };
         let fallback_model = if s.fallback_model.is_empty() { "auto" } else { &s.fallback_model };
+        let reviewer_model = if s.reviewer_model.is_empty() { "auto" } else { &s.reviewer_model };
+        let subagent_model = if s.subagent_model.is_empty() { "auto" } else { &s.subagent_model };
         let model = self.model();
         [
             vec![span(model.map_or(LOADING_MODELS.into(), |m| format!("{} · {}", m.provider, m.id)), BRIGHT.bold())],
@@ -2626,6 +2639,10 @@ impl App {
             choices(PRUNE_SESSIONS.map(String::from), &s.prune_sessions),
             [choices(PROVIDER_SORTS.map(String::from), &s.provider_sort), vec![span("   enter reorder", MUTED)]].concat(),
             choices(CONFLICT_PRIORITIES.map(String::from), &s.conflict_priority),
+            on_off_choices(s.fast),
+            choices(CACHE_TTLS.map(String::from), &s.cache_ttl),
+            vec![span(reviewer_model, BRIGHT.bold())],
+            vec![span(subagent_model, BRIGHT.bold())],
         ]
     }
 
@@ -4480,12 +4497,14 @@ fn model_owners(model: &Model) -> String {
     format!("{} · {}", model.provider, model.accounts.join(", "))
 }
 
-/// The model id settings `row` edits: 0 model, 8 condense model, 12 fallback model.
+/// The model id settings `row` edits: 0 model, 8 condense, 12 fallback, 29 reviewer, 30 subagent.
 fn model_setting(settings: &mut Settings, row: usize) -> &mut String {
     match row {
         0 => &mut settings.model,
         8 => &mut settings.condense_model,
-        _ => &mut settings.fallback_model,
+        12 => &mut settings.fallback_model,
+        29 => &mut settings.reviewer_model,
+        _ => &mut settings.subagent_model,
     }
 }
 

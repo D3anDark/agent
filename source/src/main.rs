@@ -342,10 +342,13 @@ fn run(options: Options) -> Result<(), String> {
         images: Vec::new(),
         model: settings.model.clone(),
         effort: settings.thinking.clone(),
-        // settle_model fills these three and condense once the model lists arrive.
+        // settle_model fills these four and condense once the model lists arrive.
         context_window: 0,
         max_tokens: 0,
         cheap_model: String::new(),
+        reviewer_model: String::new(),
+        fast: settings.fast,
+        cache_ttl: settings.cache_ttl.clone(),
         auto_compact: settings.auto_compact,
         reserve_tokens: settings.reserve_tokens,
         keep_recent_tokens: settings.keep_recent_tokens,
@@ -370,6 +373,7 @@ fn run(options: Options) -> Result<(), String> {
         subagents: Arc::default(),
         subagent_concurrency: settings.subagent_concurrency,
         subagent_effort: settings.subagent_effort.clone(),
+        subagent_model: settings.subagent_model.clone(),
         spent: Spent::default(),
         interactive: false,
         agent_dir: agent_dir.clone(),

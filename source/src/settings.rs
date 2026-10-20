@@ -12,7 +12,13 @@ use crate::api::models::Model;
 pub struct Settings {
     pub model: String,
     pub thinking: String,
+    /// Anthropic's `speed: "fast"`: faster output at a higher price, on models that support it.
+    pub fast: bool,
+    /// One of `CACHE_TTLS`, for every Anthropic cache breakpoint.
+    pub cache_ttl: String,
     pub permission_mode: Mode,
+    /// The auto-mode reviewer; empty means the provider's small model.
+    pub reviewer_model: String,
     pub auto_compact: bool,
     pub reserve_tokens: u64,
     pub keep_recent_tokens: u64,
@@ -24,6 +30,8 @@ pub struct Settings {
     pub subagent_concurrency: usize,
     /// The effort the swarm prompt tells the model to pass for implementation children.
     pub subagent_effort: String,
+    /// The model a child gets when the subagent call names none; empty means the parent's.
+    pub subagent_model: String,
     pub switch_at_percent: u64,
     pub when_all_over_limit: Policy,
     /// Empty means the other provider's default model.
@@ -86,6 +94,7 @@ pub struct LspServer {
 }
 
 pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+pub const CACHE_TTLS: [&str; 2] = ["5m", "1h"];
 pub const PRUNE_SESSIONS: [&str; 6] = ["never", "24h", "3d", "7d", "14d", "30d"];
 pub const PROVIDER_SORTS: [&str; 3] = ["default", "alphabetical", "manual"];
 pub const CONFLICT_PRIORITIES: [&str; 2] = ["project", "global"];
@@ -198,7 +207,10 @@ fn from_json(own: &Value) -> Settings {
     Settings {
         model: own["model"].as_str().unwrap_or("claude-opus-5-5").to_string(),
         thinking: level(&own["thinking"], &THINKING_LEVELS, "high"),
+        fast: own["fast"].as_bool().unwrap_or(false),
+        cache_ttl: level(&own["cache_ttl"], &CACHE_TTLS, "5m"),
         permission_mode: own["permission_mode"].as_str().and_then(Mode::parse).unwrap_or(Mode::Ask),
+        reviewer_model: own["reviewer_model"].as_str().unwrap_or_default().to_string(),
         auto_compact: own["auto_compact"].as_bool().unwrap_or(true),
         // Compaction asks for 4/5 of it as max_tokens; 0 is an API error and a few hundred cut the summary off.
         reserve_tokens: own["reserve_tokens"].as_u64().unwrap_or(16_384).max(4_096),
@@ -209,6 +221,7 @@ fn from_json(own: &Value) -> Settings {
         condense_min_batch_chars: own["condense"]["min_batch_chars"].as_u64().unwrap_or(CONDENSE_MIN_BATCH_CHARS).max(CONDENSE_MIN_BATCH_CHARS),
         subagent_concurrency: own["subagents"]["concurrency"].as_u64().unwrap_or(4) as usize,
         subagent_effort: level(&own["subagents"]["implementation_effort"], &THINKING_LEVELS, "medium"),
+        subagent_model: own["subagents"]["model"].as_str().unwrap_or_default().to_string(),
         switch_at_percent: own["accounts"]["switch_at_percent"].as_u64().unwrap_or(90).min(100),
         when_all_over_limit: own["accounts"]["when_all_over_limit"].as_str().and_then(Policy::parse).unwrap_or(Policy::LeastUsed),
         fallback_model: own["accounts"]["fallback_model"].as_str().unwrap_or_default().to_string(),
@@ -297,7 +310,10 @@ fn to_json(settings: &Settings) -> Value {
         "$schema": SCHEMA_URL,
         "model": settings.model,
         "thinking": settings.thinking,
+        "fast": settings.fast,
+        "cache_ttl": settings.cache_ttl,
         "permission_mode": settings.permission_mode.label(),
+        "reviewer_model": settings.reviewer_model,
         "auto_compact": settings.auto_compact,
         "reserve_tokens": settings.reserve_tokens,
         "keep_recent_tokens": settings.keep_recent_tokens,
@@ -326,7 +342,7 @@ fn to_json(settings: &Settings) -> Value {
         "on_start": settings.on_start,
         "lsp": settings.lsp.iter().map(|(language, server)| (language.clone(), json!({"command": server.command, "extensions": server.extensions, "roots": server.roots}))).collect::<serde_json::Map<_, _>>(),
         "condense": {"enabled": settings.condense, "model": settings.condense_model, "min_batch_chars": settings.condense_min_batch_chars},
-        "subagents": {"concurrency": settings.subagent_concurrency, "implementation_effort": settings.subagent_effort},
+        "subagents": {"concurrency": settings.subagent_concurrency, "implementation_effort": settings.subagent_effort, "model": settings.subagent_model},
         "accounts": {"switch_at_percent": settings.switch_at_percent, "when_all_over_limit": settings.when_all_over_limit.label(), "fallback_model": settings.fallback_model, "default": settings.default_accounts},
     })
 }
@@ -413,6 +429,10 @@ mod tests {
         settings.caveman = "wenyan".into();
         settings.rtk = false;
         settings.subagent_effort = "low".into();
+        settings.subagent_model = "claude-sonnet-5-5".into();
+        settings.reviewer_model = "claude-haiku-5-5".into();
+        settings.fast = true;
+        settings.cache_ttl = "1h".into();
         settings.headroom = true;
         settings.headroom_env = BTreeMap::from([("HEADROOM_DISABLE_KOMPRESS".into(), "1".into())]);
         settings.notifications = false;
@@ -440,6 +460,7 @@ mod tests {
         assert_same_keys(&written["lsp"]["rust"], &schema["properties"]["lsp"]["additionalProperties"], "lsp.rust");
         let properties = &schema["properties"];
         assert_eq!(properties["thinking"]["enum"], json!(THINKING_LEVELS));
+        assert_eq!(properties["cache_ttl"]["enum"], json!(CACHE_TTLS));
         assert_eq!(properties["subagents"]["properties"]["implementation_effort"]["enum"], json!(THINKING_LEVELS));
         assert_eq!(properties["permission_mode"]["enum"], json!(crate::agent::permissions::MODES.map(|mode| mode.label())));
         assert_eq!(properties["accounts"]["properties"]["when_all_over_limit"]["enum"], json!(Policy::ALL.map(|policy| policy.label())));

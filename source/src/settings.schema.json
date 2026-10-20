@@ -8,7 +8,10 @@
     "$schema": { "type": "string" },
     "model": { "type": "string", "default": "claude-opus-5-5" },
     "thinking": { "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"], "default": "high" },
+    "fast": { "type": "boolean", "default": false, "description": "Anthropic fast output (speed: fast), billed at a higher rate." },
+    "cache_ttl": { "enum": ["5m", "1h"], "default": "5m", "description": "Anthropic prompt cache lifetime; 1h writes cost more." },
     "permission_mode": { "enum": ["ask", "auto", "full access"], "default": "ask" },
+    "reviewer_model": { "type": "string", "default": "", "description": "Model for the auto-mode reviewer; empty means the provider's small model." },
     "auto_compact": { "type": "boolean", "default": true },
     "reserve_tokens": { "type": "integer", "minimum": 4096, "default": 16384, "description": "Context tokens kept free for the answer; compaction starts before they run out." },
     "keep_recent_tokens": { "type": "integer", "minimum": 0, "default": 20000, "description": "Recent tokens compaction keeps verbatim." },
@@ -72,7 +75,8 @@
       "additionalProperties": false,
       "properties": {
         "concurrency": { "type": "integer", "minimum": 1, "default": 4 },
-        "implementation_effort": { "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"], "default": "medium" }
+        "implementation_effort": { "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"], "default": "medium" },
+        "model": { "type": "string", "default": "", "description": "Model for a subagent call that names none; empty means the parent's." }
       }
     },
     "accounts": {

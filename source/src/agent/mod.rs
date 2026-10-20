@@ -172,8 +172,13 @@ pub struct Agent {
     pub sessions_dir: PathBuf,
     pub context_window: u64,
     pub max_tokens: u64,
-    /// The provider's cheapest model: auto-mode reviews and, by default, condense summaries.
+    /// The provider's cheapest model: titles and, by default, condense summaries.
     pub cheap_model: String,
+    /// Auto-mode reviews: `reviewer_model` from settings, else `cheap_model`.
+    pub reviewer_model: String,
+    /// Sends `speed: "fast"`; only Anthropic models that offer fast mode accept it.
+    pub fast: bool,
+    pub cache_ttl: String,
     pub auto_compact: bool,
     pub reserve_tokens: u64,
     pub keep_recent_tokens: u64,
@@ -206,6 +211,8 @@ pub struct Agent {
     pub subagents: Arc<Mutex<Runs>>,
     pub subagent_concurrency: usize,
     pub subagent_effort: String,
+    /// Default for a subagent call without `model`; empty means `model`.
+    pub subagent_model: String,
     /// Stored web_search and fetch_content responses for get_search_content.
     pub web: tools::web::Web,
     pub spent: Spent,
@@ -391,7 +398,10 @@ impl Agent {
             self.collect_condensed(emit)?;
             let messages = condense::view(&self.messages, &self.condensed);
             let (system, tools) = self.system_and_tools();
-            let request = api::request(&self.model, self.max_tokens, &self.effort, &system, &prompt::cwd_section(&self.cwd), &tools, &messages);
+            let mut request = api::request(&self.model, self.max_tokens, &self.effort, &self.cache_ttl, &system, &prompt::cwd_section(&self.cwd), &tools, &messages);
+            if self.fast {
+                request["speed"] = json!("fast");
+            }
             let mut reply = self.client.send(&request, &self.abort, &mut |delta| match delta {
                 Delta::Text(text) => emit(Event::Text(text.to_string())),
                 Delta::Thinking(text) => emit(Event::Thinking(text.to_string())),
@@ -695,7 +705,8 @@ impl Agent {
         for chunk in tasks.chunks(batch) {
             let mut started = Vec::new();
             for task in chunk {
-                let model = task.model.clone().unwrap_or_else(|| self.model.clone());
+                let default_model = if self.subagent_model.is_empty() { &self.model } else { &self.subagent_model };
+                let model = task.model.clone().unwrap_or_else(|| default_model.clone());
                 let thinking = task.effort.clone().unwrap_or_else(|| self.effort.clone());
                 let provider = self.client.catalog().iter().find(|c| c.id == model).map(|c| c.provider.clone());
                 let account = provider.and_then(|provider| Some(format!("{provider}={}", self.client.account(&provider)?.0)));
@@ -892,7 +903,7 @@ impl Agent {
 
     fn ask_reviewer(&mut self, prompt: &str) -> (bool, String) {
         // Adaptive thinking counts against max_tokens; at 200 a long think left no verdict text.
-        match self.client.send_quiet(&api::plain_request(&self.cheap_model, permissions::REVIEW_SYSTEM, prompt, 2000), &self.abort) {
+        match self.client.send_quiet(&api::plain_request(&self.reviewer_model, permissions::REVIEW_SYSTEM, prompt, 2000), &self.abort) {
             Ok(reply) => {
                 self.usage.add(reply.usage);
                 if let Err(error) = self.session.append(&usage::reply_entry(&reply, now_ms())) {
@@ -989,15 +1000,19 @@ impl Agent {
     fn apply(&mut self, settings: &Settings, model: &Model, cheap_model: &str) {
         self.model = settings.model.clone();
         self.effort = settings.thinking.clone();
+        self.fast = settings.fast;
+        self.cache_ttl = settings.cache_ttl.clone();
         self.context_window = settings.context_window(model);
         self.max_tokens = model.max_tokens;
         self.cheap_model = cheap_model.to_string();
+        self.reviewer_model = if settings.reviewer_model.is_empty() { cheap_model.to_string() } else { settings.reviewer_model.clone() };
         self.auto_compact = settings.auto_compact;
         self.reserve_tokens = settings.reserve_tokens;
         self.keep_recent_tokens = settings.keep_recent_tokens;
         self.condense = condense::Config::new(settings, cheap_model);
         self.subagent_concurrency = settings.subagent_concurrency;
         self.subagent_effort = settings.subagent_effort.clone();
+        self.subagent_model = settings.subagent_model.clone();
         self.tools = self.tool_schemas();
         *self.permission_mode.lock().unwrap() = settings.permission_mode;
         self.rtk = if settings.rtk { Rtk::ON } else { Rtk::OFF };
