@@ -69,3 +69,7 @@ agent acp                              # Agent Client Protocol for Zed and other
 ```
 
 macOS and Linux. Updates itself. `agent --help` for the rest.
+
+## License
+
+[GPL-3.0-or-later](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) to help and [SECURITY.md](SECURITY.md) to report a vulnerability.

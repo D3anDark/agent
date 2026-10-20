@@ -2,6 +2,9 @@
 name = "agent"
 version = "0.1.0"
 edition = "2024"
+description = "A coding agent in one Rust binary"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/rokartur/agent"
 
 [dependencies]
 crossterm = { version = "0.29", default-features = false, features = ["events", "bracketed-paste"] }
