@@ -1,3 +1,4 @@
+mod acp;
 mod agent;
 mod api;
 mod headroom;
@@ -39,6 +40,7 @@ Commands:
   plugin install <name|path>  Copy a bundled plugin or a plugin directory into ~/.agents/plugins
   plugin remove <name>        Remove an installed plugin
   plugin list                 List bundled and installed plugins
+  acp                         Serve the Agent Client Protocol on stdin and stdout, for editors like Zed
 
 Flags:
   --model <id>                Model id, e.g. claude-opus-5-5
@@ -54,7 +56,7 @@ Flags:
   --ask                       Ask before commands, file edits, URL fetches, subagents, MCP and plugin tools
   --parent <id>               Run as a subagent of that session: linked to it, no subagent, terminal, web or ask_user_question tools
   --explore                   With --parent: only read and rg, no modes prompt
-  --tools <a,b,...>           With -p, --json or --headless: offer only these tools
+  --tools <a,b,...>           With acp, -p, --json or --headless: offer only these tools
   --account <p>=<name>        Use that saved account first for provider p, like a pin in /account
   -h, --help                  Display this help and exit
   --version                   Print the agent version and exit
@@ -90,6 +92,8 @@ struct Options {
     explore: bool,
     /// Provider and account name the parent uses, pinned for this run only.
     account: Option<(String, String)>,
+    /// `agent acp`: serve the Agent Client Protocol instead of one run.
+    acp: bool,
     /// --tools: the only tools this run may call.
     tools: Option<Vec<String>>,
     save: bool,
@@ -158,9 +162,10 @@ fn main() {
 }
 
 fn parse_args(args: Vec<String>) -> Result<Options, String> {
-    let mut options = Options { save: true, ..Options::default() };
+    let acp = args.first().is_some_and(|command| command == "acp");
+    let mut options = Options { save: true, acp, ..Options::default() };
     let mut words = Vec::new();
-    let mut args = args.into_iter().peekable();
+    let mut args = args.into_iter().skip(usize::from(acp)).peekable();
     while let Some(arg) = args.next() {
         // `--model --print hi` must not set the model to `--print`.
         let mut value = |name: &str| args.next().filter(|value| !value.starts_with("--")).ok_or(format!("{name} needs a value."));
@@ -232,10 +237,13 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
     if options.headless && options.print {
         return Err("--headless cannot be combined with --print.".into());
     }
-    if options.tools.is_some() && !(options.print || options.json || options.headless) {
-        return Err("--tools needs -p, --json or --headless; /settings would reset the tool list.".into());
+    if options.tools.is_some() && !(options.print || options.json || options.headless || options.acp) {
+        return Err("--tools needs acp, -p, --json or --headless; /settings would reset the tool list.".into());
     }
     let picks_session = matches!(options.resume, Some(Resume::Pick));
+    if options.acp && (options.print || options.json || options.headless || options.prompt.is_some() || picks_session) {
+        return Err("acp reads its messages from the editor, so it takes no message, -p, --json, --headless or -r without an id.".into());
+    }
     if picks_session && (options.print || options.json || options.headless || options.parent.is_some()) {
         return Err("--resume without an id opens the session list, so it needs the interactive mode.".into());
     }
@@ -400,7 +408,8 @@ fn run(options: Options) -> Result<(), String> {
     agent.mcp.sync(&settings.disabled_mcp, &settings.approved_mcp);
     agent.load(history);
     let mut prompt = options.prompt;
-    if !std::io::stdin().is_terminal() {
+    // In acp mode stdin carries the protocol.
+    if !options.acp && !std::io::stdin().is_terminal() {
         let mut piped = String::new();
         // An inherited pipe that never closes (IDE task, ssh) would otherwise hang here silently.
         if std::io::stderr().is_terminal() {
@@ -414,7 +423,7 @@ fn run(options: Options) -> Result<(), String> {
             });
         }
     }
-    if options.headless || options.print || options.json || !std::io::stdout().is_terminal() {
+    if options.acp || options.headless || options.print || options.json || !std::io::stdout().is_terminal() {
         if let Some(error) = &modes_error {
             eprintln!("{error}");
         }
@@ -457,7 +466,9 @@ fn run(options: Options) -> Result<(), String> {
         if let Some(allowed) = &options.tools {
             agent.limit_tools(allowed)?;
         }
-        let result = if options.headless {
+        let result = if options.acp {
+            acp::serve(&mut agent)
+        } else if options.headless {
             headless_mode(&mut agent, prompt.as_deref().unwrap_or_default())
         } else {
             print_mode(&mut agent, &prompt.ok_or("A message is needed with --print, --json or a piped stdout.")?, options.json)
@@ -564,6 +575,16 @@ mod tests {
         let options = super::parse_args(args(&["--tools", "read, rg,", "-p", "hi"])).unwrap();
         assert_eq!(options.tools, Some(vec!["read".to_string(), "rg".to_string()]));
         assert!(super::parse_args(args(&["--tools", "read", "hi"])).is_err());
+    }
+
+    #[test]
+    fn acp_command_takes_flags_but_no_message() {
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        let options = super::parse_args(args(&["acp", "--auto", "--tools", "read"])).unwrap();
+        assert!(options.acp && options.prompt.is_none());
+        assert!(super::parse_args(args(&["acp", "hi"])).is_err());
+        assert!(super::parse_args(args(&["acp", "-p"])).is_err());
+        assert!(!super::parse_args(args(&["-p", "acp"])).unwrap().acp);
     }
 
     #[test]
