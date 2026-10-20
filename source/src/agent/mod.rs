@@ -1804,7 +1804,15 @@ mod tests {
         let copied = Session::history(copy.path.as_ref().unwrap()).unwrap();
         let id = open.id.clone();
         drop(open);
-        let (again, _) = Session::resume(&dir, &id).unwrap();
+        // A process other tests spawn holds a copy of the lock fd between its fork and exec on Linux, so retry briefly.
+        let mut again = Session::resume(&dir, &id).unwrap().0;
+        for _ in 0..400 {
+            if again.forked_from.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            again = Session::resume(&dir, &id).unwrap().0;
+        }
         std::fs::remove_dir_all(&dir).unwrap();
         assert_ne!(copy.id, id);
         assert_eq!(copy.forked_from.as_deref(), Some(id.as_str()));
