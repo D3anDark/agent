@@ -325,7 +325,7 @@ enum MidTurn {
 const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
     ("help", MidTurn::Runs, "show available slash commands"),
     ("clear", MidTurn::Waits, "start a fresh conversation"),
-    ("resume", MidTurn::Waits, "resume a saved session"),
+    ("resume", MidTurn::Runs, "resume a saved session"),
     ("rename-title", MidTurn::Runs, "rename the current session"),
     ("rename-title-ai", MidTurn::Waits, "Name the session again from its first prompt"),
     ("clone", MidTurn::Waits, "Duplicate the current session at the current position"),
@@ -349,8 +349,8 @@ const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
     ("plugins", MidTurn::Runs, "Install, enable and disable plugins"),
     ("skills", MidTurn::Runs, "Enable and disable skills"),
     ("mcp", MidTurn::Waits, "Show MCP servers: reconnect, log in, enable and disable"),
-    ("usage", MidTurn::Waits, "Show token usage and subscription limits"),
-    ("history", MidTurn::Waits, "Search previous prompts"),
+    ("usage", MidTurn::Runs, "Show token usage and subscription limits"),
+    ("history", MidTurn::Runs, "Search previous prompts"),
     ("changes", MidTurn::Waits, "List files changed in this session and show their diffs"),
     ("skill-usage", MidTurn::Runs, "Show how often each skill was used, least used first"),
     ("rtk", MidTurn::Runs, "Show rtk token savings"),
@@ -358,8 +358,8 @@ const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
     ("subagents", MidTurn::Runs, "Show subagent runs"),
     ("goal", MidTurn::Runs, "[objective | pause | resume | stop | done]: Set a goal the agent keeps working toward, or manage it"),
     ("btw", MidTurn::Runs, "<question>: Ask a side question without touching the session"),
-    ("worktree", MidTurn::Waits, "[name]: Move this session to a git worktree: pick one, or name a branch to open or create"),
-    ("worktree-remove", MidTurn::Waits, "Remove a git worktree, keeping its branch"),
+    ("worktree", MidTurn::Runs, "[name]: Move this session to a git worktree: pick one, or name a branch to open or create"),
+    ("worktree-remove", MidTurn::Runs, "Remove a git worktree, keeping its branch"),
     ("login", MidTurn::Runs, "Add a Claude or ChatGPT account or an API key"),
     ("logout", MidTurn::Runs, "Remove a saved account"),
     ("account", MidTurn::Runs, "Show accounts and their usage; pick one to use until it reaches the switch threshold"),
@@ -511,6 +511,8 @@ struct App {
     steering: Arc<Mutex<Vec<String>>>,
     /// Slash commands, `!bash` and prompts with pasted images typed while the agent works, with those images; they run one by one once it is idle.
     queued_commands: VecDeque<(String, Vec<Value>)>,
+    /// Worker commands picked mid-turn, like a worktree or session from a panel; the worker is busy until the turn ends.
+    deferred_commands: VecDeque<Command>,
     abort: Arc<AtomicBool>,
     permission_mode: Arc<Mutex<Mode>>,
     hint: Option<(String, Instant)>,
@@ -895,6 +897,11 @@ fn event_loop(app: &mut App, inbox: &Receiver<Msg>, out: &mut Stdout) -> Result<
         if app.working.is_none() && (!app.follow_ups.lock().unwrap().is_empty() || !app.steering.lock().unwrap().is_empty()) {
             app.start(Command::FollowUps);
         }
+        if app.working.is_none()
+            && let Some(command) = app.deferred_commands.pop_front()
+        {
+            app.start(command);
+        }
         while app.working.is_none() && !app.queued_commands.is_empty() {
             let (text, images) = app.queued_commands.pop_front().expect("checked non-empty above");
             // Images pasted into the editor meanwhile belong to the next prompt, so they sit out this one.
@@ -937,6 +944,7 @@ impl App {
             path_matches: Default::default(),
             steering: agent.steering.clone(),
             queued_commands: VecDeque::new(),
+            deferred_commands: VecDeque::new(),
             abort: agent.abort.clone(),
             permission_mode: agent.permission_mode.clone(),
             hint: None,
@@ -3093,6 +3101,11 @@ impl App {
 
     fn start(&mut self, command: Command) {
         self.scroll = 0;
+        if self.working.is_some() {
+            self.deferred_commands.push_back(command);
+            self.hint = Some(("Runs when the turn ends".into(), Instant::now()));
+            return;
+        }
         if self.commands.send(command).is_err() {
             self.push(Item::Error("The agent thread stopped.".into()));
             // Otherwise the event loop would retry FollowUps on every tick.
