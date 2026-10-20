@@ -273,37 +273,22 @@ impl Anchors {
         self.commit(&path, file)
     }
 
-    pub fn replace_match(&mut self, input: &Value) -> Result<String, String> {
-        let from = str_arg(input, "replace_from")?;
-        let to = str_arg(input, "replace_to")?;
-        let old = str_arg(input, "old_string")?;
-        let new = str_arg(input, "new_string")?;
-        if old.is_empty() {
-            return Err("[E_BAD_SHAPE] old_string must not be empty.".into());
+    pub fn replace_match(&mut self, cwd: &Path, input: &Value) -> Result<String, String> {
+        let (path, mut file, first, last) = match input["path"].as_str() {
+            Some(path) => self.resolve_file(cwd, path)?,
+            None => self.resolve_range(str_arg(input, "replace_from")?, str_arg(input, "replace_to")?)?,
+        };
+        let Some(edits) = input["edits"].as_array() else {
+            replace_once(&mut file, first, last, input, &path)?;
+            return self.commit(&path, file);
+        };
+        if input["path"].is_null() {
+            return Err("[E_BAD_SHAPE] edits need `path`, not anchors.".into());
         }
-        let (path, mut file, first, last) = self.resolve_range(from, to)?;
-        let region = file.lines[first..=last].join("\n");
-        if !region.contains(old) {
-            return Err(format!("[E_NO_MATCH] old_string was not found in lines {}-{} of {}. Copy the fragment exactly from the served rows.", first + 1, last + 1, path.display()));
+        for (i, edit) in edits.iter().enumerate() {
+            let last = file.lines.len() - 1;
+            replace_once(&mut file, 0, last, edit, &path).map_err(|error| format!("{error} (edits[{i}]; no edit was written)"))?;
         }
-        let matches = region.matches(old).count();
-        if matches > 1 {
-            return Err(format!(
-                "[E_AMBIGUOUS] old_string occurs {matches} times in lines {}-{} of {}. Add surrounding text or narrow the range so it occurs once.",
-                first + 1,
-                last + 1,
-                path.display()
-            ));
-        }
-        let new = new.replace("\r\n", "\n");
-        let mut lines: Vec<String> = region.replace(old, &new).split('\n').map(String::from).collect();
-        // Like replace: a trailing break ends the last line written instead of adding a blank one.
-        let at = region.find(old).expect("counted above");
-        if new.ends_with('\n') && at + old.len() == region.len() {
-            lines.pop();
-            file.final_newline |= last + 1 == file.lines.len();
-        }
-        file.lines.splice(first..=last, lines);
         self.commit(&path, file)
     }
 
@@ -343,6 +328,15 @@ impl Anchors {
         self.files[path].anchors.iter().position(|a| a.as_str() == anchor).ok_or_else(|| {
             format!("[E_STALE_ANCHOR] \"{anchor}\" is not a live anchor in {0}: the file changed since read, or the anchor is mistyped (send only the 4 letters before │). Call read() on {0} for fresh anchors.", path.display())
         })
+    }
+
+    /// Loads `path` whole for an edit by content: no read first, so anchors are minted here.
+    fn resolve_file(&mut self, cwd: &Path, path: &str) -> Result<(PathBuf, Text, usize, usize), String> {
+        let path = existing_file(cwd, path)?;
+        let file = Text::load(&path)?;
+        self.sync(&path, file.lines.clone())?;
+        let last = file.lines.len() - 1;
+        Ok((path, file, 0, last))
     }
 
     fn commit(&mut self, path: &Path, mut file: Text) -> Result<String, String> {
@@ -462,6 +456,37 @@ fn row_text(anchor: &str, line: &str, number: usize, path: &Path) -> String {
     }
     let quoted = crate::agent::edit_hooks::shell_quote(&path.display().to_string());
     format!("{anchor}│[Line {number} is {}, exceeds {}; content not shown. Use bash: sed -n '{number}p' {quoted} | head -c {MAX_BYTES}]", format_size(line.len()), format_size(MAX_BYTES))
+}
+
+fn replace_once(file: &mut Text, first: usize, last: usize, edit: &Value, path: &Path) -> Result<(), String> {
+    let old = str_arg(edit, "old_string")?;
+    let new = str_arg(edit, "new_string")?;
+    if old.is_empty() {
+        return Err("[E_BAD_SHAPE] old_string must not be empty.".into());
+    }
+    let region = file.lines[first..=last].join("\n");
+    let matches = region.matches(old).count();
+    if matches == 0 {
+        return Err(format!("[E_NO_MATCH] old_string was not found in lines {}-{} of {}. Copy the fragment exactly from the file.", first + 1, last + 1, path.display()));
+    }
+    if matches > 1 {
+        return Err(format!(
+            "[E_AMBIGUOUS] old_string occurs {matches} times in lines {}-{} of {}. Add surrounding text or narrow the range so it occurs once.",
+            first + 1,
+            last + 1,
+            path.display()
+        ));
+    }
+    let new = new.replace("\r\n", "\n");
+    let mut lines: Vec<String> = region.replace(old, &new).split('\n').map(String::from).collect();
+    // Like replace: a trailing break ends the last line written instead of adding a blank one.
+    let at = region.find(old).expect("counted above");
+    if new.ends_with('\n') && at + old.len() == region.len() {
+        lines.pop();
+        file.final_newline |= last + 1 == file.lines.len();
+    }
+    file.lines.splice(first..=last, lines);
+    Ok(())
 }
 
 /// Replacement text to lines: one trailing line break ends the last line instead of adding a blank one.
@@ -637,7 +662,7 @@ mod tests {
         let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
         std::fs::write(&path, "one\n2\nthree\n").unwrap();
         assert!(anchors.replace(&json!({"remove_from": a[1], "remove_to": a[1], "text": "x"})).unwrap_err().contains("changed since read"));
-        anchors.replace_match(&json!({"replace_from": a[2], "replace_to": a[2], "old_string": "ee", "new_string": "EE"})).unwrap();
+        anchors.replace_match(Path::new("/"), &json!({"replace_from": a[2], "replace_to": a[2], "old_string": "ee", "new_string": "EE"})).unwrap();
         anchors.insert(&json!({"anchor": a[0], "direction": "before", "text": "zero"})).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "zero\none\n2\nthrEE\n");
     }
@@ -647,7 +672,7 @@ mod tests {
         let path = temp_file("ambiguous", "foo(foo)\n");
         let mut anchors = Anchors::new("s");
         let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
-        let error = anchors.replace_match(&json!({"replace_from": a[0], "replace_to": a[0], "old_string": "foo", "new_string": "bar"})).unwrap_err();
+        let error = anchors.replace_match(Path::new("/"), &json!({"replace_from": a[0], "replace_to": a[0], "old_string": "foo", "new_string": "bar"})).unwrap_err();
         assert!(error.starts_with("[E_AMBIGUOUS]"), "{error}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo(foo)\n");
     }
@@ -657,8 +682,34 @@ mod tests {
         let path = temp_file("overlap", "aaa\n");
         let mut anchors = Anchors::new("s");
         let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
-        anchors.replace_match(&json!({"replace_from": a[0], "replace_to": a[0], "old_string": "aa", "new_string": "x\n"})).unwrap();
+        anchors.replace_match(Path::new("/"), &json!({"replace_from": a[0], "replace_to": a[0], "old_string": "aa", "new_string": "x\n"})).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "x\na\n");
+    }
+
+    #[test]
+    fn replace_match_by_path_edits_an_unread_file_and_serves_anchors() {
+        let path = temp_file("by_path", "one\ntwo\nthree\n");
+        let mut anchors = Anchors::new("s");
+        let diff = anchors.replace_match(Path::new("/"), &json!({"path": path, "old_string": "two", "new_string": "TWO"})).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\nTWO\nthree\n");
+        let added = &diff.lines().find(|line| line.starts_with('+')).unwrap()[1..5];
+        anchors.replace(&json!({"remove_from": added, "remove_to": added, "text": "2"})).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\n2\nthree\n");
+        let error = anchors.replace_match(Path::new("/"), &json!({"path": path, "old_string": "e", "new_string": "E"})).unwrap_err();
+        assert!(error.starts_with("[E_AMBIGUOUS]"), "{error}");
+    }
+
+    #[test]
+    fn replace_match_applies_all_edits_or_none() {
+        let path = temp_file("edits", "one\ntwo\nthree\n");
+        let mut anchors = Anchors::new("s");
+        let edits = json!([{"old_string": "one", "new_string": "1"}, {"old_string": "three", "new_string": "3\n"}]);
+        anchors.replace_match(Path::new("/"), &json!({"path": path, "edits": edits})).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "1\ntwo\n3\n");
+        let edits = json!([{"old_string": "two", "new_string": "2"}, {"old_string": "missing", "new_string": "x"}]);
+        let error = anchors.replace_match(Path::new("/"), &json!({"path": path, "edits": edits})).unwrap_err();
+        assert!(error.starts_with("[E_NO_MATCH]") && error.contains("edits[1]"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "1\ntwo\n3\n");
     }
 
     #[test]
@@ -722,7 +773,7 @@ mod tests {
         let path = temp_file("match", "foo\r\nx\r\n");
         let mut anchors = Anchors::new("s");
         let a = anchors_of(&anchors.read(Path::new("/"), &json!({"path": path})).unwrap());
-        anchors.replace_match(&json!({"replace_from": a[0], "replace_to": a[0], "old_string": "foo", "new_string": "a\r\nb\n"})).unwrap();
+        anchors.replace_match(Path::new("/"), &json!({"replace_from": a[0], "replace_to": a[0], "old_string": "foo", "new_string": "a\r\nb\n"})).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\r\nb\r\nx\r\n");
     }
 

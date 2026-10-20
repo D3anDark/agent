@@ -149,11 +149,15 @@
   },
   {
     "name": "replace_match",
-    "description": "Replace every `old_string` inside the lines from anchor `replace_from` to anchor `replace_to` (the same anchor for one line); the rest stays byte-for-byte. Send only the smallest changing fragment; for a whole-line rewrite use `replace`.",
+    "description": "Replace `old_string`, which must occur once, inside the lines from anchor `replace_from` to anchor `replace_to` (the same anchor for one line), or anywhere in the file at `path` when no anchors are given; no read needed. With `path`, `edits` changes several fragments in one call. The rest stays byte-for-byte. Send only the smallest changing fragment; for a whole-line rewrite use `replace`.",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
       "properties": {
+        "path": {
+          "type": "string",
+          "description": "File to search whole, in place of the anchors."
+        },
         "replace_from": {
           "type": "string",
           "description": "Anchor of the first line."
@@ -168,15 +172,21 @@
         },
         "new_string": {
           "type": "string",
-          "description": "Replacement for every match; \"\" deletes."
+          "description": "Replacement; \"\" deletes."
+        },
+        "edits": {
+          "type": "array",
+          "description": "Several fragments of the file at `path`, in place of old_string/new_string; applied in order, all or none.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "old_string": { "type": "string" },
+              "new_string": { "type": "string" }
+            },
+            "required": ["old_string", "new_string"]
+          }
         }
-      },
-      "required": [
-        "replace_from",
-        "replace_to",
-        "old_string",
-        "new_string"
-      ]
+      }
     }
   },
   {

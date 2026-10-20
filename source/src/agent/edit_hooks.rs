@@ -18,7 +18,7 @@ pub struct Hook {
 /// Files an edit tool call changes. Call it before the tool runs: a replace retires the anchors it names.
 pub fn edited_files(tool: &str, input: &Value, cwd: &Path, anchors: &Anchors) -> Vec<PathBuf> {
     let anchor_keys: &[&str] = match tool {
-        "write" => return input["path"].as_str().map(|path| hashline::resolve(cwd, path)).into_iter().collect(),
+        "write" | "replace_match" if input["path"].is_string() => return input["path"].as_str().map(|path| hashline::resolve(cwd, path)).into_iter().collect(),
         "replace" | "replace_match" => &["remove_from", "replace_from"],
         "insert" => &["anchor"],
         _ => return Vec::new(),

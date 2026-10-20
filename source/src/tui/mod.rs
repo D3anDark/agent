@@ -3907,6 +3907,7 @@ fn tool_args(name: &str, input: &Value) -> String {
                 }
             };
             match input["path"].as_str() {
+                Some(path) if anchors.is_empty() => path.to_string(),
                 Some(path) => format!("{path} {anchors}"),
                 None => anchors,
             }

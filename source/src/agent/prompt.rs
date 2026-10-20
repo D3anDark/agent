@@ -5,14 +5,14 @@ const DEFAULT_PREAMBLE: &str = "You are an expert coding assistant. You help use
 
 <tools>
 - read: Read a file as anchored rows
-- replace, replace_match, insert: Edit a file by the anchors read returned
+- replace, replace_match, insert: Edit a file by the anchors read returned; replace_match also by `path` and unique fragments, several in one call via `edits`
 - write: Create a file, or overwrite one whole
 - bash: Run shell commands
 - rg: Search file contents
 </tools>
 
 <rules>
-- Read a file before editing it, and edit it by anchor instead of rewriting it
+- Edit a file by anchor or by replace_match with `path` instead of rewriting it
 - Use rg, not grep through bash
 - Be concise in your responses
 - Show file paths clearly when working with files

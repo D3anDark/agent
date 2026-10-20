@@ -49,7 +49,7 @@ pub fn run(name: &str, input: &Value, cwd: &Path, anchors: &mut Anchors, rtk: &R
         "bash" => bash(input, cwd, rtk, abort),
         "write" => write(input, cwd),
         "replace" => anchors.replace(input),
-        "replace_match" => anchors.replace_match(input),
+        "replace_match" => anchors.replace_match(cwd, input),
         "insert" => anchors.insert(input),
         "rg" => rg(input, cwd, anchors, abort),
         _ => Err(format!("Tool {name} not found")),
@@ -217,7 +217,7 @@ fn write(input: &Value, cwd: &Path) -> Result<String, String> {
     hashline::replace_file(&path, content.as_bytes())?;
     let path = path.canonicalize().map_err(|e| e.to_string())?;
     // No echo of the content: it is already in the call, and every later turn would pay for it twice.
-    Ok(format!("Wrote {} lines to {}. Read the lines you will edit to get their anchors.", content.lines().count(), path.display()))
+    Ok(format!("Wrote {} lines to {}.", content.lines().count(), path.display()))
 }
 
 /// pi file-search's rg argv as JSON events: the pattern after `--`, counts clamped.
