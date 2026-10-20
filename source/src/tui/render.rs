@@ -342,7 +342,7 @@ fn push_styled(out: &mut String, style: Style, text: &str) {
 }
 
 /// `text` split around its first http(s) URL, without trailing punctuation or an unmatched `)`.
-fn split_link(text: &str) -> Option<(&str, &str, &str)> {
+pub fn split_link(text: &str) -> Option<(&str, &str, &str)> {
     let start = [text.find("https://"), text.find("http://")].into_iter().flatten().min()?;
     let tail = &text[start..];
     let mut url = &tail[..tail.find(|c: char| c.is_whitespace() || "<>\"'`".contains(c)).unwrap_or(tail.len())];

@@ -1,4 +1,4 @@
-use super::render::{CURSOR, Line, Style, span};
+use super::render::{CURSOR, Line, PLAIN, Style, span, split_link};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_width::UnicodeWidthChar;
 
@@ -343,12 +343,25 @@ impl Editor {
         let (rows, spots) = self.wrap(width);
         let cursor = self.cursor_spot(&spots);
         let (first, style) = if self.lines[0].starts_with('!') { ("$ ", SHELL_PROMPT) } else { ("❯ ", PROMPT) };
-        let lines = rows.into_iter().enumerate().map(|(index, row)| vec![span(if index == 0 { first } else { "  " }, style), span(row, super::render::PLAIN)]).collect();
+        let mut lines = Vec::new();
+        let mut carry = String::new();
+        let mut last_line = usize::MAX;
+        for (index, (line_index, row)) in rows.into_iter().enumerate() {
+            if line_index != last_line {
+                carry.clear();
+            }
+            last_line = line_index;
+            let (spans, next_carry) = mark_links(&carry, &row);
+            carry = next_carry;
+            let mut line = vec![span(if index == 0 { first } else { "  " }, style)];
+            line.extend(spans);
+            lines.push(line);
+        }
         (lines, (cursor.x, cursor.row))
     }
 
     /// Wraps the text to `width` and returns the rows plus the screen spot of every cursor position.
-    fn wrap(&self, width: usize) -> (Vec<String>, Vec<Spot>) {
+    fn wrap(&self, width: usize) -> (Vec<(usize, String)>, Vec<Spot>) {
         let shell = self.lines[0].starts_with('!');
         let room = width.saturating_sub(2).max(1);
         let mut rows = Vec::new();
@@ -364,7 +377,7 @@ impl Editor {
                     match after_space.take() {
                         Some((bytes, spot_count, width)) if ch != ' ' => {
                             let word = current.split_off(bytes);
-                            rows.push(std::mem::replace(&mut current, word));
+                            rows.push((line_index, std::mem::replace(&mut current, word)));
                             used -= width;
                             for spot in &mut spots[spot_count..] {
                                 spot.row += 1;
@@ -372,7 +385,7 @@ impl Editor {
                             }
                         }
                         _ => {
-                            rows.push(std::mem::take(&mut current));
+                            rows.push((line_index, std::mem::take(&mut current)));
                             used = 0;
                         }
                     }
@@ -389,11 +402,11 @@ impl Editor {
                 }
             }
             if line_index == self.row && self.col >= line.chars().count() && used >= room {
-                rows.push(std::mem::take(&mut current));
+                rows.push((line_index, std::mem::take(&mut current)));
                 used = 0;
             }
             spots.push(Spot { line: line_index, col: line.chars().count(), x: 2 + used, row: rows.len() });
-            rows.push(current);
+            rows.push((line_index, current));
         }
         (rows, spots)
     }
@@ -408,6 +421,39 @@ impl Editor {
         self.row = target.line;
         self.col = target.col;
         true
+    }
+}
+
+/// `row` as spans with its URLs underlined, plus the URL `row` ends inside so the next row keeps underlining it.
+/// `carry` is that URL from the row above; a row that ends mid-word carries the whole word on, as the URL may continue.
+fn mark_links(carry: &str, row: &str) -> (Line, String) {
+    let joined = format!("{carry}{row}");
+    let mut out = Line::new();
+    let mut next_carry = String::new();
+    let mut emitted = carry.len();
+    let mut rest = joined.as_str();
+    while let Some((_, url, after)) = split_link(rest) {
+        let end = joined.len() - after.len();
+        let url_start = end - url.len();
+        rest = after;
+        if end <= emitted {
+            continue;
+        }
+        let visible_start = url_start.max(emitted);
+        push(&mut out, &joined[emitted..visible_start], PLAIN);
+        push(&mut out, &joined[visible_start..end], PLAIN.underline());
+        emitted = end;
+        if !after.contains(char::is_whitespace) {
+            next_carry = joined[url_start..].to_string();
+        }
+    }
+    push(&mut out, &joined[emitted..], PLAIN);
+    (out, next_carry)
+}
+
+fn push(line: &mut Line, text: &str, style: Style) {
+    if !text.is_empty() {
+        line.push(span(text, style));
     }
 }
 
@@ -520,6 +566,15 @@ mod tests {
         let (rows, cursor) = editor.render(6);
         assert_eq!(rows.len(), 2);
         assert_eq!(cursor, (4, 1));
+    }
+
+    #[test]
+    fn a_wrapped_url_is_underlined_on_every_row() {
+        let mut editor = Editor::new();
+        editor.insert("see https://xy/abcdefgh ok\nhttps://z\nnot");
+        let rows = editor.render(12).0;
+        let underlined = |row: &Line| row.iter().filter(|s| s.style.underline).map(|s| s.text.as_str()).collect::<String>();
+        assert_eq!(rows.iter().map(underlined).collect::<Vec<_>>(), ["", "https://xy", "/abcdefgh", "", "https://z", ""]);
     }
 
     #[test]
