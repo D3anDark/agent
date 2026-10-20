@@ -1,5 +1,10 @@
 # agent
 
+[![Release](https://img.shields.io/github/v/release/rokartur/agent)](https://github.com/rokartur/agent/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/rokartur/agent/total)](https://github.com/rokartur/agent/releases)
+[![License](https://img.shields.io/github/license/rokartur/agent)](LICENSE)
+[![CI](https://github.com/rokartur/agent/actions/workflows/ci.yml/badge.svg)](https://github.com/rokartur/agent/actions/workflows/ci.yml)
+
 simple af possible.
 
 ```sh
