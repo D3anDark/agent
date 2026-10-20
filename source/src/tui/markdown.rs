@@ -1,4 +1,4 @@
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd, TextMergeStream};
 
 use super::render::{Line, MUTED, PLAIN, Span, Style, line_width, span, wrap};
 
@@ -53,7 +53,9 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
             out.push(Vec::new());
         }
     };
-    for event in Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS) {
+    // The parser splits text at `_` and `*`, which would cut a bare URL like x.com/a_/b in two.
+    let parser = Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS);
+    for event in TextMergeStream::new(parser) {
         let style = *styles.last().unwrap();
         match event {
             Event::Start(Tag::Paragraph) => {
@@ -268,5 +270,11 @@ mod tests {
         assert_eq!(text(&render("[docs](https://a.dev) <https://b.dev>", 60)), [" docs (https://a.dev) https://b.dev"]);
         let lines = render("~~old~~", 20);
         assert!(lines[0].iter().any(|s| s.text == "old" && s.style.strikethrough));
+    }
+
+    #[test]
+    fn a_bare_url_with_an_underscore_is_one_link() {
+        let lines = render("https://x.com/a_/status/1 (x)", 60);
+        assert_eq!(crate::tui::render::link_at(&lines[0], 20).as_deref(), Some("https://x.com/a_/status/1"));
     }
 }
