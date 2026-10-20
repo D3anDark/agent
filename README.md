@@ -32,6 +32,20 @@ You already pay for Claude or ChatGPT. Log in. That's the setup. Prefer pay as y
 
 **You choose how much it does alone.** Ask before every change, let a reviewer model approve, or `--yolo`.
 
+## Compared with jcode and pi
+
+Same model (Claude Opus 5.5, medium thinking), same prompt, two coding tasks, 6 runs each, averages. Every run of every harness passed all hidden tests. A: fix a CSV parser and write a CLI (39 tests). B: port semver range matching with no dependencies (2550 cases).
+
+| | agent | jcode | pi |
+|---|---|---|---|
+| A: time, tool calls, tokens, cost | **35.0 s, 3.2, 85k, $0.11** | 40.5 s, 3.8, 122k, $0.14 | 47.4 s, 4.3, 113k, $0.17 |
+| B: time | **187.3 s** (143–279) | 244.5 s (165–344) | 224.4 s (135–365) |
+| B: tool calls | **9.5**, median 6 | 14.7, median 14 | 13.0, median 9.5 |
+| B: tokens, cost | **386k, $0.61** | 619k, $0.84 | 536k, $0.68 |
+| Reply to "OK", median of 15 | **2.30 s** | 3.09 s | 4.20 s |
+| Base context | **17.8k** | 24.2k | 19.4k |
+| CPU, memory when idle | **0.07 s, 27 MB** | 0.2 s, 48 MB | 2 s, 310 MB |
+
 ## Commands worth knowing
 
 ```
