@@ -38,6 +38,7 @@ Same model (Claude Opus 5.5, medium thinking), same prompt, two coding tasks, 6 
 
 | | agent | jcode | pi |
 |---|---|---|---|
+| Version | 0.1.0 | 0.98.1 | 1.3.0 |
 | A: time, tool calls, tokens, cost | **35.0 s, 3.2, 85k, $0.11** | 40.5 s, 3.8, 122k, $0.14 | 47.4 s, 4.3, 113k, $0.17 |
 | B: time | **187.3 s** (143–279) | 244.5 s (165–344) | 224.4 s (135–365) |
 | B: tool calls | **9.5**, median 6 | 14.7, median 14 | 13.0, median 9.5 |
