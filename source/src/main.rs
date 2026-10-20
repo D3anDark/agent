@@ -54,6 +54,7 @@ Flags:
   --ask                       Ask before commands, file edits, URL fetches, subagents, MCP and plugin tools
   --parent <id>               Run as a subagent of that session: linked to it, no subagent, terminal, web or ask_user_question tools
   --explore                   With --parent: only read and rg, no modes prompt
+  --tools <a,b,...>           With -p, --json or --headless: offer only these tools
   --account <p>=<name>        Use that saved account first for provider p, like a pin in /account
   -h, --help                  Display this help and exit
   --version                   Print the agent version and exit
@@ -89,6 +90,8 @@ struct Options {
     explore: bool,
     /// Provider and account name the parent uses, pinned for this run only.
     account: Option<(String, String)>,
+    /// --tools: the only tools this run may call.
+    tools: Option<Vec<String>>,
     save: bool,
     resume: Option<Resume>,
     prompt: Option<String>,
@@ -166,6 +169,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
         }
         match arg.as_str() {
             "--model" => options.model = Some(value("--model")?),
+            "--tools" => options.tools = Some(value("--tools")?.split(',').map(|name| name.trim().to_string()).filter(|name| !name.is_empty()).collect()),
             "--thinking" => {
                 let level = value("--thinking")?;
                 if !settings::THINKING_LEVELS.contains(&level.as_str()) {
@@ -227,6 +231,9 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
     }
     if options.headless && options.print {
         return Err("--headless cannot be combined with --print.".into());
+    }
+    if options.tools.is_some() && !(options.print || options.json || options.headless) {
+        return Err("--tools needs -p, --json or --headless; /settings would reset the tool list.".into());
     }
     let picks_session = matches!(options.resume, Some(Resume::Pick));
     if picks_session && (options.print || options.json || options.headless || options.parent.is_some()) {
@@ -374,6 +381,7 @@ fn run(options: Options) -> Result<(), String> {
         subagent_concurrency: settings.subagent_concurrency,
         subagent_effort: settings.subagent_effort.clone(),
         subagent_model: settings.subagent_model.clone(),
+        only_tools: None,
         spent: Spent::default(),
         interactive: false,
         agent_dir: agent_dir.clone(),
@@ -445,6 +453,9 @@ fn run(options: Options) -> Result<(), String> {
             if options.explore {
                 agent.modes.clear();
             }
+        }
+        if let Some(allowed) = &options.tools {
+            agent.limit_tools(allowed)?;
         }
         let result = if options.headless {
             headless_mode(&mut agent, prompt.as_deref().unwrap_or_default())
@@ -545,6 +556,14 @@ mod tests {
         let options = super::parse_args(vec!["--account".into(), "anthropic=work".into()]).unwrap();
         assert_eq!(options.account, Some(("anthropic".into(), "work".into())));
         assert!(super::parse_args(vec!["--account".into(), "work".into()]).is_err());
+    }
+
+    #[test]
+    fn tools_flag_lists_names_and_needs_a_run_without_the_ui() {
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        let options = super::parse_args(args(&["--tools", "read, rg,", "-p", "hi"])).unwrap();
+        assert_eq!(options.tools, Some(vec!["read".to_string(), "rg".to_string()]));
+        assert!(super::parse_args(args(&["--tools", "read", "hi"])).is_err());
     }
 
     #[test]

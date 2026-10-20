@@ -211,6 +211,8 @@ pub struct Agent {
     pub subagents: Arc<Mutex<Runs>>,
     pub subagent_concurrency: usize,
     pub subagent_effort: String,
+    /// --tools: the only tools offered, MCP and plugin tools included.
+    pub only_tools: Option<Vec<String>>,
     /// Default for a subagent call without `model`; empty means `model`.
     pub subagent_model: String,
     /// Stored web_search and fetch_content responses for get_search_content.
@@ -1115,6 +1117,18 @@ impl Agent {
         })
     }
 
+    /// Offers only `names`; an error names one no built-in, plugin or MCP tool has.
+    pub fn limit_tools(&mut self, names: &[String]) -> Result<(), String> {
+        self.only_tools = None;
+        let (_, offered) = self.system_and_tools();
+        let offered = offered.as_array().expect("tool schemas are an array");
+        if let Some(unknown) = names.iter().find(|name| !offered.iter().any(|tool| tool["name"] == name.as_str())) {
+            return Err(format!("--tools: no tool is named {unknown}."));
+        }
+        self.only_tools = Some(names.to_vec());
+        Ok(())
+    }
+
     /// The system prompt and tool schemas the next request sends, with modes and plugin tools applied.
     fn system_and_tools(&self) -> (String, Value) {
         let system = if self.modes.is_empty() { self.system.clone() } else { format!("{}\n\n{}", self.system, self.modes) };
@@ -1122,6 +1136,9 @@ impl Agent {
         let list = tools.as_array_mut().expect("tool schemas are an array");
         list.extend(self.plugins.tools());
         list.extend(self.mcp.tools());
+        if let Some(only) = &self.only_tools {
+            list.retain(|tool| only.iter().any(|name| tool["name"] == name.as_str()));
+        }
         (system, tools)
     }
 
