@@ -109,6 +109,7 @@ enum Msg {
     },
     /// Account usage arrived for /account.
     UsageFetched,
+    WorktreeRemoved(PathBuf, Result<(), String>),
     /// A plugin set its status or exited: redraw the footer and /plugins.
     PluginsChanged,
     /// An MCP server connected, failed or exited: redraw /mcp.
@@ -222,8 +223,9 @@ enum Panel {
     },
     /// Shows `App::btw`, which outlives the panel so a bare /btw reopens it.
     Btw,
+    /// `confirm`: d was pressed once, and the next d removes the selected worktree.
     Worktrees {
-        remove: bool,
+        confirm: bool,
         index: usize,
         worktrees: Vec<Worktree>,
         current: PathBuf,
@@ -359,8 +361,7 @@ const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
     ("subagents", MidTurn::Runs, "Show subagent runs"),
     ("goal", MidTurn::Runs, "[objective | pause | resume | stop | done]: Set a goal the agent keeps working toward, or manage it"),
     ("btw", MidTurn::Runs, "<question>: Ask a side question without touching the session"),
-    ("worktree", MidTurn::Runs, "[name]: Move this session to a git worktree: pick one, or name a branch to open or create"),
-    ("worktree-remove", MidTurn::Runs, "Remove a git worktree, keeping its branch"),
+    ("worktree", MidTurn::Runs, "[name]: Move this session to a git worktree or remove one: pick one, or name a branch to open or create"),
     ("login", MidTurn::Runs, "Add a Claude or ChatGPT account or an API key"),
     ("logout", MidTurn::Runs, "Remove a saved account"),
     ("account", MidTurn::Runs, "Show accounts and their usage; pick one to use until it reaches the switch threshold"),
@@ -1254,6 +1255,13 @@ impl App {
                 }
             }
             Msg::UsageFetched | Msg::McpChanged => {}
+            Msg::WorktreeRemoved(path, result) => match result {
+                Ok(()) => {
+                    self.git = git_info(&self.cwd);
+                    self.system("worktree", format!("Removed {}", path.display()));
+                }
+                Err(error) => self.push(Item::Error(error)),
+            },
             Msg::PluginsChanged => match self.plugins.take_panel() {
                 // A plugin closes only its own panel, and never replaces one the user is in.
                 Some((plugin, data)) if data.is_null() => {
@@ -1789,8 +1797,8 @@ impl App {
                 self.panel = Some(Panel::Accounts { logout: name == "logout", query: Editor::new(), index: 0 });
                 self.refresh_usage_in_background();
             }
-            "worktree" | "worktree-remove" => {
-                if let Err(error) = self.worktree(name == "worktree-remove", args) {
+            "worktree" => {
+                if let Err(error) = self.worktree(args) {
                     self.push(Item::Error(error));
                 }
             }
@@ -2109,25 +2117,36 @@ impl App {
                 }
                 self.plugins.sync(&self.settings.disabled_plugins, &self.settings.plugin_settings);
             }
-            Some(Panel::Worktrees { index, worktrees, .. }) => match code {
-                KeyCode::Up => *index = index.saturating_sub(1),
-                KeyCode::Down => *index = (*index + 1).min(worktrees.len() - 1),
-                KeyCode::Enter => {
-                    let Some(Panel::Worktrees { remove, index, worktrees, current }) = self.panel.take() else { unreachable!() };
-                    let path = worktrees[index].path.clone();
-                    if !remove {
-                        if path != current {
+            Some(Panel::Worktrees { index, worktrees, confirm, current }) => {
+                let confirmed = std::mem::take(confirm);
+                match code {
+                    KeyCode::Up => *index = index.saturating_sub(1),
+                    KeyCode::Down => *index = (*index + 1).min(worktrees.len() - 1),
+                    KeyCode::Enter => {
+                        let path = worktrees[*index].path.clone();
+                        let moves = path != *current;
+                        self.panel = None;
+                        if moves {
                             self.start(Command::Worktree(path));
                         }
-                        return;
                     }
-                    match worktree::remove(&self.cwd, &path) {
-                        Ok(()) => self.system("worktree", format!("Removed {}", path.display())),
-                        Err(error) => self.push(Item::Error(error)),
+                    KeyCode::Char('d') if *index == 0 => self.system("worktree", "The main worktree cannot be removed."),
+                    KeyCode::Char('d') if worktrees[*index].path == *current => self.system("worktree", "This session runs in that worktree; move it first."),
+                    KeyCode::Char('d') if !confirmed => *confirm = true,
+                    KeyCode::Char('d') => {
+                        let path = worktrees[*index].path.clone();
+                        self.panel = None;
+                        // Deleting a checkout with node_modules takes seconds, so it runs off the UI thread.
+                        self.system("worktree", format!("Removing {}", path.display()));
+                        let (cwd, events) = (self.cwd.clone(), self.events.clone());
+                        std::thread::spawn(move || {
+                            let result = worktree::remove(&cwd, &path);
+                            let _ = events.send(Msg::WorktreeRemoved(path, result));
+                        });
                     }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Some(Panel::Subagents { index }) => {
                 let runs = self.subagents.lock().unwrap();
                 let run = runs.list[*index].clone();
@@ -2343,19 +2362,10 @@ impl App {
     }
 
     /// pi's worktree extension: no name picks from the list, a name opens or creates that worktree.
-    fn worktree(&mut self, remove: bool, name: &str) -> Result<(), String> {
+    fn worktree(&mut self, name: &str) -> Result<(), String> {
         let (worktrees, current) = worktree::list(&self.cwd)?;
-        if remove {
-            let removable: Vec<Worktree> = worktrees.into_iter().skip(1).filter(|w| w.path != current).collect();
-            if removable.is_empty() {
-                self.system("worktree", "No other worktrees.");
-            } else {
-                self.panel = Some(Panel::Worktrees { remove, index: 0, worktrees: removable, current });
-            }
-            return Ok(());
-        }
         if name.is_empty() {
-            self.panel = Some(Panel::Worktrees { remove, index: 0, worktrees, current });
+            self.panel = Some(Panel::Worktrees { confirm: false, index: 0, worktrees, current });
             return Ok(());
         }
         let path = worktree::open(&self.cwd, &worktrees, name)?;
@@ -2938,7 +2948,7 @@ impl App {
             }
             Panel::Btw => self.btw.as_ref().expect("the btw panel opens with a thread").render(width),
             Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Diff { .. } => unreachable!("frame draws the full-screen view instead of a panel"),
-            Panel::Worktrees { remove, index, worktrees, current } => {
+            Panel::Worktrees { confirm, index, worktrees, current } => {
                 let home = std::env::var("HOME").unwrap_or_default();
                 let rows: Vec<panel::Row> = worktrees
                     .iter()
@@ -2949,14 +2959,14 @@ impl App {
                     })
                     .collect();
                 let view = panel::Panel {
-                    title: if *remove { "Remove worktree".into() } else { "Move session to worktree".into() },
+                    title: if *confirm { format!("Remove {}? Its ignored files go with it.", worktrees[*index].branch) } else { "Worktrees".into() },
                     tabs: &[],
                     tab: 0,
                     search: None,
                     rows: &rows,
                     selected: *index,
                     empty: "",
-                    hint: "↑↓ navigate     enter choose     esc close",
+                    hint: if *confirm { "d again removes it, the branch stays     any other key cancels" } else { "↑↓ navigate     enter move session     d remove     esc close" },
                 };
                 view.render(width, PANEL_ROWS)
             }

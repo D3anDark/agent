@@ -51,7 +51,7 @@ Same model (Claude Opus 5.5, medium thinking), same prompt, two coding tasks, 6 
 ```
 /goal       keep going until it is done
 /btw        ask aside, keep the session clean
-/worktree   move the session to a git worktree
+/worktree   move the session to a git worktree, or remove one
 /changes    every file it touched, with diffs
 /voice      talk instead of type (whisper.cpp)
 /caveman    answers without the fluff
