@@ -131,7 +131,7 @@ fn plugin_command(args: &[String]) -> Result<(), String> {
                 println!("{:<16} {:<10} {:<10} {}", view.name, view.version, state, view.description);
             }
         }
-        _ => return Err(format!("Unknown plugin command.\n{USAGE}")),
+        _ => return Err(format!("Unknown plugin command.\n{}", help(std::io::stderr().is_terminal()))),
     }
     Ok(())
 }
@@ -151,7 +151,7 @@ fn main() {
     let options = match parse_args(args) {
         Ok(options) => options,
         Err(message) => {
-            eprintln!("{message}\n{USAGE}");
+            eprintln!("{message}\n{}", help(std::io::stderr().is_terminal()));
             std::process::exit(2);
         }
     };
@@ -212,11 +212,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
             "--full-access" | "--yolo" => options.permission_mode = Some(Mode::FullAccess),
             "--ask" => options.permission_mode = Some(Mode::Ask),
             "-h" | "--help" => {
-                if std::io::stdout().is_terminal() {
-                    println!("{}", styled_help(USAGE))
-                } else {
-                    println!("{USAGE}")
-                }
+                println!("{}", help(std::io::stdout().is_terminal()));
                 std::process::exit(0);
             }
             "--version" => {
@@ -251,6 +247,10 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
         return Err("--resume without an id opens the session list and takes no message.".into());
     }
     Ok(options)
+}
+
+fn help(styled: bool) -> String {
+    if styled { styled_help(USAGE) } else { USAGE.to_string() }
 }
 
 /// Styles USAGE by the shape of each line: headings end with ':', entries split name and text on two spaces.
