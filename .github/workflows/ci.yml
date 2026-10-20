@@ -19,6 +19,11 @@ jobs:
         working-directory: source
     steps:
       - uses: actions/checkout@v4
+      # Tests run rg and fd; Ubuntu ships fd as fdfind.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep fd-find && sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
+      - if: runner.os == 'macOS'
+        run: brew install ripgrep fd
       - run: rustup update stable && rustup default stable && rustup component add clippy rustfmt
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
