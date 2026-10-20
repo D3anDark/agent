@@ -594,7 +594,7 @@ pub fn run(agent: Agent, setup: Setup, model_lists: JoinHandle<Vec<String>>) -> 
     });
     spawn_worker(agent, app.settings.clone(), model_lists, command_inbox, events.clone());
     if crate::update::enabled() {
-        spawn_update(app.settings.update_channel.clone(), events.clone());
+        spawn_update(app.home.clone(), app.settings.update_channel.clone(), events.clone());
     }
     spawn_on_start(app.settings.on_start.clone(), events.clone());
     if app.settings.headroom && crate::process::installed("headroom") {
@@ -808,9 +808,9 @@ fn settle_model(agent: &mut Agent, settings: &mut Settings, failures: Vec<String
     Msg::ModelSettled { model, failures }
 }
 
-fn spawn_update(channel: String, events: Sender<Msg>) {
+fn spawn_update(home: PathBuf, channel: String, events: Sender<Msg>) {
     std::thread::spawn(move || {
-        let notice = match crate::update::install_latest(&channel) {
+        let notice = match crate::update::install_latest(&home, &channel) {
             Ok(Some(version)) => format!("Updated to v{version}. Restart agent to use it."),
             Ok(None) => return,
             Err(error) => format!("Update failed: {error}"),

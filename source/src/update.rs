@@ -8,17 +8,28 @@ use crate::process;
 const RELEASES: &str = "https://github.com/rokartur/agent/releases";
 const RELEASES_API: &str = "https://api.github.com/repos/rokartur/agent/releases?per_page=20";
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
-/// `latest` follows stable releases only, `pre-release` also takes pre-releases.
-pub const CHANNELS: [&str; 2] = ["latest", "pre-release"];
+/// `latest` follows stable releases only, `pre-release` also takes pre-releases, `off` never checks.
+pub const CHANNELS: [&str; 3] = ["latest", "pre-release", "off"];
+/// GitHub allows 60 unauthenticated API calls an hour per IP, and every TUI start would spend one.
+const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Only CI release builds update themselves, so a local `cargo build` never gets replaced.
 pub fn enabled() -> bool {
     option_env!("AGENT_RELEASE").is_some()
 }
 
-/// Replaces the running binary with the newest release on `channel`. Returns the installed version.
-pub fn install_latest(channel: &str) -> Result<Option<String>, String> {
-    let Some(latest) = latest_version(channel == "pre-release")? else { return Ok(None) };
+/// Replaces the running binary with the newest release on `channel`, once a day. Returns the installed version.
+pub fn install_latest(home: &Path, channel: &str) -> Result<Option<String>, String> {
+    let stamp = home.join(".agents/update-check");
+    if channel == "off" || !due(&stamp, channel) {
+        return Ok(None);
+    }
+    let latest = latest_version(channel == "pre-release");
+    // Ok(None) is an offline start, which checks again next start instead of next day.
+    if !matches!(latest, Ok(None)) {
+        mark_checked(&stamp, channel)?;
+    }
+    let Some(latest) = latest? else { return Ok(None) };
     if !is_newer(&latest, CURRENT) {
         return Ok(None);
     }
@@ -32,6 +43,20 @@ pub fn install_latest(channel: &str) -> Result<Option<String>, String> {
     Ok(Some(latest))
 }
 
+/// The stamp holds the channel last checked, so switching channels checks at once.
+fn due(stamp: &Path, channel: &str) -> bool {
+    let Ok(checked) = std::fs::read_to_string(stamp) else { return true };
+    let age = std::fs::metadata(stamp).and_then(|meta| meta.modified()).ok().and_then(|modified| modified.elapsed().ok());
+    checked != channel || age.is_none_or(|age| age >= CHECK_EVERY)
+}
+
+/// A fresh install that never logged in has no `~/.agents` yet.
+fn mark_checked(stamp: &Path, channel: &str) -> Result<(), String> {
+    let dir = stamp.parent().expect("the stamp sits in ~/.agents");
+    std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
+    std::fs::write(stamp, channel).map_err(|e| format!("Cannot write {}: {e}", stamp.display()))
+}
+
 /// Offline start is normal, so a network failure means no update; an HTTP error such as a 403 rate limit is reported.
 fn latest_version(include_prereleases: bool) -> Result<Option<String>, String> {
     let http: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(10))).build().into();
@@ -42,7 +67,8 @@ fn latest_version(include_prereleases: bool) -> Result<Option<String>, String> {
     };
     let Ok(body) = response.body_mut().read_to_string() else { return Ok(None) };
     let Ok(releases) = serde_json::from_str::<Value>(&body) else { return Ok(None) };
-    Ok(newest(&releases, include_prereleases).map(str::to_owned))
+    // A channel without releases yet counts as up to date.
+    Ok(Some(newest(&releases, include_prereleases).unwrap_or(CURRENT).to_owned()))
 }
 
 /// Unauthenticated API calls never list drafts.
@@ -60,7 +86,13 @@ fn download(version: &str, path: &Path) -> Result<(), String> {
     let url = format!("{RELEASES}/download/v{version}/{asset}");
     let http: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(300))).build().into();
     // Created first, so an unwritable binary directory fails before a transfer of up to 100 MiB.
-    let mut file = std::fs::File::create(path).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+    let mut file = std::fs::File::create(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::PermissionDenied => {
+            let dir = path.parent().unwrap_or(path).display();
+            format!("No write access to {dir}, where agent is installed. Reinstall it to a folder you own, or set update_channel to off.")
+        }
+        _ => format!("Cannot write {}: {e}", path.display()),
+    })?;
     let bytes = http.get(&url).call().and_then(|mut response| response.body_mut().with_config().limit(100 << 20).read_to_vec()).map_err(|e| format!("Cannot download {url}: {e}"))?;
     std::io::Write::write_all(&mut file, &bytes).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
     use std::os::unix::fs::PermissionsExt;
@@ -126,6 +158,20 @@ mod tests {
         assert!(is_newer("0.3.1+7", "0.3.0+9") && !is_newer("0.3.0+9", "0.3.0"));
         assert!(is_newer("0.3.0", "0.3.0-rc.1"));
         assert!(!is_newer("0.3.0-rc.1", "0.3.0"));
+    }
+
+    #[test]
+    fn a_start_checks_at_most_once_a_day_per_channel() {
+        let home = std::env::temp_dir().join(format!("agent-update-check-{}", std::process::id()));
+        let stamp = home.join(".agents/update-check");
+        assert!(due(&stamp, "latest"));
+        mark_checked(&stamp, "latest").unwrap();
+        assert!(!due(&stamp, "latest"));
+        assert!(due(&stamp, "pre-release"));
+        let file = std::fs::File::options().write(true).open(&stamp).unwrap();
+        file.set_modified(std::time::SystemTime::now() - CHECK_EVERY).unwrap();
+        assert!(due(&stamp, "latest"));
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
