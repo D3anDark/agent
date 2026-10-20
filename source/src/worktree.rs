@@ -32,13 +32,8 @@ pub fn open(cwd: &Path, worktrees: &[Worktree], name: &str) -> Result<PathBuf, S
     Ok(PathBuf::from(path))
 }
 
-/// Refuses while the checkout holds ignored files, such as `.env`, that `git worktree remove` would delete unasked.
+/// git refuses a checkout with changes, staged or not, or untracked files; ignored files such as `.env` go with it.
 pub fn remove(cwd: &Path, path: &Path) -> Result<(), String> {
-    let ignored = git(path, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"])?;
-    if !ignored.trim().is_empty() {
-        let files: Vec<&str> = ignored.lines().take(10).collect();
-        return Err(format!("{} holds ignored files that removing it would delete: {}. Move or delete them first.", path.display(), files.join(", ")));
-    }
     git(cwd, &["worktree", "remove", &path.display().to_string()]).map(|_| ())
 }
 
@@ -77,7 +72,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_refuses_a_checkout_with_ignored_files() {
+    fn remove_refuses_changes_but_not_ignored_files() {
         let main = std::env::temp_dir().join(format!("agent-worktree-{}", std::process::id()));
         _ = std::fs::remove_dir_all(&main);
         std::fs::create_dir_all(&main).unwrap();
@@ -88,10 +83,11 @@ mod tests {
         // info/exclude, not .gitignore: an untracked .gitignore would make git refuse the removal by itself.
         std::fs::write(main.join(".git/info/exclude"), ".env\n").unwrap();
         std::fs::write(checkout.join(".env"), "KEY=1").unwrap();
-        let error = remove(&main, &checkout).unwrap_err();
-        assert!(error.contains(".env"), "{error}");
-        assert!(checkout.join(".env").exists());
-        std::fs::remove_dir_all(&checkout).unwrap();
+        std::fs::write(checkout.join("notes.md"), "draft").unwrap();
+        assert!(remove(&main, &checkout).is_err());
+        std::fs::remove_file(checkout.join("notes.md")).unwrap();
+        remove(&main, &checkout).unwrap();
+        assert!(!checkout.exists());
         std::fs::remove_dir_all(&main).unwrap();
     }
 }
