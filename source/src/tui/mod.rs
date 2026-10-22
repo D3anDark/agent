@@ -97,6 +97,8 @@ enum Msg {
         id: String,
         path: Option<String>,
     },
+    /// /handoff wrote the first prompt of the fresh session it starts.
+    HandedOff(String),
     LoginFinished {
         provider: &'static str,
         /// The exchange's cancel flag, which tells it apart from a newer /login.
@@ -295,6 +297,8 @@ enum Command {
         keep: bool,
     },
     Compact(Option<String>),
+    /// /handoff and the next task it names.
+    Handoff(Option<String>),
     /// New settings; the worker settles their model and answers with Msg::ModelSettled.
     Apply(Box<Settings>),
     Clear,
@@ -372,6 +376,7 @@ const BUILTIN_COMMANDS: &[(&str, MidTurn, &str)] = &[
     ("session", MidTurn::Runs, "Show the session id, file and context use"),
     ("hotkeys", MidTurn::Runs, "Show all keyboard shortcuts"),
     ("compact", MidTurn::Waits, "[focus]: Summarize older messages"),
+    ("handoff", MidTurn::Waits, "[next task]: Summarize this conversation and continue in a fresh session"),
     ("plan", MidTurn::Waits, "[task | export [file] | implement | exit]: Plan mode, read-only until you pick what to do with the plan; ~/.agents/prompts/plan.md overrides the prompt"),
     ("todos", MidTurn::Runs, "Show and edit the todo list"),
     ("plugins", MidTurn::Runs, "Install, enable and disable plugins"),
@@ -727,13 +732,11 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                     let _ = events.send(Msg::Agent(Event::SessionStarted { id: agent.session.id.clone(), path }));
                     String::new()
                 }),
-                Command::Fresh(text) => agent.new_session().and_then(|()| {
-                    let path = agent.session.path.as_ref().map(|p| p.display().to_string());
-                    let _ = events.send(Msg::Agent(Event::SessionStarted { id: agent.session.id.clone(), path }));
-                    agent.pursue(&text, &mut |event| {
-                        let _ = events.send(Msg::Agent(event));
-                    })
+                Command::Handoff(goal) => agent.handoff_prompt(goal.as_deref()).and_then(|prompt| {
+                    let _ = events.send(Msg::HandedOff(prompt.clone()));
+                    start_fresh(&mut agent, &events, &prompt)
                 }),
+                Command::Fresh(text) => start_fresh(&mut agent, &events, &text),
                 Command::Rename(name) => {
                     if let Err(error) = agent.session.rename(&name) {
                         let _ = events.send(Msg::Agent(Event::Notice(error)));
@@ -856,6 +859,15 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
             }
         }
     });
+}
+
+fn start_fresh(agent: &mut Agent, events: &Sender<Msg>, prompt: &str) -> Result<String, String> {
+    agent.new_session()?;
+    let path = agent.session.display_path();
+    let _ = events.send(Msg::Agent(Event::SessionStarted { id: agent.session.id.clone(), path }));
+    agent.pursue(prompt, &mut |event| {
+        let _ = events.send(Msg::Agent(event));
+    })
 }
 
 /// The notice /workspace shows: the result of add or remove, then the list.
@@ -1311,6 +1323,11 @@ impl App {
                     btw.streaming = false;
                     btw.error = result.err();
                 }
+            }
+            Msg::HandedOff(prompt) => {
+                self.entries.truncate(self.header_len);
+                self.context_tokens = 0;
+                self.push(Item::User(prompt));
             }
             Msg::Cloned { id, path } => {
                 self.working = None;
@@ -1859,6 +1876,10 @@ impl App {
             "compact" => {
                 self.system("compact", "Compacting context...");
                 self.start(Command::Compact(Some(args.to_string()).filter(|focus| !focus.is_empty())));
+            }
+            "handoff" => {
+                self.system("handoff", "Summarizing for a fresh session...");
+                self.start(Command::Handoff(Some(args.to_string()).filter(|goal| !goal.is_empty())));
             }
             "clear" => {
                 self.entries.truncate(self.header_len);

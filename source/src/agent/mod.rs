@@ -1056,7 +1056,26 @@ impl Agent {
         let Some(first_kept) = cut_point(&view, self.keep_recent_tokens) else {
             return Ok(None);
         };
-        let prompt = compaction_prompt(&serialize(&view[..first_kept]), focus);
+        let summary = self.summarize(&view[..first_kept], focus)?;
+        let cut = message_index(&self.compactions, first_kept);
+        self.session.append(&json!({"type": "compaction", "summary": summary, "cut": cut}))?;
+        self.compactions.push(Compaction { cut, summary: summary.clone() });
+        self.last_context_tokens = 0;
+        Ok(Some(summary))
+    }
+
+    /// /handoff: summarizes the whole conversation into the first prompt of a fresh session; `goal` names its next task.
+    pub fn handoff_prompt(&mut self, goal: Option<&str>) -> Result<String, String> {
+        let view = self.compacted();
+        if view.is_empty() {
+            return Err("Nothing to hand off yet.".into());
+        }
+        let summary = self.summarize(&view, goal)?;
+        Ok(handoff_prompt(&summary, self.session.path.as_deref(), goal))
+    }
+
+    fn summarize(&mut self, messages: &[Value], focus: Option<&str>) -> Result<String, String> {
+        let prompt = compaction_prompt(&serialize(messages), focus);
         // The cheap model summarizes only when the conversation fits its window, so a 1M-context session keeps the main model.
         let catalog = self.client.catalog();
         let cheap = catalog.iter().find(|model| model.id == self.cheap_model && model.context_window >= self.context_window);
@@ -1067,17 +1086,13 @@ impl Agent {
         self.usage.add(reply.usage);
         self.session.append(&usage::reply_entry(&reply, now_ms()))?;
         if reply.stop_reason != "end_turn" {
-            return Err(format!("Compaction summary stopped with {}.", reply.stop_reason));
+            return Err(format!("Summary stopped with {}.", reply.stop_reason));
         }
         let summary = text_of(&reply.message);
         if summary.trim().is_empty() {
-            return Err("The compaction summary came back empty.".into());
+            return Err("The summary came back empty.".into());
         }
-        let cut = message_index(&self.compactions, first_kept);
-        self.session.append(&json!({"type": "compaction", "summary": summary, "cut": cut}))?;
-        self.compactions.push(Compaction { cut, summary: summary.clone() });
-        self.last_context_tokens = 0;
-        Ok(Some(summary))
+        Ok(summary)
     }
 
     /// Applies settings changed in /settings; `model` is the catalog entry for `settings.model`, `cheap_model` its provider's cheapest.
@@ -1773,6 +1788,19 @@ fn compaction_prompt(conversation: &str, focus: Option<&str>) -> String {
     }
 }
 
+/// `transcript` is the handed-off session's file.
+fn handoff_prompt(summary: &str, transcript: Option<&Path>, goal: Option<&str>) -> String {
+    let mut prompt = format!("This session continues an earlier one, handed off with this summary:\n\n<summary>\n{summary}\n</summary>");
+    if let Some(path) = transcript {
+        prompt.push_str(&format!("\n\nThe full earlier conversation is in {}, one JSON entry per line. Search it with rg when the summary lacks a detail you need.", path.display()));
+    }
+    prompt.push_str(&match goal {
+        Some(goal) => format!("\n\nNext: {goal}"),
+        None => "\n\nContinue with the next steps.".into(),
+    });
+    prompt
+}
+
 /// `transcript` is the session file, which keeps every message the summary replaces.
 fn compacted(messages: &[Value], compactions: &[Compaction], transcript: Option<&Path>) -> Vec<Value> {
     let Some(compaction) = compactions.last() else { return messages.to_vec() };
@@ -1916,6 +1944,17 @@ mod tests {
     fn compaction_prompt_appends_the_focus() {
         assert!(compaction_prompt("c", None).ends_with(SUMMARY_PROMPT));
         assert!(compaction_prompt("c", Some("API decisions")).ends_with("<focus>\nAPI decisions\n</focus>\nGive extra detail to what the focus names."));
+    }
+
+    #[test]
+    fn handoff_prompt_points_at_the_old_transcript_and_names_the_next_task() {
+        let prompt = handoff_prompt("S", Some(Path::new("/s/abc.jsonl")), Some("ship it"));
+        assert!(prompt.starts_with("This session continues an earlier one, handed off with this summary:\n\n<summary>\nS\n</summary>"));
+        assert!(prompt.contains("The full earlier conversation is in /s/abc.jsonl"));
+        assert!(prompt.ends_with("\n\nNext: ship it"));
+        let unsaved = handoff_prompt("S", None, None);
+        assert!(!unsaved.contains("earlier conversation is in"));
+        assert!(unsaved.ends_with("\n\nContinue with the next steps."));
     }
 
     #[test]
