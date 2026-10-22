@@ -1327,7 +1327,7 @@ impl Agent {
     }
 
     fn provider_view(&self) -> Vec<Value> {
-        condense::view(&self.compacted(), &self.condensed)
+        answer_missing_results(condense::view(&self.compacted(), &self.condensed))
     }
 
     /// Tells plugins the session started; needs the settled model for the context's provider.
@@ -1350,6 +1350,38 @@ impl Agent {
             "final_output": answer,
         })
     }
+}
+
+/// The API rejects a whole request when any tool call lacks a result in the next message, so one call cut off
+/// mid-run (the process quit or crashed before its result was saved) would make every later prompt a 400.
+fn answer_missing_results(mut messages: Vec<Value>) -> Vec<Value> {
+    let mut index = 0;
+    while index < messages.len() {
+        let calls: Vec<Value> = match messages[index]["role"].as_str() {
+            Some("assistant") => messages[index]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use").map(|b| b["id"].clone()).collect(),
+            _ => Vec::new(),
+        };
+        index += 1;
+        if calls.is_empty() {
+            continue;
+        }
+        if messages.get(index).is_none_or(|next| next["role"] != "user") {
+            messages.insert(index, json!({"role": "user", "content": []}));
+        }
+        let next = &mut messages[index]["content"];
+        if let Some(text) = next.as_str() {
+            *next = json!([{"type": "text", "text": text}]);
+        }
+        let content = next.as_array_mut().expect("user content is a string or an array");
+        let missing: Vec<Value> = calls
+            .into_iter()
+            .filter(|id| !content.iter().any(|b| b["type"] == "tool_result" && b["tool_use_id"] == *id))
+            .map(|id| json!({"type": "tool_result", "tool_use_id": id, "content": "Interrupted: no result was saved for this call.", "is_error": true}))
+            .collect();
+        // The API wants tool results ahead of any text in the message.
+        content.splice(0..0, missing);
+    }
+    messages
 }
 
 /// An aborted stream can end inside a tool call or a thinking block; only finished text is valid history.
@@ -1894,6 +1926,31 @@ mod tests {
             json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "1", "content": "a.rs"}]}),
         ];
         assert_eq!(serialize(&messages), "[User]: fix it\n\n[Assistant]: ok\n\n[Assistant tool calls]: Bash(command=\"ls\")\n\n[Tool result]: a.rs");
+    }
+
+    #[test]
+    fn a_call_cut_off_before_its_result_gets_an_error_result() {
+        let call = |id: &str| json!({"type": "tool_use", "id": id, "name": "Bash", "input": {}});
+        let result = |id: &str| json!({"type": "tool_result", "tool_use_id": id, "content": "ok"});
+        let interrupted = |id: &str| json!({"type": "tool_result", "tool_use_id": id, "content": "Interrupted: no result was saved for this call.", "is_error": true});
+        let messages = vec![
+            json!({"role": "assistant", "content": [call("a"), call("b")]}),
+            json!({"role": "user", "content": [result("a")]}),
+            json!({"role": "assistant", "content": [call("c")]}),
+            json!({"role": "user", "content": "continue"}),
+            json!({"role": "assistant", "content": [call("d")]}),
+        ];
+        assert_eq!(
+            answer_missing_results(messages),
+            vec![
+                json!({"role": "assistant", "content": [call("a"), call("b")]}),
+                json!({"role": "user", "content": [interrupted("b"), result("a")]}),
+                json!({"role": "assistant", "content": [call("c")]}),
+                json!({"role": "user", "content": [interrupted("c"), {"type": "text", "text": "continue"}]}),
+                json!({"role": "assistant", "content": [call("d")]}),
+                json!({"role": "user", "content": [interrupted("d")]}),
+            ]
+        );
     }
 
     #[test]
