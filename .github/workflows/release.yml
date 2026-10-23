@@ -25,7 +25,7 @@ jobs:
       - name: Tag matches Cargo.toml
         run: test "${GITHUB_REF_NAME#v}" = "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools ripgrep fd-find && sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
+        run: sudo apt-get update && sudo apt-get install -y musl-tools ripgrep fd-find imagemagick && sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
       - if: runner.os == 'macOS'
         run: brew install ripgrep fd
       - run: rustup update stable && rustup default stable && rustup target add ${{ matrix.target }}
