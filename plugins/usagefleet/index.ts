@@ -22,6 +22,7 @@ export type Context = {
 	accountName: string | null;
 	cwd: string;
 	sessionId: string;
+	settings: { showGroupName: boolean };
 };
 
 const SERVER_LIMITS_URL = "https://usagefleet.com/api/v1/limits";
@@ -52,14 +53,14 @@ export function formatLimits(config: unknown, now: number): StatusPart[] | null 
 }
 
 /** "Artur: 5h 30% · 7d 17%", or null when the device is in no group or the group repeats the account's numbers. */
-export function formatGroupLimits(view: unknown, accountLimits: StatusPart[] | null): StatusPart[] | null {
+export function formatGroupLimits(view: unknown, accountLimits: StatusPart[] | null, showName: boolean): StatusPart[] | null {
 	if (!isRecord(view)) return null;
 	const { group, sessionPct, weeklyPct } = view;
 	if (typeof group !== "string" || typeof sessionPct !== "number" || typeof weeklyPct !== "number") return null;
 	const windows = formatWindows(sessionPct, weeklyPct);
 	// The server does not say how many groups there are; a sole group's budget slice is the whole account.
 	if (Bun.deepEquals(windows, accountLimits)) return null;
-	return [{ text: `${group}: ` }, ...windows];
+	return showName ? [{ text: `${group}: ` }, ...windows] : windows;
 }
 
 const formatWindows = (fiveHourPct: number, sevenDayPct: number): StatusPart[] => [
@@ -214,7 +215,7 @@ async function status(context: Context): Promise<StatusPart[] | null> {
 	const token = resolveToken(config, account);
 	// Offline or rejected hides the group numbers rather than freezing old ones.
 	const view = token ? await fetchServerLimits(token).catch(() => null) : null;
-	const group = formatGroupLimits(view, limits);
+	const group = formatGroupLimits(view, limits, context.settings.showGroupName);
 	if (limits && group) return [...limits, { text: "  " }, ...group];
 	return limits ?? group;
 }

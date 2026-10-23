@@ -1,7 +1,8 @@
 {
-	"version": "0.3.0",
+	"version": "0.4.0",
 	"description": "usagefleet limits in the footer; refuses prompts while the group budget is blocked",
 	"author": "rokartur",
 	"command": ["bun", "index.ts"],
-	"commands": [{ "name": "usagefleet", "description": "Show or set the usagefleet token of this Claude account: /usagefleet [token]" }]
+	"commands": [{ "name": "usagefleet", "description": "Show or set the usagefleet token of this Claude account: /usagefleet [token]" }],
+	"settings": [{ "key": "showGroupName", "description": "Show the group name before the group budget in the footer", "default": false }]
 }
