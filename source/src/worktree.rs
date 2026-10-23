@@ -37,6 +37,54 @@ pub fn remove(cwd: &Path, path: &Path) -> Result<(), String> {
     git(cwd, &["worktree", "remove", &path.display().to_string()]).map(|_| ())
 }
 
+/// A worktree EnterWorktree made: its own branch, started at `base`.
+#[derive(Clone, Debug)]
+pub struct Created {
+    pub path: PathBuf,
+    pub branch: String,
+    pub base: String,
+}
+
+/// Claude Code's EnterWorktree: `.agents/worktrees/<name>` in the main checkout on a new branch `worktree-<name>`,
+/// from origin's default branch, or from HEAD in a repo without one.
+pub fn create(cwd: &Path, name: &str) -> Result<Created, String> {
+    let (worktrees, _) = list(cwd)?;
+    let main = &worktrees.first().ok_or("No worktrees listed.")?.path;
+    let path = main.join(".agents/worktrees").join(name);
+    let branch = format!("worktree-{name}");
+    let start = if git(cwd, &["rev-parse", "--verify", "--quiet", "origin/HEAD"]).is_ok() { "origin/HEAD" } else { "HEAD" };
+    let base = git(cwd, &["rev-parse", start])?.trim().to_string();
+    hide_worktrees_dir(main)?;
+    git(cwd, &["worktree", "add", "-b", &branch, &path.display().to_string(), &base])?;
+    Ok(Created { path, branch, base })
+}
+
+/// Keeps `.agents/worktrees/` out of the main checkout's `git status` without touching the project's `.gitignore`.
+fn hide_worktrees_dir(main: &Path) -> Result<(), String> {
+    const PATTERN: &str = "/.agents/worktrees/";
+    let exclude = main.join(git(main, &["rev-parse", "--git-path", "info/exclude"])?.trim());
+    let current = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if current.lines().any(|line| line == PATTERN) {
+        return Ok(());
+    }
+    let separator = if current.is_empty() || current.ends_with('\n') { "" } else { "\n" };
+    std::fs::create_dir_all(exclude.parent().ok_or("info/exclude has no parent")?).map_err(|e| e.to_string())?;
+    std::fs::write(&exclude, format!("{current}{separator}{PATTERN}\n")).map_err(|e| format!("Cannot write {}: {e}", exclude.display()))
+}
+
+/// Uncommitted files and commits made since `created.base`, as git lists them; empty when there are none.
+pub fn changes(created: &Created) -> Result<String, String> {
+    let status = git(&created.path, &["status", "--porcelain"])?;
+    let commits = git(&created.path, &["log", "--oneline", &format!("{}..HEAD", created.base)])?;
+    Ok(format!("{status}{commits}").trim_end().to_string())
+}
+
+/// Removes the worktree even with changes, then its branch.
+pub fn discard(main: &Path, created: &Created) -> Result<(), String> {
+    git(main, &["worktree", "remove", "--force", &created.path.display().to_string()])?;
+    git(main, &["branch", "-D", &created.branch]).map(|_| ())
+}
+
 fn parse(porcelain: &str) -> Vec<Worktree> {
     porcelain
         .trim_end_matches('\0')
@@ -88,6 +136,23 @@ mod tests {
         std::fs::remove_file(checkout.join("notes.md")).unwrap();
         remove(&main, &checkout).unwrap();
         assert!(!checkout.exists());
+        std::fs::remove_dir_all(&main).unwrap();
+    }
+
+    #[test]
+    fn created_worktrees_stay_out_of_the_main_status() {
+        let main = std::env::temp_dir().join(format!("agent-worktree-create-{}", std::process::id()));
+        _ = std::fs::remove_dir_all(&main);
+        std::fs::create_dir_all(&main).unwrap();
+        for args in [&["init", "-q", "-b", "main"][..], &["-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "a"]] {
+            git(&main, args).unwrap();
+        }
+        std::fs::write(main.join(".git/info/exclude"), "# kept").unwrap();
+        let created = create(&main, "one").unwrap();
+        create(&main, "two").unwrap();
+        assert_eq!(git(&main, &["status", "--porcelain"]).unwrap(), "");
+        assert_eq!(std::fs::read_to_string(main.join(".git/info/exclude")).unwrap(), "# kept\n/.agents/worktrees/\n");
+        discard(&main, &created).unwrap();
         std::fs::remove_dir_all(&main).unwrap();
     }
 }

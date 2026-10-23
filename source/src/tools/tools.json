@@ -416,72 +416,102 @@
   },
   {
     "name": "AskUserQuestion",
-    "description": "Ask the user structured questions for preferences, unclear instructions or decisions. A \"Type something.\" row for a custom answer is added to every question; never write \"Other\", \"Next\" or \"Type something.\" labels yourself. Put a recommended option first with \"(Recommended)\" at the end of its label. Use `preview` (markdown in a monospace box, single-select only) only to compare concrete artifacts such as mockups or code.",
+    "description": "Use this tool only when you are blocked on a decision that is genuinely the user's to make: one you cannot resolve from the request, the code, or sensible defaults.\n\nUsage notes:\n- Users will always be able to select \"Other\" to provide custom text input\n- Use multiSelect: true to allow multiple answers to be selected for a question\n- If you recommend a specific option, make that the first option in the list and add \"(Recommended)\" at the end of the label\n\nPlan mode note: To switch into plan mode, use EnterPlanMode (not this tool). Once in plan mode, use this tool to clarify requirements or choose between approaches BEFORE finalizing your plan. Do NOT use this tool to ask \"Is my plan ready?\", \"Should I proceed?\", or otherwise reference \"the plan\" in questions — the user cannot see the plan until you call ExitPlanMode for approval.\n\nPreview feature:\nUse the optional `preview` field on options when presenting concrete artifacts that users need to visually compare:\n- ASCII mockups of UI layouts or components\n- Code snippets showing different implementations\n- Diagram variations\n- Configuration examples\n\nPreview content is rendered as markdown in a monospace box. Multi-line text with newlines is supported. When any option has a preview, the UI switches to a side-by-side layout with a vertical option list on the left and preview on the right. Do not use previews for simple preference questions where labels and descriptions suffice. Note: previews are only supported for single-select questions (not multiSelect).",
     "eager_input_streaming": true,
     "input_schema": {
       "type": "object",
+      "required": ["questions"],
       "properties": {
         "questions": {
           "type": "array",
+          "description": "Questions to ask the user (1-4 questions)",
+          "minItems": 1,
+          "maxItems": 4,
           "items": {
             "type": "object",
-            "required": [
-              "question",
-              "header",
-              "options"
-            ],
+            "required": ["question", "header", "options", "multiSelect"],
             "properties": {
               "question": {
                 "type": "string",
-                "description": "Clear, specific question ending with a question mark"
+                "description": "The complete question to ask the user. Should be clear, specific, and end with a question mark. Example: \"Which library should we use for date formatting?\" If multiSelect is true, phrase it accordingly, e.g. \"Which features do you want to enable?\""
               },
               "header": {
                 "type": "string",
-                "maxLength": 16,
-                "description": "Short chip, e.g. \"Auth method\""
+                "description": "Very short label displayed as a chip/tag (max 12 chars). Examples: \"Auth method\", \"Library\", \"Approach\"."
               },
               "options": {
                 "type": "array",
+                "description": "The available choices for this question. Must have 2-4 options. Each option should be a distinct, mutually exclusive choice (unless multiSelect is enabled). There should be no 'Other' option, that will be provided automatically.",
+                "minItems": 2,
+                "maxItems": 4,
                 "items": {
                   "type": "object",
-                  "required": [
-                    "label",
-                    "description"
-                  ],
+                  "required": ["label", "description"],
                   "properties": {
                     "label": {
                       "type": "string",
-                      "maxLength": 60,
-                      "description": "1-5 words"
+                      "description": "The display text for this option that the user will see and select. Should be concise (1-5 words) and clearly describe the choice."
                     },
                     "description": {
                       "type": "string",
-                      "description": "What choosing it means, trade-offs"
+                      "description": "Explanation of what this option means or what will happen if chosen. Useful for providing context about trade-offs or implications."
                     },
                     "preview": {
                       "type": "string",
-                      "description": "Shown when the option is focused"
+                      "description": "Optional preview content rendered when this option is focused. Use for mockups, code snippets, or visual comparisons that help users compare options. See the tool description for the expected content format."
                     }
                   }
-                },
-                "minItems": 2,
-                "maxItems": 4,
-                "description": "Distinct choices, mutually exclusive unless multiSelect"
+                }
               },
               "multiSelect": {
                 "type": "boolean",
                 "default": false,
-                "description": "Allow several answers"
+                "description": "Set to true to allow the user to select multiple options instead of just one. Use when choices are not mutually exclusive."
               }
             }
-          },
-          "minItems": 1,
-          "maxItems": 4
+          }
         }
-      },
-      "required": [
-        "questions"
-      ]
+      }
+    }
+  },
+  {
+    "name": "Skill",
+    "description": "Invoke a skill.\n\nA skill is a packaged set of instructions the user or project has set up for a particular kind of task (deploy steps, a review checklist, a repo-specific workflow). Available skills appear in a system-reminder listing with one-line descriptions. When the task at hand is one a listed skill covers, call this tool first — the skill's instructions load into the turn for you to follow in place of your default approach; some skills instead run in a subagent and return the finished result. A skill that runs in the background returns only the agent's name — its result arrives later as a task notification, so don't wait on it or invoke it again in the meantime. Users may also ask for one by name (`/<name>`, or \"slash command\"); that's a request to invoke it.\n\n- `skill`: exact name from the listing, no leading slash. Plugin skills use `plugin:skill`. Directory-scoped skills are listed with a path prefix (`apps/web:deploy`); when both scoped and unscoped variants of a name exist, pick the one whose directory contains the files you're working on (most specific wins; unscoped otherwise).\n- `args`: optional arguments to pass through.\n\nOnly names from the listing (or that the user typed explicitly) are valid. Built-in CLI commands (`/help`, `/clear`, …) aren't skills. If a `<skill>` block is already present this turn, the skill is loaded — follow it directly rather than calling again.",
+    "input_schema": {
+      "type": "object",
+      "required": ["skill"],
+      "properties": {
+        "skill": { "type": "string", "description": "The skill name. E.g., \"commit\", \"review-pr\", or \"pdf\"" },
+        "args": { "type": "string", "description": "Optional arguments for the skill" }
+      }
+    }
+  },
+  {
+    "name": "EnterPlanMode",
+    "description": "Use this tool proactively when you're about to start a non-trivial implementation task. Getting user sign-off on your approach before writing code prevents wasted effort and ensures alignment. This tool transitions you into plan mode where you can explore the codebase and design an implementation approach for user approval.\n\n## When to Use This Tool\n\n**Prefer using EnterPlanMode** for implementation tasks unless they're simple. Use it when ANY of these conditions apply:\n\n1. **New Feature Implementation**: Adding meaningful new functionality\n   - Example: \"Add a logout button\" - where should it go? What should happen on click?\n   - Example: \"Add form validation\" - what rules? What error messages?\n\n2. **Multiple Valid Approaches**: The task can be solved in several different ways\n   - Example: \"Add caching to the API\" - could use Redis, in-memory, file-based, etc.\n   - Example: \"Improve performance\" - many optimization strategies possible\n\n3. **Code Modifications**: Changes that affect existing behavior or structure\n   - Example: \"Update the login flow\" - what exactly should change?\n   - Example: \"Refactor this component\" - what's the target architecture?\n\n4. **Architectural Decisions**: The task requires choosing between patterns or technologies\n   - Example: \"Add real-time updates\" - WebSockets vs SSE vs polling\n   - Example: \"Implement state management\" - Redux vs Context vs custom solution\n\n5. **Multi-File Changes**: The task will likely touch more than 2-3 files\n   - Example: \"Refactor the authentication system\"\n   - Example: \"Add a new API endpoint with tests\"\n\n6. **Unclear Requirements**: You need to explore before understanding the full scope\n   - Example: \"Make the app faster\" - need to profile and identify bottlenecks\n   - Example: \"Fix the bug in checkout\" - need to investigate root cause\n\n7. **User Preferences Matter**: The implementation could reasonably go multiple ways\n   - If you would use AskUserQuestion to clarify the approach, use EnterPlanMode instead\n   - Plan mode lets you explore first, then present options with context\n\n## When NOT to Use This Tool\n\nOnly skip EnterPlanMode for simple tasks:\n- Single-line or few-line fixes (typos, obvious bugs, small tweaks)\n- Adding a single function with clear requirements\n- Tasks where the user has given very specific, detailed instructions\n- Pure research/exploration tasks (use the Agent tool with `explore: true` instead)\n\n## What Happens in Plan Mode\n\nIn plan mode, you'll:\n1. Thoroughly explore the codebase using Grep and Read tools\n2. Understand existing patterns and architecture\n3. Design an implementation approach\n4. Present your plan to the user for approval\n5. Use AskUserQuestion if you need to clarify approaches\n6. Exit plan mode with ExitPlanMode when ready to implement\n\n## Examples\n\n### GOOD - Use EnterPlanMode:\nUser: \"Add user authentication to the app\"\n- Requires architectural decisions (session vs JWT, where to store tokens, middleware structure)\n\nUser: \"Optimize the database queries\"\n- Multiple approaches possible, need to profile first, significant impact\n\nUser: \"Implement dark mode\"\n- Architectural decision on theme system, affects many components\n\nUser: \"Add a delete button to the user profile\"\n- Seems simple but involves: where to place it, confirmation dialog, API call, error handling, state updates\n\nUser: \"Update the error handling in the API\"\n- Affects multiple files, user should approve the approach\n\n### BAD - Don't use EnterPlanMode:\nUser: \"Fix the typo in the README\"\n- Straightforward, no planning needed\n\nUser: \"Add a console.log to debug this function\"\n- Simple, obvious implementation\n\nUser: \"What files handle routing?\"\n- Research task, not implementation planning\n\n## Important Notes\n\n- This tool REQUIRES user approval - they must consent to entering plan mode\n- If unsure whether to use it, err on the side of planning - it's better to get alignment upfront than to redo work\n- Users appreciate being consulted before significant changes are made to their codebase",
+    "input_schema": { "type": "object", "properties": {} }
+  },
+  {
+    "name": "EnterWorktree",
+    "description": "Use this tool ONLY when explicitly instructed to work in a worktree — either by the user directly, or by project instructions (AGENTS.md / CLAUDE.md). This tool creates an isolated git worktree and switches the current session into it.\n\n## When to Use\n\n- The user explicitly says \"worktree\" (e.g., \"start a worktree\", \"work in a worktree\", \"create a worktree\", \"use a worktree\")\n- AGENTS.md or CLAUDE.md instructions direct you to work in a worktree for the current task\n\n## When NOT to Use\n\n- The user asks to create a branch, switch branches, or work on a different branch — use git commands instead\n- The user asks to fix a bug or work on a feature — use normal git workflow unless worktrees are explicitly requested by the user or project instructions\n- Never use this tool unless \"worktree\" is explicitly mentioned by the user or in AGENTS.md / CLAUDE.md instructions\n\n## Requirements\n\n- Must be in a git repository\n- Must not already be in a worktree session when creating a new worktree (`name`); switching into another existing worktree via `path` is allowed\n\n## Behavior\n\n- Creates a new git worktree inside `.agents/worktrees/` on a new branch `worktree-<name>`, branched from origin/<default-branch> (from your current local HEAD when the repository has no origin)\n- Switches the session's working directory to the new worktree\n- Use ExitWorktree to leave the worktree mid-session (keep or remove)\n\n## Entering an existing worktree\n\nPass `path` instead of `name` to switch the session into a worktree that already exists (e.g., one you just created with `git worktree add`). The path must appear in `git worktree list` for the current repository; other paths are rejected. ExitWorktree will not remove a worktree entered this way; use `action: \"keep\"` to return to the original directory.\n\nSwitching with `path` also works when the session is already in a worktree (the previous worktree is left on disk, untouched).\n\n## Parameters\n\n- `name` (optional): A name for a new worktree. If neither `name` nor `path` is provided, a random name is generated.\n- `path` (optional): Path to an existing worktree of the current repository to enter instead of creating one. Mutually exclusive with `name`.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Optional name for the new worktree: letters, digits, dots, underscores and dashes, at most 64 characters. A random name is generated if not provided." },
+        "path": { "type": "string", "description": "Path to an existing worktree of the current repository to switch into instead of creating a new one. Mutually exclusive with name." }
+      }
+    }
+  },
+  {
+    "name": "ExitWorktree",
+    "description": "Exit a worktree session created by EnterWorktree and return the session to the original working directory.\n\n## Scope\n\nThis tool ONLY operates on worktrees created by EnterWorktree in this session. It will NOT touch:\n- Worktrees you created manually with `git worktree add`\n- Worktrees from a previous session (even if created by EnterWorktree then)\n- The directory you're in if EnterWorktree was never called\n\nIf called outside an EnterWorktree session, the tool is a **no-op**: it reports that no worktree session is active and takes no action. Filesystem state is unchanged.\n\n## When to Use\n\n- The user explicitly asks to \"exit the worktree\", \"leave the worktree\", \"go back\", or otherwise end the worktree session\n- Do NOT call this proactively — only when the user asks\n\n## Parameters\n\n- `action` (required): `\"keep\"` or `\"remove\"`\n  - `\"keep\"` — leave the worktree directory and branch intact on disk. Use this if the user wants to come back to the work later, or if there are changes to preserve.\n  - `\"remove\"` — delete the worktree directory and its branch. Use this for a clean exit when the work is done or abandoned.\n- `discard_changes` (optional, default false): only meaningful with `action: \"remove\"`. If the worktree has uncommitted files or commits not on the original branch, the tool will REFUSE to remove it unless this is set to `true`. If the tool returns an error listing changes, confirm with the user before re-invoking with `discard_changes: true`.\n\n## Behavior\n\n- Restores the session's working directory to where it was before EnterWorktree\n- Clears CWD-dependent caches (system prompt sections, memory files) so the session state reflects the original directory\n- Once exited, EnterWorktree can be called again to create a fresh worktree",
+    "input_schema": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "enum": ["keep", "remove"], "description": "\"keep\" leaves the worktree and branch on disk; \"remove\" deletes both." },
+        "discard_changes": { "type": "boolean", "description": "Required true when action is \"remove\" and the worktree has uncommitted files or unmerged commits that should be discarded." }
+      }
     }
   },
   {

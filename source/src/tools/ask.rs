@@ -62,8 +62,8 @@ pub fn parse(input: &Value) -> Result<Vec<Question>, String> {
         if q.question.is_empty() {
             return Err("Error: Each question requires question text".into());
         }
-        if q.header.chars().count() > 16 {
-            return Err("Error: header must be at most 16 characters".into());
+        if q.header.chars().count() > 12 {
+            return Err("Error: header must be at most 12 characters".into());
         }
         if q.options.len() < 2 {
             return Err("Error: Each question requires at least 2 options".into());
@@ -146,8 +146,8 @@ mod tests {
         assert_eq!(parse(&input([&"ł".repeat(61), "x"])).unwrap_err(), "Error: Option label must be at most 60 characters");
         assert!(parse(&input([&"ł".repeat(60), "x"])).is_ok());
         let mut long_header = input(["pg", "sqlite"]);
-        long_header["questions"][0]["header"] = "Seventeen chars!!".into();
-        assert_eq!(parse(&long_header).unwrap_err(), "Error: header must be at most 16 characters");
+        long_header["questions"][0]["header"] = "Thirteen char".into();
+        assert_eq!(parse(&long_header).unwrap_err(), "Error: header must be at most 12 characters");
         let mut no_question = input(["pg", "sqlite"]);
         no_question["questions"][0].as_object_mut().unwrap().remove("question");
         assert_eq!(parse(&no_question).unwrap_err(), "Error: Each question requires question text");

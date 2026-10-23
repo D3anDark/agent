@@ -30,7 +30,7 @@ pub const PROMPT: &str = "<plan_mode>
 Plan mode is on. Investigate and design, change nothing. Edits, subagents, plugin and MCP tools and state-changing commands are blocked; Bash runs only read-only commands (ls, cat, rg, fd, git status/log/diff/show, ...). Ask with AskUserQuestion when a decision cannot be inferred. When the plan is ready, call ExitPlanMode with the whole plan in Markdown as your last action. Start the plan with a `# Title` heading. The user then picks: implement in a fresh session, export, or keep planning.
 </plan_mode>";
 
-const EDITING_TOOLS: [&str; 5] = ["Write", "ReplaceLines", "Edit", "InsertLines", "Agent"];
+const EDITING_TOOLS: [&str; 7] = ["Write", "ReplaceLines", "Edit", "InsertLines", "Agent", "EnterWorktree", "ExitWorktree"];
 
 const READ_ONLY_COMMANDS: [&str; 18] = ["ls", "cat", "head", "tail", "wc", "rg", "fd", "pwd", "tree", "file", "stat", "which", "echo", "jq", "diff", "du", "cd", "true"];
 const READ_ONLY_GIT: [&str; 7] = ["status", "log", "diff", "show", "blame", "ls-files", "rev-parse"];
@@ -40,7 +40,7 @@ const RUNS_OTHER_COMMANDS: [&str; 4] = ["--exec", "--pre", "--output", "--hostna
 pub fn tool() -> Value {
     json!({
         "name": "ExitPlanMode",
-        "description": "Submit the finished plan. Call it alone, as your last action in plan mode.",
+        "description": "Use this tool when you are in plan mode and your plan is ready for the user to approve.\n\n- Pass the whole plan as `plan`, in Markdown. This session has no plan file, so do not write the plan to a file.\n- The user sees the plan on an approval card and approves or declines it. Do NOT ask \"Is this plan okay?\" or \"Should I proceed?\" in any other way: that is what this tool does.\n- If they approve, plan mode ends and you carry out the plan as approved.\n- If they decline, you stay in plan mode: find out what they want changed, revise the plan, and call this tool again.",
         "input_schema": {
             "type": "object",
             "properties": { "plan": { "type": "string", "description": "The whole plan in Markdown" } },
@@ -116,10 +116,10 @@ mod tests {
 
     #[test]
     fn blocks_edits_and_state_changing_commands() {
-        for tool in ["Write", "Edit", "Agent", "my-plugin__lookup", "mcp__github__create_issue"] {
+        for tool in ["Write", "Edit", "Agent", "EnterWorktree", "my-plugin__lookup", "mcp__github__create_issue"] {
             assert!(blocked(tool, &json!({"path": "a"})).is_some(), "{tool}");
         }
-        for tool in ["Read", "Grep", "Goal", "TaskStop", "AskUserQuestion"] {
+        for tool in ["Read", "Grep", "Goal", "TaskStop", "AskUserQuestion", "Skill"] {
             assert!(blocked(tool, &json!({"path": "a"})).is_none(), "{tool}");
         }
         assert!(blocked("Bash", &json!({"command": "rm -rf x", "run_in_background": true})).is_some());

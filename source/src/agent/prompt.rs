@@ -427,7 +427,7 @@ fn format_skills(skills: Vec<Skill>) -> String {
     }
     let mut lines = vec![
         "The following skills provide specialized instructions for specific tasks.".to_string(),
-        "Use the read tool to load a skill's file when the task matches its description.".to_string(),
+        "Load a skill with the Skill tool when the task matches its description.".to_string(),
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
     ];
     for (root, mut entries) in by_root {

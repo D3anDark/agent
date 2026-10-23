@@ -60,7 +60,7 @@ Flags:
   --auto                      Let a reviewer model approve tool calls
   --full-access, --yolo       Run every tool call without asking
   --ask                       Ask before commands, file edits, URL fetches, subagents, MCP and plugin tools
-  --parent <id>               Run as a subagent of that session: linked to it, no Agent, Task*, web or AskUserQuestion tools;
+  --parent <id>               Run as a subagent of that session: linked to it, no Agent, Task*, web, AskUserQuestion, plan or worktree tools;
                               with --headless, stdin takes the task and later messages as JSON string lines
   --explore                   With --parent: only read and rg, no modes prompt
   --trust                     Trust this project for this run: load its .agents files and run its edit hooks
@@ -410,6 +410,7 @@ fn run(options: Options) -> Result<(), String> {
         anchors: Anchors::new(&session.id),
         rtk: if settings.rtk { rtk::Rtk::ON } else { rtk::Rtk::OFF },
         nested_instructions: HashSet::new(),
+        worktree_session: None,
         extra_dirs: Vec::new(),
         shell_context: Vec::new(),
         images: Vec::new(),
@@ -518,7 +519,7 @@ fn run(options: Options) -> Result<(), String> {
         agent.announce_session();
         // After settle_model, which resets the tools. Only the root spawns, runs terminals and searches the web, and a child has no UI to ask in.
         if options.parent.is_some() {
-            const ROOT_ONLY: [&str; 13] = [
+            const ROOT_ONLY: [&str; 16] = [
                 "Agent",
                 "TaskWait",
                 "TaskOutput",
@@ -532,6 +533,9 @@ fn run(options: Options) -> Result<(), String> {
                 "CronList",
                 "ScheduleWakeup",
                 "PushNotification",
+                "EnterPlanMode",
+                "EnterWorktree",
+                "ExitWorktree",
             ];
             let keep = |name: &str| if options.explore { matches!(name, "Read" | "Grep") } else { !ROOT_ONLY.contains(&name) };
             if let Some(tools) = agent.tools.as_array_mut() {

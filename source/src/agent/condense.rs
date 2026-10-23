@@ -17,7 +17,7 @@ Begin the first bullet of each tool call with that tool's [[N:toolname]] label, 
 
 /// `elide` keeps this many chars at each end of a long output.
 const KEPT_CHARS_EACH_END: usize = 4000;
-const PROTECTED_TOOLS: [&str; 4] = ["ContextTreeQuery", "AskUserQuestion", "Todo", "Goal"];
+const PROTECTED_TOOLS: [&str; 5] = ["ContextTreeQuery", "AskUserQuestion", "Todo", "Goal", "Skill"];
 /// Below this a cached tool output costs 0.1x input, so a summary saves little and costs a context_tree_query turn when the model needs the original back.
 const MIN_CONTEXT_TOKENS: u64 = 60_000;
 pub const SUMMARY_MAX_TOKENS: u64 = 4096;

@@ -162,6 +162,14 @@ pub struct FollowUp {
     pub source: String,
     pub text: String,
 }
+
+#[derive(Clone)]
+pub struct WorktreeSession {
+    original_cwd: PathBuf,
+    /// None for a worktree entered by `path`, which ExitWorktree never removes.
+    created: Option<crate::worktree::Created>,
+}
+
 pub struct Agent {
     pub client: Client,
     pub model: String,
@@ -181,6 +189,8 @@ pub struct Agent {
     pub images: Vec<Value>,
     /// Subdirectory AGENTS.md files already attached to a read result in this session.
     pub nested_instructions: HashSet<PathBuf>,
+    /// Set by EnterWorktree until ExitWorktree; only this process knows it, so a resumed session has none.
+    pub worktree_session: Option<WorktreeSession>,
     /// Directories outside `cwd` that belong to the task: --add-dir and /workspace.
     pub extra_dirs: Vec<PathBuf>,
     pub messages: Vec<Value>,
@@ -622,7 +632,11 @@ impl Agent {
         let result = match name {
             "ContextTreeQuery" => condense::query(&self.messages, &self.condensed, input),
             "Todo" => self.todo(input),
+            "EnterPlanMode" => self.enter_plan(emit),
             "ExitPlanMode" => self.complete_plan(input),
+            "Skill" => self.skill(input),
+            "EnterWorktree" => self.enter_worktree(input, emit),
+            "ExitWorktree" => self.exit_worktree(input, emit),
             "Goal" => self.goal_tool(input),
             "Bash" if input["run_in_background"] == true => self.terminals.lock().unwrap().start(input, &self.cwd, &self.follow_ups),
             "TaskOutput" => self.terminals.lock().unwrap().status_of(input, &self.follow_ups),
@@ -816,6 +830,125 @@ impl Agent {
         *self.plan.lock().unwrap() = Plan::Ready(plan.to_string());
         self.save_plan()?;
         Ok("Plan submitted. End your turn now; the user picks what happens next.".into())
+    }
+
+    /// Claude Code's EnterPlanMode: the user consents before plan mode starts.
+    fn enter_plan(&mut self, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
+        if *self.plan.lock().unwrap() != Plan::Off {
+            return Err("Already in plan mode.".into());
+        }
+        if !self.interactive {
+            return Err(ask::NO_UI.into());
+        }
+        let questions = ask::parse(&json!({"questions": [{
+            "question": "Enter plan mode? The agent explores and designs an approach for your approval before changing anything.",
+            "header": "Plan mode",
+            "options": [
+                {"label": "Yes, enter plan mode", "description": "Read-only until you approve a plan"},
+                {"label": "No, start implementing", "description": "Skip planning and work on the task now"}
+            ]
+        }]}))?;
+        let (reply, answers) = mpsc::channel();
+        emit(Event::Ask { questions, reply });
+        match answers.recv().unwrap_or_default().first() {
+            Some(Some(ask::Answer::Picked(0))) => {}
+            Some(Some(ask::Answer::Typed(text))) => return Err(format!("User declined to enter plan mode and said: {text}")),
+            _ => return Err("User declined to enter plan mode. Continue with the task without planning.".into()),
+        }
+        *self.plan.lock().unwrap() = Plan::Drafting;
+        self.save_plan()?;
+        Ok("Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.\n\nIn plan mode, you should:\n1. Thoroughly explore the codebase to understand existing patterns\n2. Identify similar features and architectural approaches\n3. Consider multiple approaches and their trade-offs\n4. Use AskUserQuestion if you need to clarify the approach\n5. Design a concrete implementation strategy\n6. When ready, use ExitPlanMode to present your plan for approval\n\nRemember: DO NOT write or edit any files yet. This is a read-only exploration and planning phase.".into())
+    }
+
+    /// Looks the skill up the way the system prompt lists it, so a name outside that list never reads a file.
+    fn skill(&self, input: &Value) -> Result<String, String> {
+        let name = input["skill"].as_str().unwrap_or_default().trim().trim_start_matches('/');
+        let args = input["args"].as_str().unwrap_or_default();
+        let settings = crate::settings::load(&self.home)?;
+        let mut skills = prompt::load_skills(&self.agent_dir, &self.cwd, settings.trusts(&self.cwd), &settings.disabled_skills, settings.prefer_global());
+        skills.retain(|skill| skill.model_invocable);
+        let skill = skills.iter().find(|skill| skill.name == name).ok_or_else(|| format!("Unknown skill: {name}"))?;
+        self.record_skill_read(&skill.path);
+        prompt::expand_skill(&format!("/skill:{name} {args}"), &skills)
+    }
+
+    fn enter_worktree(&mut self, input: &Value, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
+        match (input["name"].as_str(), input["path"].as_str()) {
+            (Some(_), Some(_)) => Err("name and path are mutually exclusive.".into()),
+            (None, Some(path)) => self.switch_worktree(path, emit),
+            (name, None) => self.create_worktree(name, emit),
+        }
+    }
+
+    fn create_worktree(&mut self, name: Option<&str>, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
+        if self.worktree_session.is_some() {
+            return Err("Already in a worktree session. Use ExitWorktree first, or pass path to switch into another existing worktree.".into());
+        }
+        let name = name.map_or_else(|| format!("wt-{:x}", now_ms()), str::to_string);
+        // The name becomes a directory and a branch: no `/` to leave .agents/worktrees, no leading `-` for git to read as an option.
+        let valid = (1..=64).contains(&name.len()) && !name.starts_with(['-', '.']) && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        if !valid {
+            return Err("name must be 1-64 letters, digits, dots, underscores or dashes, not starting with a dot or dash.".into());
+        }
+        let created = crate::worktree::create(&self.cwd, &name)?;
+        let original_cwd = self.cwd.clone();
+        self.move_to(created.path.clone(), emit)?;
+        let text = format!("Created worktree at {} on branch {}. The session is now working in the worktree. Use ExitWorktree to leave it.", created.path.display(), created.branch);
+        self.worktree_session = Some(WorktreeSession { original_cwd, created: Some(created) });
+        Ok(text)
+    }
+
+    fn switch_worktree(&mut self, path: &str, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
+        let typed = self.cwd.join(path);
+        let path = typed.canonicalize().map_err(|e| format!("Cannot open {}: {e}", typed.display()))?;
+        let (worktrees, current) = crate::worktree::list(&self.cwd)?;
+        if !worktrees.iter().any(|worktree| worktree.path.canonicalize().is_ok_and(|known| known == path)) {
+            return Err(format!("{} is not in `git worktree list` of this repository.", path.display()));
+        }
+        if path == current {
+            return Ok(format!("Already in {}.", path.display()));
+        }
+        let original_cwd = self.worktree_session.as_ref().map_or_else(|| self.cwd.clone(), |session| session.original_cwd.clone());
+        self.move_to(path.clone(), emit)?;
+        self.worktree_session = Some(WorktreeSession { original_cwd, created: None });
+        Ok(format!("Switched to worktree at {}. ExitWorktree will not remove it; use action \"keep\" to return.", path.display()))
+    }
+
+    fn exit_worktree(&mut self, input: &Value, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
+        let remove = match input["action"].as_str() {
+            Some("keep") => false,
+            Some("remove") => true,
+            _ => return Err("action must be \"keep\" or \"remove\".".into()),
+        };
+        let Some(session) = self.worktree_session.clone() else {
+            return Ok("No active worktree session to exit. ExitWorktree only operates on worktrees created by EnterWorktree in this session; nothing was changed.".into());
+        };
+        let worktree = self.cwd.clone();
+        let created = match (&session.created, remove) {
+            (_, false) => None,
+            (None, true) => return Err("This worktree was entered by path, so ExitWorktree will not remove it. Use action \"keep\".".into()),
+            (Some(created), true) => Some(created),
+        };
+        if let Some(created) = created
+            && input["discard_changes"] != true
+        {
+            let changes = crate::worktree::changes(created)?;
+            if !changes.is_empty() {
+                return Err(format!(
+                    "The worktree has uncommitted files or commits not on the original branch:\n{changes}\nConfirm with the user, then call again with discard_changes: true, or use action \"keep\"."
+                ));
+            }
+        }
+        self.move_to(session.original_cwd.clone(), emit)?;
+        self.worktree_session = None;
+        let back = format!("Exited worktree. The session is back in {}.", session.original_cwd.display());
+        let Some(created) = created else {
+            return Ok(format!("{back} The worktree at {} was kept.", worktree.display()));
+        };
+        match crate::worktree::discard(&session.original_cwd, created) {
+            Ok(()) => Ok(format!("{back} Removed the worktree at {} and its branch {}.", created.path.display(), created.branch)),
+            Err(error) => Err(format!("{back} Removing the worktree at {} failed: {error}", created.path.display())),
+        }
     }
 
     fn goal_tool(&mut self, input: &Value) -> Result<String, String> {
