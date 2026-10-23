@@ -229,10 +229,10 @@ fn is_small(model: &Model) -> bool {
     model.id.contains("haiku") || model.id.contains("luna")
 }
 
-/// Footer label: "Claude Opus 5.5" becomes "anthropic · opus 5.5", since one model can come from several providers.
+/// Footer label: "Claude Opus 5.5" becomes "anthropic/opus-5-5", since one model can come from several providers.
 /// OpenRouter shows the id, since names like "Auto Router" hide whose model it is.
 pub fn short_label(model: &Model) -> String {
-    format!("{} · {}", model.provider, short_name(model))
+    format!("{}/{}", model.provider, short_name(model).replace([' ', '.'], "-"))
 }
 
 /// "Claude Opus 5.5" becomes "opus 5.5"; OpenRouter keeps the id, as in `short_label`.
@@ -266,11 +266,11 @@ mod tests {
         let opus = Model { name: "Claude Opus 5.5".into(), ..model("anthropic", "claude-opus-5-5") };
         let terra = model("openai-codex", "gpt-5.6-terra");
         let models = [opus.clone(), model("anthropic", "claude-haiku-5-5"), terra.clone()];
-        assert_eq!(short_label(&opus), "anthropic · opus 5.5");
+        assert_eq!(short_label(&opus), "anthropic/opus-5-5");
         assert_eq!(small_model(&models, &opus).id, "claude-haiku-5-5");
         assert_eq!(small_model(&models, &terra).id, "gpt-5.6-terra");
         let router = Model { name: "Auto Router".into(), ..model("openrouter", "openrouter/auto") };
-        assert_eq!(short_label(&router), "openrouter · openrouter/auto");
+        assert_eq!(short_label(&router), "openrouter/openrouter/auto");
     }
 
     #[test]

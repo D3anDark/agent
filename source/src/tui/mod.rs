@@ -45,7 +45,7 @@ use crate::tools::bg::{Status as TerminalStatus, Terminal, Terminals};
 use crate::tools::goal::{Goal, Status as GoalStatus};
 use crate::tools::plan::Plan;
 use crate::tools::rtk::strip_ansi;
-use crate::tools::todo::{Status, Todos};
+use crate::tools::todo::{Status, Task, Todos};
 use crate::worktree::{self, Worktree};
 use editor::Editor;
 use render::{BRIGHT, Line, MUTED, PLAIN, Screen, Span, Style, line_width, link_at, overlay_center, overlay_right, plain_text, select, span, take_cursor, text_in, truncate, width, wrap};
@@ -94,6 +94,8 @@ enum Msg {
         /// Provider to the account id that served the session's last reply.
         accounts: HashMap<String, String>,
     },
+    /// The agent's extra directories after /workspace or a resume.
+    Workspace(Vec<PathBuf>),
     BtwDelta(String),
     BtwDone(Result<(), String>),
     Cloned {
@@ -501,6 +503,8 @@ enum Item {
         input: Value,
         result: Option<(String, bool)>,
     },
+    /// Claude Code's `Update Todos`: the whole list after a Todo call.
+    Todos(Vec<Task>),
     /// fx's line after each answer: elapsed time, the prompt's uncached input and output tokens, and the session's total time.
     Done {
         took: Duration,
@@ -534,6 +538,8 @@ struct App {
     /// None until the terminal reports focus or a key arrives; notifications go out unless it is Some(true).
     focused: Option<bool>,
     prompt_usage: Usage,
+    /// Answer and thinking chars streamed since the last request's usage arrived, for the live token estimate.
+    streamed_chars: usize,
     spent: Spent,
     expanded: bool,
     scroll: usize,
@@ -560,8 +566,6 @@ struct App {
     hint: Option<(String, Instant)>,
     /// Image blocks pasted into the editor; `[Image #n]` in the text refers to `images[n - 1]`.
     images: Vec<Value>,
-    /// `read_image` notes for the sent images, shown once the model's first reply proves it read them.
-    unread_images: Vec<String>,
     quit: bool,
     skills: Vec<Skill>,
     templates: Vec<Template>,
@@ -593,6 +597,7 @@ struct App {
     todos: Arc<Mutex<Todos>>,
     goal: Arc<Mutex<Option<Goal>>>,
     plan: Arc<Mutex<Plan>>,
+    extra_dirs: Vec<PathBuf>,
     follow_ups: Arc<Mutex<Vec<FollowUp>>>,
     terminals: Arc<Mutex<Terminals>>,
     subagents: Arc<Mutex<Runs>>,
@@ -783,6 +788,7 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                         Ok((messages, accounts)) => {
                             let path = agent.session.display_path();
                             let _ = events.send(Msg::Resumed { id: agent.session.id.clone(), path, messages, spent: agent.spent, notice: agent.session.fork_notice(), accounts });
+                            let _ = events.send(Msg::Workspace(agent.extra_dirs.clone()));
                             continue;
                         }
                         Err(error) => Err(error),
@@ -830,6 +836,7 @@ fn spawn_worker(mut agent: Agent, mut settings: Settings, model_lists: JoinHandl
                 }
                 Command::Workspace(args) => {
                     let _ = events.send(Msg::Agent(Event::Notice(workspace(&mut agent, &args))));
+                    let _ = events.send(Msg::Workspace(agent.extra_dirs.clone()));
                     continue;
                 }
                 Command::AccountPicked => {
@@ -1039,6 +1046,7 @@ impl App {
             transcribing: None,
             focused: None,
             prompt_usage: Usage::default(),
+            streamed_chars: 0,
             spent: agent.spent,
             expanded: settings.expand_tools,
             scroll: 0,
@@ -1059,7 +1067,6 @@ impl App {
             permission_mode: agent.permission_mode.clone(),
             hint: None,
             images: Vec::new(),
-            unread_images: Vec::new(),
             quit: false,
             skills: Vec::new(),
             templates: Vec::new(),
@@ -1082,6 +1089,7 @@ impl App {
             todos: agent.todos.clone(),
             goal: agent.goal.clone(),
             plan: agent.plan.clone(),
+            extra_dirs: agent.extra_dirs.clone(),
             follow_ups: agent.follow_ups.clone(),
             terminals: agent.terminals.clone(),
             subagents: agent.subagents.clone(),
@@ -1128,6 +1136,15 @@ impl App {
         self.entries.push(Entry { item, cache: None });
     }
 
+    /// A Todo call becomes the list after it; a run of such calls keeps only the last list.
+    fn show_todos(&mut self, index: usize) {
+        let tasks = self.todos.lock().unwrap().visible().cloned().collect();
+        self.entries[index] = Entry { item: Item::Todos(tasks), cache: None };
+        if index > self.header_len && matches!(self.entries[index - 1].item, Item::Todos(_)) {
+            self.entries.remove(index - 1);
+        }
+    }
+
     fn system(&mut self, source: &str, text: impl Into<String>) {
         self.push(Item::System { source: source.to_string(), text: text.into(), failed: false });
     }
@@ -1137,6 +1154,10 @@ impl App {
         let (visible, _) = self.transcript_view;
         let row = mouse.row as usize;
         self.edge_drag = None;
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) && self.on_jump_pill(row, mouse.column as usize) {
+            self.scroll = 0;
+            return;
+        }
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             let (top, rows, _) = self.input_view;
             self.selecting_input = (top..top + rows).contains(&row);
@@ -1247,6 +1268,14 @@ impl App {
         }
     }
 
+    /// The pill sits centered on the last transcript row while the view is scrolled up.
+    fn on_jump_pill(&self, row: usize, column: usize) -> bool {
+        let (visible, width) = self.transcript_view;
+        let pill = line_width(&vec![span(jump_pill(), PLAIN)]);
+        let start = width.saturating_sub(pill) / 2;
+        self.scroll > 0 && visible > 0 && row == visible - 1 && (start..start + pill).contains(&column)
+    }
+
     fn point_at(&self, row: usize, column: u16) -> Point {
         let (visible, _) = self.transcript_view;
         Point { line: self.scroll + visible - 1 - row, column: column as usize }
@@ -1311,6 +1340,7 @@ impl App {
                     Err(error) => self.push(Item::Error(error)),
                 }
             }
+            Msg::Workspace(dirs) => self.extra_dirs = dirs,
             Msg::Resumed { id, path, messages, spent, notice, accounts } => {
                 self.working = None;
                 self.spent = spent;
@@ -1578,13 +1608,13 @@ impl App {
         }
     }
 
-    /// The pasted images whose `[Image #n]` is still in `text`, later shown as `read_image` rows; the rest are dropped.
+    /// The pasted images whose `[Image #n]` is still in `text`, each shown as a row under the prompt; the rest are dropped.
     fn take_images(&mut self, text: &str) -> Vec<Value> {
         let mut kept = Vec::new();
-        self.unread_images.clear();
         for (index, block) in std::mem::take(&mut self.images).into_iter().enumerate() {
-            if text.contains(&format!("[Image #{}]", index + 1)) {
-                self.unread_images.push(image_note(index + 1, &block));
+            let tag = format!("[Image #{}]", index + 1);
+            if text.contains(&tag) {
+                self.push(Item::Lines(vec![vec![span("  └ ", MUTED), span(tag, PLAIN)]]));
                 kept.push(block);
             }
         }
@@ -3538,18 +3568,20 @@ impl App {
             self.follow_ups.lock().unwrap().clear();
             return;
         }
+        self.streamed_chars = 0;
         self.working = Some(Instant::now());
     }
 
     fn agent_event(&mut self, event: Event) {
-        if matches!(event, Event::Text(_) | Event::Thinking(_) | Event::ToolStart { .. } | Event::TurnEnd { .. }) {
-            for note in std::mem::take(&mut self.unread_images) {
-                self.push(Item::Tool { id: String::new(), name: "read_image".into(), input: json!({"image": note}), result: Some((String::new(), false)) });
-            }
-        }
         match event {
-            Event::Text(delta) => self.append_assistant(&delta, false),
-            Event::Thinking(delta) => self.append_assistant(&delta, true),
+            Event::Text(delta) => {
+                self.streamed_chars += delta.chars().count();
+                self.append_assistant(&delta, false);
+            }
+            Event::Thinking(delta) => {
+                self.streamed_chars += delta.chars().count();
+                self.append_assistant(&delta, true);
+            }
             Event::Notice(text) => {
                 let (source, text) = notice_source(&text);
                 self.system(source, text);
@@ -3557,12 +3589,14 @@ impl App {
             Event::SubagentDone(run) => self.push(Item::Subagent(run)),
             Event::ToolStart { id, name, input } => self.push(Item::Tool { id, name, input, result: None }),
             Event::ToolEnd { id, output, is_error } => {
-                let entry = self.entries.iter_mut().rev().find(|e| matches!(&e.item, Item::Tool { id: tool_id, .. } if *tool_id == id));
-                if let Some(entry) = entry {
-                    if let Item::Tool { result, .. } = &mut entry.item {
-                        *result = Some((output, is_error));
-                    }
-                    entry.cache = None;
+                let Some(index) = self.entries.iter().rposition(|e| matches!(&e.item, Item::Tool { id: tool_id, .. } if *tool_id == id)) else { return };
+                let entry = &mut self.entries[index];
+                let Item::Tool { name, input, result, .. } = &mut entry.item else { return };
+                let edits_todos = name == "Todo" && !is_error && !matches!(input["action"].as_str(), Some("list" | "get"));
+                *result = Some((output, is_error));
+                entry.cache = None;
+                if edits_todos {
+                    self.show_todos(index);
                 }
             }
             Event::Steered(text) => self.push(Item::User(text)),
@@ -3573,6 +3607,7 @@ impl App {
                 self.context_tokens = context_tokens;
                 self.last_usage = usage;
                 self.prompt_usage.add(usage);
+                self.streamed_chars = 0;
                 self.read_session_usage();
             }
             Event::Titled(title) => set_terminal_title(&title),
@@ -3650,8 +3685,6 @@ impl App {
     }
 
     fn done(&mut self, result: Result<String, String>) {
-        // A turn that failed before any reply never showed its images to the model.
-        self.unread_images.clear();
         match &result {
             Ok(answer) if answer.trim().is_empty() => self.notify("Done"),
             Ok(answer) => self.notify(answer),
@@ -3689,7 +3722,11 @@ impl App {
         if let Some(started) = self.working {
             let tick = (started.elapsed().as_millis() / 80) as usize;
             bottom.push(Vec::new());
-            bottom.push(shimmer_line(working_label(self.entries.last().map(|e| &e.item)), tick));
+            let mut line = shimmer_line(working_label(self.entries.last().map(|e| &e.item)), tick);
+            // shortcut: about 4 chars per token for the request still streaming; tool inputs are not counted until its usage arrives.
+            let output = self.prompt_usage.output + self.streamed_chars as u64 / 4;
+            line.push(span(format!(" ({} · ↓ {} tokens)", duration(started.elapsed()), tokens(output)), DIM));
+            bottom.push(line);
         }
         let steering = self.steering.lock().unwrap().clone();
         let queued: Vec<&String> = steering.iter().chain(self.queued_commands.iter().map(|(text, _)| text)).collect();
@@ -3750,6 +3787,7 @@ impl App {
         };
         let viewed = self.viewed.as_ref().and_then(|view| runs.iter().position(|run| Arc::ptr_eq(run, &view.run)));
         bottom.extend(background_rows(shells, &runs, focus, viewed, width));
+
         let room = height.saturating_sub(bottom.len());
         // The last column is kept for the scrollbar so text does not rewrap when it appears.
         let content_width = width.saturating_sub(1);
@@ -3791,7 +3829,7 @@ impl App {
             *first = overlay_right(first, vec![span(format!(" {hint} "), Style { selected: true, ..PLAIN })], content_width);
         }
         if let (true, Some(last)) = (self.scroll > 0, rows.last_mut()) {
-            *last = overlay_center(last, vec![span(format!(" ↓ Jump to latest message · {ALT}+Down "), BRIGHT.on(240))], content_width);
+            *last = overlay_center(last, vec![span(jump_pill(), BRIGHT.on(240))], content_width);
         }
         for (row, glyph) in scrollbar(total, visible, self.scroll).into_iter().enumerate() {
             let pad = content_width.saturating_sub(line_width(&rows[row]));
@@ -3920,8 +3958,8 @@ impl App {
         let tilde = |path: &Path| {
             let path = path.display().to_string();
             match path.strip_prefix(&home) {
-                Some(rest) if !home.is_empty() => format!("~{rest}"),
-                _ => path,
+                Some(rest) if !home.is_empty() => short_path(&format!("~{rest}")),
+                _ => short_path(&path),
             }
         };
         let mut left = vec![span(tilde(&self.cwd), PLAIN.bold())];
@@ -3938,6 +3976,10 @@ impl App {
         }
         if self.git.others > 0 {
             left.push(span(format!(" +{} wt", self.git.others), MUTED));
+        }
+        for dir in &self.extra_dirs {
+            let name = dir.file_name().map_or(dir.display().to_string(), |name| name.to_string_lossy().into_owned());
+            left.push(span(format!(" + {name}"), MUTED));
         }
         if let Some(goal) = self.goal.lock().unwrap().as_ref() {
             left.push(span(format!(" goal {}", goal.status.as_str()), MUTED));
@@ -4182,18 +4224,34 @@ fn todo_lines(todos: &Todos) -> Vec<Line> {
     let tasks: Vec<_> = todos.visible().skip_while(|t| t.status == Status::Completed).collect();
     let mut lines = vec![Vec::new()];
     for task in tasks.iter().take(TODO_ROWS) {
-        let (mark, text) = match (task.status, &task.active_form) {
-            (Status::InProgress, Some(form)) => ("▸", form),
-            (Status::InProgress, None) => ("▸", &task.subject),
-            (Status::Completed, _) => ("✓", &task.subject),
-            _ => ("○", &task.subject),
+        let text = match (task.status, &task.active_form) {
+            (Status::InProgress, Some(form)) => form,
+            _ => &task.subject,
         };
-        lines.push(vec![span(format!(" {mark} {text}"), todo_style(task.status))]);
+        lines.push(vec![span(" ", PLAIN), todo_span(task.status, text)]);
     }
     if tasks.len() > TODO_ROWS {
         lines.push(vec![span(format!("   +{} more, /todos", tasks.len() - TODO_ROWS), DIM)]);
     }
     lines
+}
+
+fn update_todos_lines(tasks: &[Task], width: usize) -> Vec<Line> {
+    let mut lines = vec![vec![span("●", OK), span(" Update Todos", TOOL_NAME)]];
+    for (index, task) in tasks.iter().enumerate() {
+        let gutter = if index == 0 { "  ⎿  " } else { "     " };
+        lines.push(truncate(&vec![span(gutter, MUTED), todo_span(task.status, &task.subject)], width));
+    }
+    lines
+}
+
+/// `✔` done and struck through, `◼` in progress and bold, `◻` pending.
+fn todo_span(status: Status, text: &str) -> Span {
+    match status {
+        Status::Completed | Status::Deleted => span(format!("✔ {text}"), Style { strikethrough: true, ..DIM }),
+        Status::InProgress => span(format!("◼ {text}"), Style { bold: true, ..BRIGHT }),
+        Status::Pending => span(format!("◻ {text}"), PLAIN),
+    }
 }
 
 fn todo_style(status: Status) -> Style {
@@ -4240,6 +4298,7 @@ fn render_item(item: &Item, width: usize, expanded: bool) -> Vec<Line> {
             lines
         }
         Item::Tool { name, input, result, .. } => render_tool(name, input, result.as_ref(), width, expanded),
+        Item::Todos(tasks) => update_todos_lines(tasks, width),
         Item::Done { took, usage, total } => {
             let stats = format!(" (↑{} ↓{}) total {}", tokens(usage.input), tokens(usage.output), duration(*total));
             vec![vec![span(" ", PLAIN), star(usize::MAX), span(format!(" Cooked for {}", duration(*took)), Style::fg(245)), span(stats, MUTED)]]
@@ -4349,7 +4408,6 @@ fn tool_args(name: &str, input: &Value) -> String {
                 _ => command,
             }
         }
-        "read_image" => field("image"),
         "Read" => {
             if let Some(paths) = input["paths"].as_array() {
                 return paths.iter().filter_map(|entry| entry.as_str().or(entry["file_path"].as_str())).collect::<Vec<_>>().join(", ");
@@ -4543,6 +4601,20 @@ fn spread(left: Line, right: Line, width: usize) -> Line {
     [left, vec![span(" ".repeat(gap), PLAIN)], right].concat()
 }
 
+fn jump_pill() -> String {
+    format!(" ↓ Jump to latest message · {ALT}+Down ")
+}
+
+/// `~/Developer/adescom/web` becomes `~/Dev/ade/web`: every folder but the last cut to 3 characters.
+fn short_path(path: &str) -> String {
+    let mut parts: Vec<String> = path.split('/').map(String::from).collect();
+    let last = parts.len() - 1;
+    for part in &mut parts[..last] {
+        *part = part.chars().take(3).collect();
+    }
+    parts.join("/")
+}
+
 /// `left` word-wrapped to `width`, with `right` at the end of its last row, or on a row of its own when that one is full.
 fn footer_rows(left: Line, right: Line, width: usize) -> Vec<Line> {
     let mut rows = wrap(&left, width, &Vec::new());
@@ -4583,14 +4655,6 @@ fn hotkeys_lines() -> Vec<Line> {
 
 fn banner() -> Vec<Line> {
     vec![vec![span("░▒▓", DIM), span("█▶ agent", BRIGHT.bold()), span(format!(" v{} · Run /help for commands", env!("CARGO_PKG_VERSION")), MUTED)]]
-}
-
-/// `#1 jpeg 38 KB` for an image block from `image::block`; base64 carries 3 bytes in 4 chars.
-fn image_note(number: usize, block: &Value) -> String {
-    let source = &block["source"];
-    let format = source["media_type"].as_str().unwrap_or_default().trim_start_matches("image/");
-    let bytes = source["data"].as_str().unwrap_or_default().len() * 3 / 4;
-    format!("#{number} {format} {} KB", bytes.div_ceil(1024))
 }
 
 /// Undoes `take_images`: the kept images go back to the numbers their tags in `text` use, gaps hold Null.
@@ -4714,7 +4778,7 @@ fn subagent_lines(path: &Path, width: usize) -> Result<Vec<Line>, String> {
 /// Consecutive items of the same run render without a blank line between them.
 fn transcript_run(item: &Item) -> Option<&'static str> {
     match item {
-        Item::Tool { .. } => Some("tool"),
+        Item::Tool { .. } | Item::Todos(_) => Some("tool"),
         Item::System { .. } | Item::Subagent(_) | Item::Error(_) => Some("log"),
         _ => None,
     }
@@ -5244,6 +5308,14 @@ mod tests {
     }
 
     #[test]
+    fn short_path_cuts_every_folder_but_the_last() {
+        assert_eq!(short_path("~/Developer/adescom/vapp-v2-frontend"), "~/Dev/ade/vapp-v2-frontend");
+        assert_eq!(short_path("/private/tmp"), "/pri/tmp");
+        assert_eq!(short_path("~"), "~");
+        assert_eq!(short_path("~/Żółtość/x"), "~/Żół/x");
+    }
+
+    #[test]
     fn footer_wraps_by_word_when_the_row_is_full() {
         let rows = |width| footer_rows(vec![span("~/r/app-pr detached → main ~/r/app", PLAIN)], vec![span("opus 12%", MUTED)], width).iter().map(text).collect::<Vec<_>>();
         assert_eq!(rows(44), ["~/r/app-pr detached → main ~/r/app  opus 12%"]);
@@ -5334,6 +5406,15 @@ mod tests {
         let lines = render_tool("Bash", &json!({"command": "ls", "timeout": 10000}), Some(&result), 40, true);
         let rows: Vec<String> = lines.iter().map(text).collect();
         assert_eq!(rows, ["✓ Bash ls (timeout 10000 ms)", "└ total 1", "  a.txt  6B"]);
+    }
+
+    #[test]
+    fn update_todos_marks_each_task_and_strikes_through_the_done_ones() {
+        let task = |subject: &str, status| Task { id: 1, subject: subject.into(), description: None, active_form: None, status };
+        let lines = update_todos_lines(&[task("review", Status::Completed), task("fix", Status::InProgress), task("test", Status::Pending)], 40);
+        let rows: Vec<String> = lines.iter().map(text).collect();
+        assert_eq!(rows, ["● Update Todos", "  ⎿  ✔ review", "     ◼ fix", "     ◻ test"]);
+        assert!(lines[1][1].style.strikethrough && lines[2][1].style.bold && lines[3][1].style == PLAIN);
     }
 
     #[test]
@@ -5489,12 +5570,6 @@ mod tests {
         let (two, three) = (json!("png2"), json!("png3"));
         let slots = image_slots("see [Image #2] and [Image #3]", vec![two.clone(), three.clone()]);
         assert_eq!(slots, [Value::Null, two, three]);
-    }
-
-    #[test]
-    fn image_note_names_the_tag_format_and_decoded_size() {
-        let block = json!({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "A".repeat(4096)}});
-        assert_eq!(image_note(2, &block), "#2 jpeg 3 KB");
     }
 
     #[test]

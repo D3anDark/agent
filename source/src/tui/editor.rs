@@ -26,6 +26,10 @@ fn paste_tag(number: usize, paste: &str) -> String {
     format!("[Pasted text #{number} +{} lines]", paste.lines().count())
 }
 
+fn is_tag(text: &str) -> bool {
+    text.starts_with("[Image #") || text.starts_with("[Pasted text #")
+}
+
 /// Where a cursor position `(line, col)` lands on screen.
 #[derive(Clone, Copy)]
 struct Spot {
@@ -151,9 +155,10 @@ impl Editor {
     pub fn backspace(&mut self) {
         self.checkpoint();
         if self.col > 0 {
-            self.col -= 1;
-            let at = self.byte_at(self.col);
-            self.lines[self.row].remove(at);
+            let end = self.byte_at(self.col);
+            self.col -= self.step_back();
+            let start = self.byte_at(self.col);
+            self.lines[self.row].replace_range(start..end, "");
         } else if self.row > 0 {
             let line = self.lines.remove(self.row);
             self.row -= 1;
@@ -165,8 +170,8 @@ impl Editor {
     pub fn delete(&mut self) {
         self.checkpoint();
         if self.col < self.lines[self.row].chars().count() {
-            let at = self.byte_at(self.col);
-            self.lines[self.row].remove(at);
+            let (start, end) = (self.byte_at(self.col), self.byte_at(self.col + self.step_forward()));
+            self.lines[self.row].replace_range(start..end, "");
         } else if self.row + 1 < self.lines.len() {
             let next = self.lines.remove(self.row + 1);
             self.lines[self.row].push_str(&next);
@@ -175,7 +180,7 @@ impl Editor {
 
     pub fn left(&mut self) {
         if self.col > 0 {
-            self.col -= 1;
+            self.col -= self.step_back();
         } else if self.row > 0 {
             self.row -= 1;
             self.col = self.lines[self.row].chars().count();
@@ -184,10 +189,29 @@ impl Editor {
 
     pub fn right(&mut self) {
         if self.col < self.lines[self.row].chars().count() {
-            self.col += 1;
+            self.col += self.step_forward();
         } else if self.row + 1 < self.lines.len() {
             self.row += 1;
             self.col = 0;
+        }
+    }
+
+    /// Chars from the cursor back over one `[Image #n]` or paste tag ending there, else 1.
+    fn step_back(&self) -> usize {
+        let before = &self.lines[self.row][..self.byte_at(self.col)];
+        let tag = before.strip_suffix(']').and_then(|rest| rest.rfind('[')).map(|at| &before[at..]);
+        match tag {
+            Some(tag) if is_tag(tag) => tag.chars().count(),
+            _ => 1,
+        }
+    }
+
+    /// Chars from the cursor forward over one `[Image #n]` or paste tag starting there, else 1.
+    fn step_forward(&self) -> usize {
+        let after = &self.lines[self.row][self.byte_at(self.col)..];
+        match after.find(']') {
+            Some(end) if is_tag(after) => after[..=end].chars().count(),
+            _ => 1,
         }
     }
 
@@ -460,6 +484,24 @@ fn push(line: &mut Line, text: &str, style: Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrows_and_deletes_treat_an_image_tag_as_one_character() {
+        let mut editor = Editor::from_text("a [Image #1]");
+        editor.left();
+        assert_eq!(editor.col, 2);
+        editor.right();
+        assert_eq!(editor.col, 12);
+        editor.backspace();
+        assert_eq!(editor.text(), "a ");
+        let mut editor = Editor::from_text("[Pasted text #1 +4 lines] b");
+        editor.home();
+        editor.delete();
+        assert_eq!(editor.text(), " b");
+        let mut editor = Editor::from_text("x]");
+        editor.backspace();
+        assert_eq!(editor.text(), "x");
+    }
 
     #[test]
     fn editing_across_lines() {
