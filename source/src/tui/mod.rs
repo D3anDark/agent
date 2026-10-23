@@ -3566,6 +3566,7 @@ impl App {
                 }
             }
             Event::Steered(text) => self.push(Item::User(text)),
+            Event::Push(text) => self.notify(&text),
             // The output tail went to the model; /tasks shows it in full.
             Event::FollowUp { source, text } => self.system(&source, text.split_once('\n').map_or(text.as_str(), |(head, _)| head)),
             Event::TurnEnd { usage, context_tokens } => {

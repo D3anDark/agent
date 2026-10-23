@@ -112,6 +112,8 @@ pub enum Event {
         is_error: bool,
     },
     Steered(String),
+    /// PushNotification: a desktop notification the model asked for.
+    Push(String),
     /// Finished background work handed to the model.
     FollowUp {
         source: String,
@@ -221,6 +223,7 @@ pub struct Agent {
     /// Shared with the UI, which opens the plan menu after the turn that completed the plan.
     pub plan: Arc<Mutex<Plan>>,
     pub follow_ups: Arc<Mutex<Vec<FollowUp>>>,
+    pub crons: Arc<Mutex<tools::cron::Crons>>,
     /// Shared with the UI for /tasks and the running count above the editor.
     pub terminals: Arc<Mutex<Terminals>>,
     /// Shared with the UI for /tasks.
@@ -629,6 +632,12 @@ impl Agent {
             }
             "Agent" => self.subagent(input, emit),
             "TaskWait" => self.bg_wait(input),
+            "CronCreate" if self.interactive => tools::cron::create(&self.crons, input, &self.follow_ups),
+            "ScheduleWakeup" if self.interactive => tools::cron::wakeup(&self.crons, input, &self.follow_ups),
+            "CronCreate" | "ScheduleWakeup" => Err("Scheduling needs the interactive UI; this process ends with its prompt.".into()),
+            "CronDelete" => self.crons.lock().unwrap().delete(input),
+            "CronList" => Ok(self.crons.lock().unwrap().list()),
+            "PushNotification" => self.push_notification(input, emit),
             "WebSearch" | "WebFetch" | "GetSearchContent" => self.web.run(name, input),
             "AskUserQuestion" => self.ask_user(input, emit),
             _ => return self.plugins.tool(name, input, &self.plugin_context(), &self.abort).or_else(|| self.mcp.tool(name, input, &self.abort)).unwrap_or_else(|| self.run_file_tool(name, input)),
@@ -867,6 +876,15 @@ impl Agent {
     pub fn save_plan(&mut self) -> Result<(), String> {
         let entry = self.plan.lock().unwrap().entry();
         self.session.append(&entry)
+    }
+
+    fn push_notification(&self, input: &Value, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
+        if !self.interactive {
+            return Err(ask::NO_UI.into());
+        }
+        let message = input["message"].as_str().map(str::trim).filter(|m| !m.is_empty()).ok_or("message required.")?;
+        emit(Event::Push(message.to_string()));
+        Ok("Sent. It shows only while the terminal is in the background and notifications are on in /settings.".into())
     }
 
     fn ask_user(&mut self, input: &Value, emit: &mut dyn FnMut(Event)) -> Result<String, String> {

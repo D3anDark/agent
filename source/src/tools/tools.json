@@ -367,6 +367,54 @@
     }
   },
   {
+    "name": "CronCreate",
+    "description": "Schedule a prompt on a 5-field cron expression in local time (`*/5 * * * *`, `0 9 * * 1-5`). When due, the prompt arrives as a message, or starts a turn when idle. Lives only until this session's process exits.",
+    "input_schema": {
+      "type": "object",
+      "required": ["cron", "prompt"],
+      "properties": {
+        "cron": { "type": "string", "description": "minute hour day-of-month month day-of-week; supports *, a-b, /step and , lists" },
+        "prompt": { "type": "string", "description": "The prompt to run when due; it must stand alone" },
+        "recurring": { "type": "boolean", "description": "Default true; false fires once at the next match" }
+      }
+    }
+  },
+  {
+    "name": "CronDelete",
+    "description": "Cancel a job from CronCreate or ScheduleWakeup.",
+    "input_schema": {
+      "type": "object",
+      "required": ["id"],
+      "properties": { "id": { "type": "string", "description": "Job id, e.g. \"cr-1\"" } }
+    }
+  },
+  {
+    "name": "CronList",
+    "description": "List this session's scheduled jobs: id, schedule, prompt.",
+    "input_schema": { "type": "object", "properties": {} }
+  },
+  {
+    "name": "ScheduleWakeup",
+    "description": "Resume work after a delay: end your turn and `prompt` arrives as a message in `delay_seconds`. For polling something slow without a blocking sleep.",
+    "input_schema": {
+      "type": "object",
+      "required": ["delay_seconds", "prompt"],
+      "properties": {
+        "delay_seconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "prompt": { "type": "string", "description": "What to do on waking; it must stand alone" }
+      }
+    }
+  },
+  {
+    "name": "PushNotification",
+    "description": "Send the user a desktop notification, e.g. when long work finishes or needs them. Shown only while the terminal is in the background.",
+    "input_schema": {
+      "type": "object",
+      "required": ["message"],
+      "properties": { "message": { "type": "string", "description": "One short line" } }
+    }
+  },
+  {
     "name": "AskUserQuestion",
     "description": "Ask the user structured questions for preferences, unclear instructions or decisions. A \"Type something.\" row for a custom answer is added to every question; never write \"Other\", \"Next\" or \"Type something.\" labels yourself. Put a recommended option first with \"(Recommended)\" at the end of its label. Use `preview` (markdown in a monospace box, single-select only) only to compare concrete artifacts such as mockups or code.",
     "eager_input_streaming": true,

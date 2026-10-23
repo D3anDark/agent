@@ -441,6 +441,7 @@ fn run(options: Options) -> Result<(), String> {
         goal: Arc::default(),
         plan: Arc::default(),
         follow_ups: Arc::default(),
+        crons: Arc::default(),
         terminals: Arc::default(),
         web: tools::web::Web::new(&home, tools::web::store_dir()),
         subagents: Arc::default(),
@@ -514,7 +515,21 @@ fn run(options: Options) -> Result<(), String> {
         agent.announce_session();
         // After settle_model, which resets the tools. Only the root spawns, runs terminals and searches the web, and a child has no UI to ask in.
         if options.parent.is_some() {
-            const ROOT_ONLY: [&str; 8] = ["Agent", "TaskWait", "TaskOutput", "TaskStop", "WebSearch", "WebFetch", "GetSearchContent", "AskUserQuestion"];
+            const ROOT_ONLY: [&str; 13] = [
+                "Agent",
+                "TaskWait",
+                "TaskOutput",
+                "TaskStop",
+                "WebSearch",
+                "WebFetch",
+                "GetSearchContent",
+                "AskUserQuestion",
+                "CronCreate",
+                "CronDelete",
+                "CronList",
+                "ScheduleWakeup",
+                "PushNotification",
+            ];
             let keep = |name: &str| if options.explore { matches!(name, "Read" | "Grep") } else { !ROOT_ONLY.contains(&name) };
             if let Some(tools) = agent.tools.as_array_mut() {
                 tools.retain(|tool| keep(tool["name"].as_str().unwrap_or_default()));
