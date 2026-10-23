@@ -222,13 +222,6 @@ enum Panel {
         loaded: Option<(u64, usize)>,
         lines: Vec<Line>,
     },
-    /// One subagent run from /tasks, full screen and read-only. `loaded` is the (file size, width) `lines` were built for.
-    Subagent {
-        index: usize,
-        scroll: usize,
-        loaded: Option<(u64, usize)>,
-        lines: Vec<Line>,
-    },
     /// Shows `App::btw`, which outlives the panel so a bare /btw reopens it.
     Btw,
     /// The start-up question for an untrusted project; `files` are what /trust would load.
@@ -603,6 +596,7 @@ struct App {
     follow_ups: Arc<Mutex<Vec<FollowUp>>>,
     terminals: Arc<Mutex<Terminals>>,
     subagents: Arc<Mutex<Runs>>,
+    viewed: Option<RunView>,
     client: Client,
     events: Sender<Msg>,
     /// The last /btw thread, kept in memory until exit.
@@ -1091,6 +1085,7 @@ impl App {
             follow_ups: agent.follow_ups.clone(),
             terminals: agent.terminals.clone(),
             subagents: agent.subagents.clone(),
+            viewed: None,
             client: agent.client.clone(),
             events,
             btw: None,
@@ -1508,6 +1503,13 @@ impl App {
                     return;
                 }
                 let text = self.editor.take();
+                if let Some(view) = &self.viewed {
+                    match view.run.message(&text) {
+                        Ok(()) => self.hint = Some((format!("Sent to {}", view.run.label), Instant::now())),
+                        Err(error) => self.hint = Some((error, Instant::now())),
+                    }
+                    return;
+                }
                 if let Err(error) = history::append(&self.home.join(".agents"), history::Entry { prompt: text.clone(), cwd: self.cwd.clone(), session: self.session_id.clone() }) {
                     self.push(Item::Error(error));
                 }
@@ -1518,6 +1520,7 @@ impl App {
                     self.submit(text);
                 }
             }
+            KeyCode::Esc if self.viewed.is_some() => self.view_run(None),
             KeyCode::Esc if self.working.is_some() => {
                 if !self.abort.swap(true, Ordering::Relaxed) {
                     self.system("agent", "Interrupting...");
@@ -1556,7 +1559,7 @@ impl App {
             KeyCode::PageUp => self.scroll += self.transcript_view.0.max(1),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(self.transcript_view.0.max(1)),
             KeyCode::Up => self.editor.up(self.editor_width),
-            KeyCode::Down if self.editor.is_empty() && (self.subagents.lock().unwrap().running() > 0 || self.terminals.lock().unwrap().running() > 0) => {
+            KeyCode::Down if self.editor.is_empty() && (self.subagents.lock().unwrap().running() > 0 || self.terminals.lock().unwrap().running() > 0 || self.viewed.is_some()) => {
                 self.panel = Some(Panel::Agents { row: 1 });
             }
             KeyCode::Down => self.editor.down(self.editor_width),
@@ -2181,7 +2184,6 @@ impl App {
             Some(Panel::ContextWindows { .. }) => return self.context_windows_key(key),
             Some(Panel::ProviderOrder { .. }) => return self.provider_order_key(key),
             Some(Panel::Diff { .. }) => return self.diff_key(code),
-            Some(Panel::Subagent { .. }) => return self.subagent_key(code),
             Some(Panel::Terminal { .. }) => return self.terminal_key(code),
             Some(Panel::PluginSettings { .. }) => return self.plugin_settings_key(key),
             _ => {}
@@ -2383,25 +2385,21 @@ impl App {
                 }
             }
             Some(Panel::Agents { row }) => {
-                let list = self.subagents.lock().unwrap().list.clone();
-                let running: Vec<usize> = (0..list.len()).filter(|&index| list[index].is_running()).collect();
+                let runs = listed_runs(&self.subagents.lock().unwrap(), self.viewed.as_ref());
                 let pill = self.terminals.lock().unwrap().running() > 0;
                 let first_run = 1 + usize::from(pill);
-                let selected = (*row).min(usize::from(pill) + running.len());
-                let run = selected.checked_sub(first_run).map(|offset| running[offset]);
+                let selected = (*row).min(usize::from(pill) + runs.len());
+                let run = selected.checked_sub(first_run).map(|offset| runs[offset].clone());
                 match code {
                     KeyCode::Up if selected > 0 => *row = selected - 1,
-                    KeyCode::Down => *row = (selected + 1).min(usize::from(pill) + running.len()),
+                    KeyCode::Down => *row = (selected + 1).min(usize::from(pill) + runs.len()),
                     KeyCode::Char('x') => {
-                        if let Some(index) = run {
-                            list[index].stop();
+                        if let Some(run) = run {
+                            run.stop();
                         }
                     }
-                    KeyCode::Enter => match run {
-                        Some(index) => self.panel = Some(Panel::Subagent { index, scroll: 0, loaded: None, lines: Vec::new() }),
-                        None if pill && selected == 1 => self.open_tasks(),
-                        None => self.panel = None,
-                    },
+                    KeyCode::Enter if pill && selected == 1 => self.open_tasks(),
+                    KeyCode::Enter => self.view_run(run),
                     KeyCode::Up | KeyCode::Esc => self.panel = None,
                     _ => {}
                 }
@@ -2417,7 +2415,10 @@ impl App {
                     KeyCode::Char('x') if shell => _ = terminals[*index].stop(),
                     KeyCode::Char('x') => runs[*index - terminals.len()].stop(),
                     KeyCode::Enter if shell => self.panel = Some(Panel::Terminal { index: *index, scroll: 0, loaded: None, lines: Vec::new() }),
-                    KeyCode::Enter => self.panel = Some(Panel::Subagent { index: *index - terminals.len(), scroll: 0, loaded: None, lines: Vec::new() }),
+                    KeyCode::Enter => {
+                        let run = runs[*index - terminals.len()].clone();
+                        self.view_run(Some(run));
+                    }
                     _ => {}
                 }
             }
@@ -2516,7 +2517,6 @@ impl App {
                 | Panel::Models { .. }
                 | Panel::ContextWindows { .. }
                 | Panel::ProviderOrder { .. }
-                | Panel::Subagent { .. }
                 | Panel::Terminal { .. }
                 | Panel::Diff { .. }
                 | Panel::Plan { .. }
@@ -3329,7 +3329,7 @@ impl App {
                 view.render(width, PANEL_ROWS)
             }
             Panel::Btw => self.btw.as_ref().expect("the btw panel opens with a thread").render(width),
-            Panel::Subagent { .. } | Panel::Terminal { .. } | Panel::Diff { .. } => unreachable!("frame draws the full-screen view instead of a panel"),
+            Panel::Terminal { .. } | Panel::Diff { .. } => unreachable!("frame draws the full-screen view instead of a panel"),
             Panel::Trust { root, files } => {
                 let rows: Vec<panel::Row> = files.iter().map(|file| panel::Row { left: file.strip_prefix(root).unwrap_or(file).display().to_string(), right: Vec::new() }).collect();
                 let view = panel::Panel {
@@ -3682,9 +3682,6 @@ impl App {
         if matches!(self.panel, Some(Panel::Diff { .. })) {
             return (self.diff_view(width, height), (0, height.saturating_sub(1) as u16));
         }
-        if matches!(self.panel, Some(Panel::Subagent { .. })) {
-            return (self.subagent_view(width, height), (0, height.saturating_sub(1) as u16));
-        }
         if matches!(self.panel, Some(Panel::Terminal { .. })) {
             return (self.terminal_view(width, height), (0, height.saturating_sub(1) as u16));
         }
@@ -3712,7 +3709,7 @@ impl App {
         }
         bottom.extend(todo_lines(&self.todos.lock().unwrap()));
         let shells = self.terminals.lock().unwrap().running();
-        let runs: Vec<Arc<Run>> = self.subagents.lock().unwrap().list.iter().filter(|run| run.is_running()).cloned().collect();
+        let runs = listed_runs(&self.subagents.lock().unwrap(), self.viewed.as_ref());
         if shells == 0 && runs.is_empty() && matches!(self.panel, Some(Panel::Agents { .. })) {
             self.panel = None;
         }
@@ -3751,8 +3748,8 @@ impl App {
             Some(Panel::Agents { row }) => Some(row.min(usize::from(shells > 0) + runs.len())),
             _ => None,
         };
-        bottom.extend(background_rows(shells, &runs, focus, width));
-
+        let viewed = self.viewed.as_ref().and_then(|view| runs.iter().position(|run| Arc::ptr_eq(run, &view.run)));
+        bottom.extend(background_rows(shells, &runs, focus, viewed, width));
         let room = height.saturating_sub(bottom.len());
         // The last column is kept for the scrollbar so text does not rewrap when it appears.
         let content_width = width.saturating_sub(1);
@@ -3809,23 +3806,6 @@ impl App {
         (rows, (cursor.0 as u16, cursor_y.min(height.saturating_sub(1)) as u16))
     }
 
-    /// The open run's session filling the screen, bottom-anchored like the transcript, reread when its file grows.
-    fn subagent_view(&mut self, width: usize, height: usize) -> Vec<Line> {
-        let Some(Panel::Subagent { index, scroll, loaded, lines }) = self.panel.as_mut() else { unreachable!("frame checks the panel") };
-        let run = self.subagents.lock().unwrap().list[*index].clone();
-        let session = run.state.lock().unwrap().session.clone();
-        let size = session.as_ref().and_then(|path| std::fs::metadata(path).ok()).map_or(0, |meta| meta.len());
-        if *loaded != Some((size, width)) {
-            *loaded = Some((size, width));
-            *lines = match session {
-                None => system_lines("⚙", "task", &run.task, SYSTEM, width),
-                Some(path) => subagent_lines(Path::new(&path), width).unwrap_or_else(|error| system_lines("✗", "error", &error, ERROR, width)),
-            };
-        }
-        let header = vec![span(format!(" {}", run.summary()), SYSTEM), span("  read-only", DIM)];
-        full_screen(header, lines, scroll, width, height, " ↑↓ scroll     ←→ previous/next run     esc back")
-    }
-
     fn diff_view(&mut self, width: usize, height: usize) -> Vec<Line> {
         let Some(Panel::Diff { files, index, scroll }) = self.panel.as_mut() else { unreachable!("frame checks the panel") };
         let lines: Vec<Line> = diff_lines(&files[*index]).iter().map(|line| truncate(line, width)).collect();
@@ -3850,26 +3830,12 @@ impl App {
         }
     }
 
-    fn subagent_key(&mut self, code: KeyCode) {
-        let last = self.subagents.lock().unwrap().list.len() - 1;
-        let Some(Panel::Subagent { index, scroll, loaded, .. }) = self.panel.as_mut() else { unreachable!("panel_key checks the panel") };
-        match code {
-            KeyCode::Up => *scroll += 1,
-            KeyCode::Down => *scroll = scroll.saturating_sub(1),
-            KeyCode::PageUp => *scroll += 10,
-            KeyCode::PageDown => *scroll = scroll.saturating_sub(10),
-            KeyCode::Left | KeyCode::Right => {
-                let next = if code == KeyCode::Left { index.saturating_sub(1) } else { (*index + 1).min(last) };
-                if next != *index {
-                    (*index, *scroll, *loaded) = (next, 0, None);
-                }
-            }
-            KeyCode::Esc => {
-                let index = self.terminals.lock().unwrap().list.len() + *index;
-                self.panel = Some(Panel::Tasks { index });
-            }
-            _ => {}
-        }
+    /// Shows `run`'s session in place of the transcript, or the main transcript again for None.
+    fn view_run(&mut self, run: Option<Arc<Run>>) {
+        self.viewed = run.map(|run| RunView { run, loaded: None, lines: Vec::new() });
+        self.panel = None;
+        self.scroll = 0;
+        self.selection = Selection::default();
     }
 
     /// The open terminal's output filling the screen, reread when its logs grow.
@@ -3912,7 +3878,12 @@ impl App {
 
     /// The last `needed` transcript lines (or all of them if there are fewer), the transcript's total line count,
     /// and every user prompt as (its top line counted up from the last line, its entry index), nearest the bottom first.
+    /// While a subagent is viewed, its session stands in for the transcript, so scrolling, selection and copy follow it.
     fn transcript_tail(&mut self, width: usize, needed: usize) -> (Vec<Line>, usize, Vec<(usize, usize)>) {
+        if let Some(view) = &mut self.viewed {
+            let lines = view.lines(width);
+            return (lines[lines.len().saturating_sub(needed)..].to_vec(), lines.len(), Vec::new());
+        }
         let expanded = self.expanded;
         let mut chunks: Vec<Vec<Line>> = Vec::new();
         let mut count = 0;
@@ -4691,6 +4662,35 @@ fn log_lines(text: &str, width: usize) -> Vec<Line> {
     lines
 }
 
+/// The rows under the footer list the running subagents, and the viewed one even after it finished.
+fn listed_runs(runs: &Runs, viewed: Option<&RunView>) -> Vec<Arc<Run>> {
+    let is_viewed = |run: &Arc<Run>| viewed.is_some_and(|view| Arc::ptr_eq(&view.run, run));
+    runs.list.iter().filter(|run| run.is_running() || is_viewed(run)).cloned().collect()
+}
+
+/// The subagent shown in place of the transcript. `loaded` is the (file size, width) `lines` were built for.
+struct RunView {
+    run: Arc<Run>,
+    loaded: Option<(u64, usize)>,
+    lines: Vec<Line>,
+}
+
+impl RunView {
+    /// The run's session as transcript lines, reread when its file grows.
+    fn lines(&mut self, width: usize) -> &[Line] {
+        let session = self.run.state.lock().unwrap().session.clone();
+        let size = session.as_ref().and_then(|path| std::fs::metadata(path).ok()).map_or(0, |meta| meta.len());
+        if self.loaded != Some((size, width)) {
+            self.loaded = Some((size, width));
+            self.lines = match session {
+                None => system_lines("⚙", "task", &self.run.task, SYSTEM, width),
+                Some(path) => subagent_lines(Path::new(&path), width).unwrap_or_else(|error| system_lines("✗", "error", &error, ERROR, width)),
+            };
+        }
+        &self.lines
+    }
+}
+
 /// A subagent's session rendered like the main transcript: a blank line between items, except inside a tool or log run.
 fn subagent_lines(path: &Path, width: usize) -> Result<Vec<Line>, String> {
     let history = Session::history(path)?;
@@ -4800,8 +4800,8 @@ fn thinking_style(level: &str) -> Style {
 }
 
 /// The rows under the footer, as in Claude Code: a shells pill, then main and the running subagents.
-/// `focus` is the row walked to with ↓ (1 is the pill when shells run), None while typing.
-fn background_rows(shells: usize, runs: &[Arc<Run>], focus: Option<usize>, columns: usize) -> Vec<Line> {
+/// `focus` is the row walked to with ↓ (1 is the pill when shells run), None while typing; `viewed` indexes `runs`.
+fn background_rows(shells: usize, runs: &[Arc<Run>], focus: Option<usize>, viewed: Option<usize>, columns: usize) -> Vec<Line> {
     let mut rows = Vec::new();
     if shells > 0 {
         let focused = focus == Some(1);
@@ -4813,18 +4813,28 @@ fn background_rows(shells: usize, runs: &[Arc<Run>], focus: Option<usize>, colum
         return rows;
     }
     let first_run = if shells > 0 { 2 } else { 1 };
-    let selected_run = focus.and_then(|row| row.checked_sub(first_run));
+    let selected_run = match focus {
+        Some(row) => row.checked_sub(first_run),
+        None => viewed,
+    };
     let main_style = if selected_run.is_none() { BRIGHT.bold() } else { PLAIN };
     let main_glyph = if selected_run.is_none() { "● " } else { "○ " };
     let mut main = vec![span(main_glyph, main_style), span("main", main_style)];
-    if selected_run.is_some() {
-        main.push(span("   ↑↓ select · Enter view · x stop · Esc back", DIM));
+    match (focus, selected_run) {
+        (Some(_), Some(_)) => main.push(span("   ↑↓ select · Enter view · x stop · Esc back", DIM)),
+        (None, Some(_)) => main.push(span("   Esc back", DIM)),
+        _ => {}
     }
     rows.extend([Vec::new(), main]);
     for (offset, run) in runs.iter().enumerate() {
         let elapsed = duration(run.elapsed());
         let state = run.state.lock().unwrap();
-        let activity = if state.last_tool.is_empty() { "starting" } else { &state.last_tool };
+        let activity = match &state.result {
+            Some(Ok(_)) => "done",
+            Some(Err(_)) => "failed",
+            None if state.last_tool.is_empty() => "starting",
+            None => &state.last_tool,
+        };
         let tokens = if state.usage.output == 0 { String::new() } else { format!(" · ↓ {} tokens", usage::tokens(state.usage.output)) };
         let (glyph, style) = if selected_run == Some(offset) { ("● ", BRIGHT.bold()) } else { ("○ ", PLAIN) };
         let left = vec![span(glyph, style), span(&run.label, style), span(format!("  {activity}"), MUTED)];
@@ -5207,17 +5217,20 @@ mod tests {
             (state.tool_calls, state.last_tool) = (3, "Read".into());
         }
         let runs = [Arc::new(run)];
-        let typing: Vec<String> = background_rows(2, &runs, None, 40).iter().map(text).collect();
+        let typing: Vec<String> = background_rows(2, &runs, None, None, 40).iter().map(text).collect();
         assert_eq!(typing, ["2 shells · ↓ to view tasks", "", "● main", "○ scan  Read                0s · 3 tools"]);
-        let on_pill: Vec<String> = background_rows(2, &runs, Some(1), 40).iter().map(text).collect();
+        let on_pill: Vec<String> = background_rows(2, &runs, Some(1), None, 40).iter().map(text).collect();
         assert_eq!(on_pill[0], "2 shells · Enter to view tasks");
         assert_eq!(on_pill[2], "● main");
-        let on_agent: Vec<String> = background_rows(2, &runs, Some(2), 40).iter().map(text).collect();
+        let on_agent: Vec<String> = background_rows(2, &runs, Some(2), None, 40).iter().map(text).collect();
         assert_eq!(on_agent[2], "○ main   ↑↓ select · Enter view · x stop · Esc back");
         assert!(on_agent[3].starts_with("● scan"));
-        let agents_only: Vec<String> = background_rows(0, &runs, Some(1), 40).iter().map(text).collect();
+        let agents_only: Vec<String> = background_rows(0, &runs, Some(1), None, 40).iter().map(text).collect();
         assert!(agents_only[2].starts_with("● scan"));
-        assert!(background_rows(0, &[], None, 40).is_empty());
+        let viewing: Vec<String> = background_rows(0, &runs, None, Some(0), 40).iter().map(text).collect();
+        assert_eq!(viewing[1], "○ main   Esc back");
+        assert!(viewing[2].starts_with("● scan"));
+        assert!(background_rows(0, &[], None, None, 40).is_empty());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -48,6 +48,8 @@ pub struct Run {
     pub background: bool,
     started: Instant,
     child: Mutex<Option<Child>>,
+    /// One JSON string per line: the task, then what the user types to the run.
+    stdin: Mutex<Option<ChildStdin>>,
     pub state: Mutex<RunState>,
 }
 
@@ -83,6 +85,13 @@ impl Run {
     pub fn stop(&self) {
         // SIGTERM, not SIGKILL: the child's handler then ends its own bash commands, terminals and servers.
         self.signal(crate::process::SIGTERM);
+    }
+
+    /// Steers the running child: it reads the text after its current tool batch or at turn end.
+    pub fn message(&self, text: &str) -> Result<(), String> {
+        let mut stdin = self.stdin.lock().unwrap();
+        let stdin = stdin.as_mut().ok_or(format!("{} has finished.", self.id))?;
+        writeln!(stdin, "{}", Value::from(text)).map_err(|e| format!("Cannot message {}: {e}", self.id))
     }
 
     fn signal(&self, signal: i32) {
@@ -168,13 +177,12 @@ impl Runs {
             .map_err(|e| format!("Cannot start subagent: {e}"))?;
         let mut stdin = child.stdin.take().expect("stdin is piped");
         let message = format!("{CHILD_BRIEF}\n\n<task>\n{}\n</task>", launch.task);
-        if let Err(e) = stdin.write_all(message.as_bytes()) {
+        if let Err(e) = writeln!(stdin, "{}", Value::from(message)) {
             // The child leads its own process group, out of reach of stop_all once dropped.
             crate::process::signal_group(child.id(), crate::process::SIGTERM);
             let _ = child.wait();
             return Err(format!("Cannot send the task: {e}"));
         }
-        drop(stdin);
         let stdout = child.stdout.take().expect("stdout is piped");
         let run = Arc::new(Run {
             id: format!("sa-{}", self.list.len() + 1),
@@ -185,6 +193,7 @@ impl Runs {
             background,
             started: Instant::now(),
             child: Mutex::new(Some(child)),
+            stdin: Mutex::new(Some(stdin)),
             state: Mutex::default(),
         });
         self.list.push(run.clone());
@@ -260,6 +269,7 @@ pub fn wait(runs: &[Arc<Run>], abort: &AtomicBool) {
 fn finish(run: &Run, result: Result<String, String>, follow_ups: &Mutex<Vec<FollowUp>>) {
     let mut queued = follow_ups.lock().unwrap();
     {
+        run.stdin.lock().unwrap().take();
         let mut state = run.state.lock().unwrap();
         state.elapsed = Some(run.started.elapsed());
         state.result = Some(result);
@@ -328,6 +338,7 @@ pub(crate) fn scan_run() -> Run {
         background: true,
         started: Instant::now(),
         child: Mutex::new(None),
+        stdin: Mutex::new(None),
         state: Mutex::default(),
     }
 }

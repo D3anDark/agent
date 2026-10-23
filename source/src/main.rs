@@ -17,7 +17,7 @@ mod worktree;
 
 use serde_json::Value;
 use std::collections::HashSet;
-use std::io::{IsTerminal, Read, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -60,7 +60,8 @@ Flags:
   --auto                      Let a reviewer model approve tool calls
   --full-access, --yolo       Run every tool call without asking
   --ask                       Ask before commands, file edits, URL fetches, subagents, MCP and plugin tools
-  --parent <id>               Run as a subagent of that session: linked to it, no Agent, Task*, web or AskUserQuestion tools
+  --parent <id>               Run as a subagent of that session: linked to it, no Agent, Task*, web or AskUserQuestion tools;
+                              with --headless, stdin takes the task and later messages as JSON string lines
   --explore                   With --parent: only read and rg, no modes prompt
   --trust                     Trust this project for this run: load its .agents files and run its edit hooks
   --tools <a,b,...>           With acp, -p, --json or --headless: offer only these tools
@@ -471,8 +472,10 @@ fn run(options: Options) -> Result<(), String> {
         agent.add_dir(dir)?;
     }
     let mut prompt = options.prompt;
+    if options.headless && options.parent.is_some() {
+        prompt = Some(read_subagent_stdin(agent.steering.clone())?);
     // In acp mode stdin carries the protocol.
-    if !options.acp && !std::io::stdin().is_terminal() {
+    } else if !options.acp && !std::io::stdin().is_terminal() {
         let mut piped = String::new();
         // An inherited pipe that never closes (IDE task, ssh) would otherwise hang here silently.
         if std::io::stderr().is_terminal() {
@@ -626,6 +629,21 @@ fn headless_mode(agent: &mut Agent, prompt: &str) -> Result<(), String> {
         Err(message) => line(serde_json::json!({"type": "error", "message": message})),
     }
     result.map(|_| ())
+}
+
+/// A subagent's stdin, one JSON string per line: its task, then messages the user sends while it runs, which steer it.
+fn read_subagent_stdin(steering: Arc<Mutex<Vec<String>>>) -> Result<String, String> {
+    let mut lines = BufReader::new(std::io::stdin()).lines();
+    let task = lines.next().ok_or("No task on stdin.")?.map_err(|e| format!("Cannot read stdin: {e}"))?;
+    let task = serde_json::from_str(&task).map_err(|e| format!("The task is not a JSON string: {e}"))?;
+    std::thread::spawn(move || {
+        for line in lines.map_while(Result::ok) {
+            if let Ok(text) = serde_json::from_str(&line) {
+                steering.lock().unwrap().push(text);
+            }
+        }
+    });
+    Ok(task)
 }
 
 fn preview(input: &Value) -> String {
