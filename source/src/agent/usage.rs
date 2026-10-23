@@ -21,6 +21,9 @@ pub fn reply_entry(reply: &Reply, timestamp: u64) -> Value {
     entry["id"] = json!(reply.id);
     entry["provider"] = json!(reply.provider);
     entry["account"] = json!(reply.account_id);
+    if let Some(tokens) = reply.cache_write_1h {
+        entry["cache_write_1h"] = json!(tokens);
+    }
     entry
 }
 

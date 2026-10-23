@@ -66,6 +66,8 @@ pub struct Reply {
     pub message: Value,
     pub stop_reason: String,
     pub usage: Usage,
+    /// The part of `usage.cache_write` cached for 1h, which bills 2x input against 1.25x for 5m; None when the API gave no split.
+    pub cache_write_1h: Option<u64>,
     /// Tokens the next request starts from. Differs from `usage`, which sums the iterations of a server tool loop.
     pub context_tokens: u64,
     /// The API's id for this response: Anthropic's `msg_…`, Codex's `resp_…`.
@@ -885,6 +887,7 @@ fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn
     let mut blocks: Vec<Value> = Vec::new();
     let mut tool_json: Vec<String> = Vec::new();
     let mut usage = Usage::default();
+    let mut cache_write_1h = None;
     let mut stop_reason = String::new();
     let mut id = String::new();
     // message_delta sums the input of every server tool iteration (tool_search); message_start holds the first request's.
@@ -912,7 +915,7 @@ fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn
         match event["type"].as_str().unwrap_or_default() {
             "message_start" => {
                 id = event["message"]["id"].as_str().unwrap_or_default().to_string();
-                read_usage(&event["message"]["usage"], &mut usage);
+                read_usage(&event["message"]["usage"], &mut usage, &mut cache_write_1h);
                 prompt_tokens = usage.input + usage.cache_read + usage.cache_write;
             }
             "content_block_start" => {
@@ -952,7 +955,7 @@ fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn
             }
             "message_delta" => {
                 stop_reason = event["delta"]["stop_reason"].as_str().unwrap_or_default().to_string();
-                read_usage(&event["usage"], &mut usage);
+                read_usage(&event["usage"], &mut usage, &mut cache_write_1h);
             }
             "message_stop" => break,
             "error" => {
@@ -964,7 +967,7 @@ fn parse_stream(reader: &mut dyn BufRead, abort: &AtomicBool, on_delta: &mut dyn
             _ => {}
         }
     }
-    Ok(Reply { message: json!({"role": "assistant", "content": blocks}), stop_reason, context_tokens: prompt_tokens + usage.output, usage, id, ..Reply::default() })
+    Ok(Reply { message: json!({"role": "assistant", "content": blocks}), stop_reason, context_tokens: prompt_tokens + usage.output, usage, cache_write_1h, id, ..Reply::default() })
 }
 
 fn append(field: &mut Value, text: &str) {
@@ -974,13 +977,16 @@ fn append(field: &mut Value, text: &str) {
 }
 
 /// Usage fields arrive in message_start and again (cumulative) in message_delta; later values win.
-fn read_usage(raw: &Value, usage: &mut Usage) {
+fn read_usage(raw: &Value, usage: &mut Usage, cache_write_1h: &mut Option<u64>) {
     let fields =
         [("input_tokens", &mut usage.input), ("output_tokens", &mut usage.output), ("cache_read_input_tokens", &mut usage.cache_read), ("cache_creation_input_tokens", &mut usage.cache_write)];
     for (name, slot) in fields {
         if let Some(value) = raw[name].as_u64() {
             *slot = value;
         }
+    }
+    if let Some(value) = raw["cache_creation"]["ephemeral_1h_input_tokens"].as_u64() {
+        *cache_write_1h = Some(value);
     }
 }
 
@@ -1107,6 +1113,18 @@ mod tests {
         let reply = parse_stream(&mut body.as_bytes(), &AtomicBool::new(false), &mut |_| {}).ok().unwrap();
         assert_eq!((reply.usage.input, reply.usage.cache_read, reply.usage.cache_write), (641, 2769, 2769));
         assert_eq!(reply.context_tokens, 4 + 2769 + 211);
+    }
+
+    #[test]
+    fn the_1h_cache_write_split_survives_to_the_reply() {
+        let start = |usage: &str| format!(r#"{{"type":"message_start","message":{{"id":"msg_1","usage":{usage}}}}}"#);
+        let parse = |usage: &str| {
+            let body = format!("data: {}\n\ndata: {{\"type\":\"message_stop\"}}\n\n", start(usage));
+            parse_stream(&mut body.as_bytes(), &AtomicBool::new(false), &mut |_| {}).ok().unwrap().cache_write_1h
+        };
+        let split = r#"{"input_tokens":4,"cache_creation_input_tokens":300,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":300}}"#;
+        assert_eq!(parse(split), Some(300));
+        assert_eq!(parse(r#"{"input_tokens":4,"cache_creation_input_tokens":300}"#), None);
     }
 
     #[test]
