@@ -4639,7 +4639,7 @@ fn todo_lines(todos: &Todos) -> Vec<Line> {
 }
 
 fn update_todos_lines(tasks: &[Task], width: usize) -> Vec<Line> {
-    let mut lines = vec![vec![span("●", OK), span(" Update Todos", TOOL_NAME)]];
+    let mut lines = vec![vec![span("✓", OK), span(" Update Todos", TOOL_NAME)]];
     for (index, task) in tasks.iter().enumerate() {
         let gutter = if index == 0 { "  ⎿  " } else { "     " };
         lines.push(truncate(&vec![span(gutter, MUTED), todo_span(task.status, &task.subject)], width));
@@ -4764,7 +4764,7 @@ fn subagent_done_lines(run: &Run, width: usize) -> Vec<Line> {
 fn render_tool(name: &str, input: &Value, result: Option<&(String, bool)>, width: usize, expanded: bool) -> Vec<Line> {
     // The list itself replaces this row once the call ends; see show_todos.
     if result.is_none() && edits_todos(name, input) {
-        return vec![vec![span("●", MUTED), span(" Update Todos", TOOL_NAME)]];
+        return vec![vec![span("•", MUTED), span(" Update Todos", TOOL_NAME)]];
     }
     let (icon, icon_style) = match result {
         None => ("•", MUTED),
@@ -5930,9 +5930,9 @@ mod tests {
         let task = |subject: &str, status| Task { id: 1, subject: subject.into(), description: None, active_form: None, status };
         let lines = update_todos_lines(&[task("review", Status::Completed), task("fix", Status::InProgress), task("test", Status::Pending)], 40);
         let rows: Vec<String> = lines.iter().map(text).collect();
-        assert_eq!(rows, ["● Update Todos", "  ⎿  ✔ review", "     ◼ fix", "     ◻ test"]);
+        assert_eq!(rows, ["✓ Update Todos", "  ⎿  ✔ review", "     ◼ fix", "     ◻ test"]);
         let running: Vec<String> = render_tool("Todo", &json!({"action": "create", "subject": "x"}), None, 40, false).iter().map(text).collect();
-        assert_eq!(running, ["● Update Todos"]);
+        assert_eq!(running, ["• Update Todos"]);
         assert!(lines[1][1].style.strikethrough && lines[2][1].style.bold && lines[3][1].style == PLAIN);
     }
 
