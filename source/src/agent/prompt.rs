@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashSet};
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 const DEFAULT_PREAMBLE: &str = "You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.
@@ -161,6 +162,8 @@ pub struct Skill {
     pub model_invocable: bool,
     /// The same-named skill on the other side (project or global) this one won over.
     pub shadows: Option<PathBuf>,
+    /// The `owner/repo` that `npx skills` installed it from, read from `.skill-lock.json`.
+    pub source: Option<String>,
 }
 
 /// `.agents` dirs in the order they win a name conflict, each flagged global: the preferred side first, project ones nearest first.
@@ -178,11 +181,13 @@ pub fn load_skills(agent_dir: &Path, cwd: &Path, trusted: bool, disabled: &[Stri
     for (dir, global) in agents_dirs(agent_dir, cwd, trusted, prefer_global) {
         let mut files = Vec::new();
         collect_skill_files(&dir.join("skills"), true, &mut files);
+        let sources = skill_sources(&dir);
         for path in files {
             if !seen.insert(path.canonicalize().unwrap_or_else(|_| path.clone())) {
                 continue;
             }
-            let Some(skill) = parse_skill(&path) else { continue };
+            let Some(mut skill) = parse_skill(&path) else { continue };
+            skill.source = sources.get(&skill.name).cloned();
             if disabled.contains(&skill.name) {
                 continue;
             }
@@ -194,6 +199,14 @@ pub fn load_skills(agent_dir: &Path, cwd: &Path, trusted: bool, disabled: &[Stri
         }
     }
     found.into_iter().map(|(skill, _)| skill).collect()
+}
+
+/// Skill name to `owner/repo` from the `.skill-lock.json` that `npx skills` writes into an `.agents` dir.
+fn skill_sources(agents_dir: &Path) -> HashMap<String, String> {
+    let Some(text) = read_text(&agents_dir.join(".skill-lock.json")) else { return HashMap::new() };
+    let Ok(lock) = serde_json::from_str::<Value>(&text) else { return HashMap::new() };
+    let Some(skills) = lock["skills"].as_object() else { return HashMap::new() };
+    skills.iter().filter_map(|(name, entry)| Some((name.clone(), entry["source"].as_str()?.to_string()))).collect()
 }
 
 fn collect_skill_files(dir: &Path, root: bool, out: &mut Vec<PathBuf>) {
@@ -226,7 +239,7 @@ pub fn parse_skill(path: &Path) -> Option<Skill> {
     let description = field("description").filter(|d| !d.trim().is_empty())?;
     let dir_name = path.parent()?.file_name()?.to_string_lossy().into_owned();
     let name = field("name").filter(|n| !n.is_empty()).unwrap_or(dir_name);
-    Some(Skill { name, description, path: path.to_path_buf(), model_invocable, shadows: None })
+    Some(Skill { name, description, path: path.to_path_buf(), model_invocable, shadows: None, source: None })
 }
 
 /// pi's `/skill:name args` expansion: the skill body wrapped in a `<skill>` block, then the args.
@@ -573,6 +586,20 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(project_first, (vec![(project_skill.clone(), Some(global_skill.clone()))], vec![(project_prompt.clone(), Some(global_prompt.clone()))]));
         assert_eq!(global_first, (vec![(global_skill, Some(project_skill))], vec![(global_prompt, Some(project_prompt))]));
+    }
+
+    #[test]
+    fn a_skill_installed_by_npx_skills_carries_its_source_repo() {
+        let root = std::env::temp_dir().join(format!("agent-skill-source-{}", std::process::id()));
+        let home = root.join("home");
+        for name in ["tdd", "local"] {
+            std::fs::create_dir_all(home.join("skills").join(name)).unwrap();
+            std::fs::write(home.join("skills").join(name).join("SKILL.md"), "---\ndescription: x\n---\n").unwrap();
+        }
+        std::fs::write(home.join(".skill-lock.json"), r#"{"version":3,"skills":{"tdd":{"source":"mattpocock/skills"}}}"#).unwrap();
+        let sources: Vec<(String, Option<String>)> = load_skills(&home, &root, true, &[], false).into_iter().map(|s| (s.name, s.source)).collect();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(sources, [("local".to_string(), None), ("tdd".to_string(), Some("mattpocock/skills".to_string()))]);
     }
 
     #[test]

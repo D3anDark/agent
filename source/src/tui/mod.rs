@@ -195,6 +195,7 @@ enum Panel {
     },
     /// Every skill, including the ones `Settings.disabled_skills` leaves out of the prompt.
     Skills {
+        query: Editor,
         index: usize,
     },
     /// `confirm`: space was pressed once on a project server whose entry the panel cuts.
@@ -1537,7 +1538,13 @@ impl App {
         match self.panel.as_mut() {
             Some(Panel::Login(login)) => login.paste(text),
             Some(Panel::Ask(ask)) => ask.paste(&line),
-            Some(Panel::Models { query, index, .. } | Panel::ContextWindows { query, index, .. } | Panel::Accounts { query, index, .. } | Panel::History { query, index, .. }) => {
+            Some(
+                Panel::Models { query, index, .. }
+                | Panel::ContextWindows { query, index, .. }
+                | Panel::Accounts { query, index, .. }
+                | Panel::History { query, index, .. }
+                | Panel::Skills { query, index },
+            ) => {
                 query.insert(&line);
                 *index = 0;
             }
@@ -2121,7 +2128,7 @@ impl App {
             "settings" => self.panel = Some(Panel::Settings { row: 0, query: Editor::new() }),
             "todos" => self.panel = Some(Panel::Todos { index: 0 }),
             "plugins" => self.panel = Some(Panel::Plugins { index: 0, confirm: false }),
-            "skills" => self.panel = Some(Panel::Skills { index: 0 }),
+            "skills" => self.panel = Some(Panel::Skills { query: Editor::new(), index: 0 }),
             "trust" => self.set_trust(true),
             "untrust" => self.set_trust(false),
             "mcp" => self.panel = Some(Panel::Mcp { index: 0, confirm: false }),
@@ -2436,11 +2443,12 @@ impl App {
                 let tabs = USAGE_TABS.len();
                 *tab = if code == KeyCode::Tab { (*tab + 1) % tabs } else { (*tab + tabs - 1) % tabs };
             }
-            Some(Panel::Skills { index }) => match code {
+            Some(Panel::Skills { query, index }) => match code {
                 KeyCode::Up => *index = index.saturating_sub(1),
-                KeyCode::Down => *index = (*index + 1).min(self.skills.len().saturating_sub(1)),
+                KeyCode::Down => *index = (*index + 1).min(matching_skills(&self.skills, &query.text()).len().saturating_sub(1)),
+                // Skill names and sources hold no spaces, so space stays the toggle while typing searches.
                 KeyCode::Char(' ') => {
-                    let Some(skill) = self.skills.get(*index) else { return };
+                    let Some(skill) = matching_skills(&self.skills, &query.text()).get(*index).copied() else { return };
                     let name = skill.name.clone();
                     self.update_settings(|s| {
                         if s.disabled_skills.contains(&name) {
@@ -2450,7 +2458,11 @@ impl App {
                         }
                     });
                 }
-                _ => {}
+                _ => {
+                    if query.edit_key(key) {
+                        *index = 0;
+                    }
+                }
             },
             Some(Panel::Mcp { index, confirm }) => {
                 let (views, _) = self.mcp.list();
@@ -3410,27 +3422,28 @@ impl App {
                 };
                 view.render(width, PANEL_ROWS)
             }
-            Panel::Skills { index } => {
+            Panel::Skills { query, index } => {
                 let name_width = self.skills.iter().map(|skill| skill.name.chars().count()).max().unwrap_or(0);
-                let rows: Vec<panel::Row> = self
-                    .skills
-                    .iter()
+                let source_width = self.skills.iter().filter_map(|skill| skill.source.as_ref()).map(|source| source.chars().count()).max().unwrap_or(0);
+                let rows: Vec<panel::Row> = matching_skills(&self.skills, &query.text())
+                    .into_iter()
                     .map(|skill| {
                         let disabled = self.settings.disabled_skills.contains(&skill.name);
                         let (mark, right) = if disabled { ("[ ]", span("disabled", MUTED)) } else { ("[x]", span("enabled", PLAIN)) };
                         let description = skill.description.split_whitespace().collect::<Vec<_>>().join(" ");
-                        panel::Row { left: format!("{mark} {:<name_width$}  {description}", skill.name), right: vec![right] }
+                        let source = skill.source.as_deref().unwrap_or_default();
+                        panel::Row { left: format!("{mark} {:<name_width$}  {source:<source_width$}  {description}", skill.name), right: vec![right] }
                     })
                     .collect();
                 let view = panel::Panel {
                     title: "Skills".into(),
                     tabs: &[],
                     tab: 0,
-                    search: None,
+                    search: Some(query.field(None)),
                     rows: &rows,
                     selected: *index,
-                    empty: "No skills. Add one under ~/.agents/skills/<name>/SKILL.md.",
-                    hint: "↑↓ navigate     space enable/disable     esc close",
+                    empty: if self.skills.is_empty() { "No skills. Add one under ~/.agents/skills/<name>/SKILL.md." } else { "No matching skills." },
+                    hint: "type to search name or owner/repo     ↑↓ navigate     space enable/disable     esc close",
                 };
                 view.render(width, PANEL_ROWS)
             }
@@ -4416,6 +4429,10 @@ impl Entry {
 }
 
 /// Accounts whose name or provider matches the query, see `panel::search`.
+fn matching_skills<'a>(skills: &'a [Skill], query: &str) -> Vec<&'a Skill> {
+    panel::search(skills, query, |skill| format!("{} {}", skill.name, skill.source.as_deref().unwrap_or_default()))
+}
+
 fn matching_accounts(accounts: Vec<AccountView>, query: &str) -> Vec<AccountView> {
     panel::search(accounts, query, |a| format!("{} {}", a.name, a.provider))
 }
