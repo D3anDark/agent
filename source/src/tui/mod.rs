@@ -4777,7 +4777,11 @@ fn render_tool(name: &str, input: &Value, result: Option<&(String, bool)>, width
             vec![span(icon, icon_style), span(" Skill ", TOOL_NAME), span(skill, TOOL_ARGS), span(hint, MUTED)]
         }
         None => {
-            vec![span(icon, icon_style), span(" ", PLAIN), span(name, TOOL_NAME), span(" ", PLAIN), span(tool_args(name, input), TOOL_ARGS)]
+            let args = span(tool_args(name, input), TOOL_ARGS);
+            match mcp_tool(name) {
+                Some((server, tool)) => vec![span(icon, icon_style), span(" ", PLAIN), span(tool, TOOL_NAME), span(format!(" MCP: {server} "), MUTED), args],
+                None => vec![span(icon, icon_style), span(" ", PLAIN), span(name, TOOL_NAME), span(" ", PLAIN), args],
+            }
         }
     };
     if !expanded {
@@ -4804,6 +4808,16 @@ fn render_tool(name: &str, input: &Value, result: Option<&(String, bool)>, width
         lines.push(vec![span(format!("  … {hidden} more lines"), MUTED)]);
     }
     lines
+}
+
+/// `mcp__vexdock__get_service` as (`vexdock`, `GetService`).
+fn mcp_tool(name: &str) -> Option<(&str, String)> {
+    let (server, tool) = name.strip_prefix("mcp__")?.split_once("__")?;
+    let pascal = tool.split(['_', '-']).map(|word| {
+        let mut chars = word.chars();
+        chars.next().map(|first| first.to_uppercase().chain(chars).collect::<String>()).unwrap_or_default()
+    });
+    Some((server, pascal.collect()))
 }
 
 fn skill_name(name: &str, input: &Value) -> Option<String> {
@@ -5941,6 +5955,12 @@ mod tests {
         let result = ("body".to_string(), false);
         let lines = render_tool("Read", &json!({"file_path": "/x/skills/verify-web-app/SKILL.md"}), Some(&result), 80, false);
         assert_eq!(text(&lines[0]), "✓ Skill verify-web-app (ctrl+o to expand)");
+    }
+
+    #[test]
+    fn mcp_tool_shows_its_name_and_server() {
+        let lines = render_tool("mcp__vexdock__get_service", &json!({"service_id": "s1"}), None, 80, false);
+        assert_eq!(text(&lines[0]), "• GetService MCP: vexdock service_id: s1");
     }
 
     #[test]
