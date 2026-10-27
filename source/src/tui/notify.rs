@@ -1,5 +1,5 @@
 /// The escape sequence that shows a desktop notification in the terminal we run in.
-/// `env` reads environment variables; the ones checked survive tmux, which renames TERM_PROGRAM.
+/// `env` reads environment variables. tmux renames TERM_PROGRAM, so Tuni, and iTerm2 without LC_TERMINAL, get the bell there.
 pub fn sequence(title: &str, body: &str, env: impl Fn(&str) -> Option<String>) -> String {
     let (title, body) = (printable(title), printable(body));
     let is = |name: &str, value: &str| env(name).is_some_and(|found| found == value);
